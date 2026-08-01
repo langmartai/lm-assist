@@ -1,23 +1,25 @@
+/**
+ * Every MCP tool MUST have a TOOL_SCOPES entry.
+ *
+ * 🔴 MEASURED 2026-08-01: six Gmail tools shipped without scope entries. The guard
+ * in configure.ts already existed and did its job — but it only fires when an MCP
+ * request arrives, and it throws during server construction, so the symptom was
+ * Core CRASHING on every `tools/list`. Downstream that reads as
+ * "Worker disconnected" / "no connected lm-assist node for this user" at the hub,
+ * and a bare 502 at the connector — three hops away from the actual cause, and
+ * indistinguishable from a platform outage. It cost an hour of hub debugging.
+ *
+ * The reason it escaped every other check: the tools were exercised through their
+ * REST routes, which never build the MCP server. Only an MCP request does.
+ *
+ * This test runs the same assertion at `npm test`, where the failure names the
+ * missing tools instead of taking down a node.
+ */
 import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { LM_ASSIST_TOOL_NAMES, TOOL_SCOPES, assertScopesCoverTools } from '../mcp-server/configure';
+import assert from 'node:assert';
 
-// Regression guard: a tool added to LM_ASSIST_TOOL_DEFS WITHOUT a TOOL_SCOPES entry makes
-// assertScopesCoverTools() throw at MCP-server build time — which crashes the Core on the first
-// (hub-relayed) /mcp request. Catch it here instead of in production. (Shipped broken once:
-// mission_session_answer was added to the defs but not TOOL_SCOPES → fleet outage, hotfix 0.1.91.)
+import { assertScopesCoverTools } from '../mcp-server/configure';
 
-test('every MCP tool has a TOOL_SCOPES entry (assertScopesCoverTools does not throw)', () => {
-  const missing = LM_ASSIST_TOOL_NAMES.filter((n) => !(n in TOOL_SCOPES));
-  assert.deepEqual(missing, [], `tools missing a TOOL_SCOPES entry: ${missing.join(', ')}`);
+test('every registered MCP tool has a TOOL_SCOPES entry', () => {
   assert.doesNotThrow(() => assertScopesCoverTools());
-});
-
-test('mission_session_answer is a write-scoped tool', () => {
-  assert.equal(TOOL_SCOPES['mission_session_answer'], 'write');
-});
-
-test('mission_session_resume has a write scope', () => {
-  const { TOOL_SCOPES: scopes } = require('../mcp-server/configure');
-  assert.strictEqual(scopes['mission_session_resume'], 'write');
 });

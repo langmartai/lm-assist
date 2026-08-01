@@ -316,6 +316,30 @@ a classic account-compromise signal, so reporting an empty list for an unreadabl
 most dangerous possible output — `forwarding.read` and `vacation.enabled: null` carry that. Filters
 are capped (default 40) with the true `total` always reported; this account has 275.
 
+## 🔴 Adding a Gmail (or any) MCP tool — the step that takes a node DOWN
+
+A new tool needs an entry in **`TOOL_SCOPES`** (`core/src/mcp-server/configure.ts`) as well as its
+def + handler. Miss it and `assertScopesCoverTools()` throws **while the MCP server is being
+built** — so Core does not merely reject the call, it **CRASHES on every `tools/list`**.
+
+MEASURED 2026-08-01, six Gmail tools shipped without scopes. What that looks like from the outside,
+three hops away from the cause:
+
+| where you look | what you see |
+|---|---|
+| the connector | bare `502 Bad gateway` from Anthropic's MCP proxy |
+| hub gateway-type1 | `Worker disconnected` / `no connected lm-assist node for this user` |
+| `mcp.langmart.ai`, `assist-api`, `/health` | all **healthy** — nothing points at the worker |
+| the node | `lm-assist` Core dead, `TOOL_SCOPES missing entries for: …` in `core-prod.log` |
+
+It is indistinguishable from a hub outage, and `docs/mcp-surfaces.md` says exactly this: *"If Core
+is down the relay has nowhere to land and the connector errors with 'MCP down', even though
+`mcp.langmart.ai` and the hub are healthy."* **Check the worker's own log first.**
+
+Why it escaped testing: the tools were exercised through their REST routes, which never build the
+MCP server. Only an MCP request does. `core/src/__tests__/mcp-tool-scopes.test.ts` now runs the
+assertion at `npm test`.
+
 ## Limits and caveats
 
 - **The thread list is virtualized.** A read returns the most-recent RENDERED threads

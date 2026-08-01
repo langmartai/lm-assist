@@ -383,12 +383,23 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   gmail_drafts: 'write',
   gmail_forward: 'write',
   gmail_triage: 'write',
+  gmail_untrash: 'write',
+  gmail_rename_label: 'write',
+  // Deleting a label mutates the account's label set (the mail survives).
+  gmail_delete_label: 'write',
+  // Schedules REAL mail for delivery from the operator's account.
+  gmail_schedule_send: 'write',
   gmail_list_threads: 'read',
   gmail_read_thread: 'read',
   gmail_search: 'read',
   gmail_labels: 'read',
   gmail_aliases: 'read',
   gmail_attachments: 'read',
+  // Downloading writes a FILE to the node's disk, but it mutates no mailbox state,
+  // so it stays a read like the metadata listing it builds on.
+  gmail_attachment_download: 'read',
+  // Settings audit is strictly read-only — it never writes signature/vacation/filters.
+  gmail_settings: 'read',
   gmail_sync_status: 'read',
   gmail_search_local: 'read',
   gmail_selfcheck: 'read',
