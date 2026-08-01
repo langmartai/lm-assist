@@ -283,6 +283,47 @@ export const gmailAttachmentsToolDef = {
   },
 };
 
+export const gmailSettingsToolDef = {
+  name: 'gmail_settings',
+  description:
+    'Audit the account\'s Gmail settings — signature, vacation responder, forwarding addresses and ' +
+    'filters. READ ONLY, changes nothing. Trigger words: "what\'s my signature", "is my out-of-office ' +
+    'on", "is my mail being forwarded", "what filters do I have". Useful as a security check: an ' +
+    'unexpected forwarding address is a classic account-compromise signal.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      filters: { type: 'number', description: 'How many filters to return. Default 40, max 200; the true total is always reported.' },
+    },
+  },
+};
+
+export const gmailScheduleSendToolDef = {
+  name: 'gmail_schedule_send',
+  description:
+    'Compose a message and SCHEDULE it to go out later instead of sending now. Trigger words: ' +
+    '"send this tomorrow morning", "schedule this email", "send it Monday". Real mail from the ' +
+    "operator's account — it WILL be delivered at the chosen time unless cancelled in Gmail. " +
+    'Presets depend on the current time of day; if one is not offered the error names what is.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      to: { type: 'string', description: 'Recipient address (or comma-separated addresses).' },
+      subject: { type: 'string', description: 'Subject line.' },
+      body: { type: 'string', description: 'Message body.' },
+      when: {
+        type: 'string',
+        enum: ['tomorrow-morning', 'tomorrow-afternoon', 'monday-morning'],
+        description: 'When to send. Default tomorrow-morning.',
+      },
+      cc: { type: 'string', description: 'Optional Cc.' },
+      bcc: { type: 'string', description: 'Optional Bcc.' },
+    },
+    required: ['to', 'body'],
+  },
+};
+
 export const gmailRenameLabelToolDef = {
   name: 'gmail_rename_label',
   description:
@@ -660,6 +701,8 @@ export const GMAIL_TOOL_DEFS = [
   gmailAttachmentsToolDef,
   gmailAttachmentDownloadToolDef,
   gmailUntrashToolDef,
+  gmailSettingsToolDef,
+  gmailScheduleSendToolDef,
   gmailRenameLabelToolDef,
   gmailDeleteLabelToolDef,
   gmailLabelsToolDef,
@@ -1156,6 +1199,78 @@ async function handleTriage(args: Record<string, unknown>): Promise<McpToolResul
   }
 }
 
+async function handleSettings(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const n = numArg(args.filters);
+    const d = await workerGetLong<{
+      signature: { present: boolean; text: string | null; chars: number };
+      vacation: { enabled: boolean | null; subject: string | null; message: string | null; note?: string };
+      forwarding: { addresses: string[]; read: boolean; note?: string };
+      filters: { total: number; returned: number; capped: boolean; filters: { matches: string; actions: string }[] };
+    }>(`/gmail/settings${n !== undefined ? `?filters=${n}` : ''}`, 300000);
+
+    const lines: string[] = [];
+    lines.push(
+      d.signature.present
+        ? `Signature: set (${d.signature.chars} chars) — ${String(d.signature.text || '').slice(0, 160)}`
+        : 'Signature: none set',
+    );
+    // "unknown" and "off" are DIFFERENT answers and must not collapse.
+    lines.push(
+      d.vacation.enabled === null
+        ? `Vacation responder: UNKNOWN — ${d.vacation.note || 'could not be read'}`
+        : `Vacation responder: ${d.vacation.enabled ? 'ON' : 'off'}` +
+          (d.vacation.subject ? ` — subject "${d.vacation.subject}"` : ''),
+    );
+    lines.push(
+      !d.forwarding.read
+        ? `Forwarding: UNKNOWN — ${d.forwarding.note || 'could not be read'}`
+        : d.forwarding.addresses.length
+          ? `Forwarding: ${d.forwarding.addresses.join(', ')} — verify these are expected`
+          : 'Forwarding: none configured',
+    );
+    lines.push(
+      `Filters: ${d.filters.total} total` +
+        (d.filters.capped ? `, showing the first ${d.filters.returned}` : ''),
+    );
+    for (const f of d.filters.filters.slice(0, 40)) {
+      lines.push(`  - ${f.matches}${f.actions ? ` -> ${f.actions}` : ''}`);
+    }
+    return ok(lines.join('\n'));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleScheduleSend(args: Record<string, unknown>): Promise<McpToolResult> {
+  const toRaw = String(args.to ?? '').trim();
+  if (!toRaw) return err('`to` is required.');
+  const split = (v: unknown) =>
+    String(v ?? '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+  try {
+    const d = await workerPostLong<{
+      to: string[]; subject?: string; when: string; picked: string | null; verified: boolean; note?: string;
+    }>('/gmail/schedule-send', {
+      to: split(toRaw),
+      cc: args.cc ? split(args.cc) : undefined,
+      bcc: args.bcc ? split(args.bcc) : undefined,
+      subject: args.subject,
+      body: args.body,
+      when: args.when || 'tomorrow-morning',
+    }, 300000);
+    return ok(
+      `Scheduled "${d.subject || '(no subject)'}" to ${d.to.join(', ')} for ${d.picked || d.when}` +
+        `${d.verified ? ' — confirmed in Scheduled' : ' (NOT confirmed; check the Scheduled view)'}.` +
+        `${d.note ? ` ${d.note}` : ''}`,
+    );
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function handleRenameLabel(args: Record<string, unknown>): Promise<McpToolResult> {
   const from = String(args.from ?? '').trim();
   const to = String(args.to ?? '').trim();
@@ -1575,6 +1690,8 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_attachments: handleAttachments,
   gmail_attachment_download: handleAttachmentDownload,
   gmail_untrash: handleUntrash,
+  gmail_settings: handleSettings,
+  gmail_schedule_send: handleScheduleSend,
   gmail_rename_label: handleRenameLabel,
   gmail_delete_label: handleDeleteLabel,
   gmail_labels: () => handleLabels(),

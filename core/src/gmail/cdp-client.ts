@@ -92,6 +92,14 @@ import { JS_SUMMARY, JS_SEARCH_COUNT, writeSummary, readSummary, type GmailSumma
 import * as Actions from './actions';
 import { extractPreFromOriginalPage, parseRfc822 } from './mime';
 import { startSync, syncProgress, type SyncProgress } from './sync';
+import {
+  FILTERS_MAX,
+  JS_SIGNATURE,
+  JS_VACATION,
+  JS_FORWARDING,
+  JS_FILTERS,
+  type GmailSettings,
+} from './settings';
 
 // ─── ./safety is loaded LAZILY, on purpose ───────────────────────────────────
 //
@@ -2205,6 +2213,94 @@ export async function createLabel(name: string, opts?: { parent?: string }): Pro
   return op('mutate', (cdp) => Labels.createLabel(cdp, name, opts));
 }
 
+/**
+ * Read the account's Gmail settings — signature, vacation responder, forwarding
+ * and filters. Never writes.
+ *
+ * Each settings tab is a separate page load, and Core's own watch/sync drive the
+ * same browser, so every hop re-asserts its hash until it sticks (see
+ * gotoSettings) rather than reading whichever view happened to win.
+ */
+export async function readGmailSettings(opts: { filtersLimit?: number } = {}): Promise<GmailSettings> {
+  const cap = Math.max(0, Math.min(Number(opts.filtersLimit ?? FILTERS_MAX) || FILTERS_MAX, 200));
+  return op('read', async (cdp) => {
+    const gotoSettings = async (tab: string): Promise<boolean> => {
+      for (let i = 0; i < 4; i++) {
+        await cdp.evaluate(`location.hash = ${JSON.stringify('#settings/' + tab)}; return true;`).catch(() => undefined);
+        await sleep(300);
+        await cdp.navigate('https://mail.google.com/mail/u/0/#settings/' + tab).catch(() => undefined);
+        await sleep(i === 0 ? 4500 : 3000);
+        const h = await cdp.evaluate<string>('return String(location.hash || "");').catch(() => '');
+        if (typeof h === 'string' && h.includes('settings/' + tab)) return true;
+      }
+      return false;
+    };
+
+    // ── general: signature + vacation ──
+    let signature = { present: false, text: null as string | null, chars: 0 };
+    let vacation: GmailSettings['vacation'] = { enabled: null, subject: null, message: null, note: 'settings page not reached' };
+    if (await gotoSettings('general')) {
+      const sig = await cdp
+        .evaluate<{ found: boolean; text?: string; chars?: number }>(JS_SIGNATURE)
+        .catch(() => ({ found: false }) as { found: boolean; text?: string; chars?: number });
+      signature = sig?.found
+        ? { present: !!(sig.text && sig.text.length), text: sig.text ?? null, chars: sig.chars ?? 0 }
+        : { present: false, text: null, chars: 0 };
+      const vac = await cdp
+        .evaluate<{ enabled: boolean | null; subject: string | null; message: string | null }>(JS_VACATION)
+        .catch(() => null);
+      vacation = vac
+        ? {
+            enabled: vac.enabled,
+            subject: vac.subject,
+            message: vac.message,
+            ...(vac.enabled === null
+              ? { note: 'the on/off control could not be resolved — this is UNKNOWN, not "off"' }
+              : {}),
+          }
+        : { enabled: null, subject: null, message: null, note: 'the vacation section could not be read' };
+    }
+
+    // ── forwarding ──
+    let forwarding: GmailSettings['forwarding'] = {
+      addresses: [],
+      read: false,
+      note: 'the forwarding page could not be reached — this is UNKNOWN, not "no forwarding"',
+    };
+    if (await gotoSettings('fwdandpop')) {
+      const fw = await cdp.evaluate<{ read: boolean; addresses: string[] }>(JS_FORWARDING).catch(() => null);
+      forwarding = fw?.read
+        ? { addresses: fw.addresses || [], read: true }
+        : { addresses: [], read: false, note: 'the forwarding block could not be read — UNKNOWN, not "none"' };
+    }
+
+    // ── filters ──
+    let filters: GmailSettings['filters'] = { total: 0, returned: 0, capped: false, filters: [] };
+    if (await gotoSettings('filters')) {
+      const fl = await cdp
+        .evaluate<{ total: number; rows: { matches: string; actions: string }[] }>(JS_FILTERS)
+        .catch(() => null);
+      const rows = fl?.rows || [];
+      filters = {
+        total: fl?.total ?? rows.length,
+        returned: Math.min(rows.length, cap),
+        capped: rows.length > cap,
+        filters: rows.slice(0, cap),
+      };
+    }
+
+    return { signature, vacation, forwarding, filters, checkedAt: Date.now() };
+  });
+}
+
+/** Compose and SCHEDULE a message instead of sending now. */
+export async function scheduleSend(
+  input: Compose.ComposeInput,
+  when: Compose.ScheduleWhen,
+): Promise<Compose.ScheduleResult> {
+  return op('mutate', (cdp) => Compose.scheduleSend(cdp as unknown as Compose.ComposeCtx, input, when));
+}
+
 /** Rename a user label (Settings -> Labels -> edit). */
 export async function renameLabel(from: string, to: string): Promise<Labels.LabelOpResult> {
   return op('mutate', (cdp) => Labels.renameLabel(cdp, from, to));
@@ -2435,10 +2531,11 @@ export async function keepSessionWarm(): Promise<{ loggedIn: boolean; warmed: bo
 // surface they cannot legally call, since they have no session to pass.
 
 export type { SendAsIdentity } from './config';
-export type { MailFormat, DraftRow, ForwardResult, SendDraftResult, DeleteDraftResult } from './compose';
+export type { MailFormat, DraftRow, ForwardResult, SendDraftResult, DeleteDraftResult, ScheduleWhen, ScheduleResult } from './compose';
 export type { ApplyResult, RemoveResult, CreateResult, LabelOpResult, MoveResult, LabelInfo } from './labels';
 export type { ActionResult, BulkResult } from './actions';
 export type { SyncProgress, SyncOptions } from './sync';
+export type { GmailSettings } from './settings';
 export type { GmailAttachment, GmailThreadRowFull, GmailThreadFull } from './extractors';
 export type { MimeMessage, MimeAddress, MimeAttachment } from './mime';
 export { BULK_MAX } from './actions';

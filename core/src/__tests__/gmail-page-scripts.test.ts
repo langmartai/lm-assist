@@ -34,6 +34,7 @@ import {
 } from '../gmail/extractors';
 import { JS_LANDMARKS, JS_COMPOSE, JS_BODY_TARGET } from '../gmail/selfcheck';
 import { jsFetchAttachment, jsPullChunk, JS_DROP_ATT } from '../gmail/cdp-client';
+import { JS_SIGNATURE, JS_VACATION, JS_FORWARDING, JS_FILTERS } from '../gmail/settings';
 
 /** The exact wrapper cdp-client.evaluate() uses: `(async()=>{ <expr> })()`. */
 const AsyncFunction = Object.getPrototypeOf(async function () {
@@ -116,3 +117,18 @@ test('jsPullChunk compiles as an async function body', () => {
 test('JS_DROP_ATT compiles as an async function body', () => {
   assert.doesNotThrow(() => new AsyncFunction(JS_DROP_ATT));
 });
+
+// ── settings-audit page scripts ──────────────────────────────────────────────
+// JS_FILTERS carried a backtick inside a comment inside the template literal on
+// first write — the exact failure this file exists to catch, hit again. These
+// four keep it caught at `npm test` instead of in front of a live mailbox.
+for (const [name, script] of [
+  ['JS_SIGNATURE', JS_SIGNATURE],
+  ['JS_VACATION', JS_VACATION],
+  ['JS_FORWARDING', JS_FORWARDING],
+  ['JS_FILTERS', JS_FILTERS],
+] as const) {
+  test(`${name} compiles as an async function body`, () => {
+    assert.doesNotThrow(() => new AsyncFunction(script));
+  });
+}

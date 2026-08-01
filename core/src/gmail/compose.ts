@@ -1684,6 +1684,186 @@ export async function composeAndSend(ctx: ComposeCtx, input: ComposeInput): Prom
   return result;
 }
 
+/**
+ * Schedule-send presets, matched by PREFIX.
+ *
+ * 🔴 Like the snooze picker, each label carries its RESOLVED TIME — measured
+ * "Tomorrow morning Aug 2, 8:00 AM" — so an anchored `^Tomorrow morning$` matches
+ * nothing. Prefixes only.
+ *
+ * Note the two pickers differ in a way that punishes copying a pattern across:
+ * snooze concatenates label and time with NO separator ("TomorrowSat, 8:00 AM"),
+ * this one uses a space. A bare prefix is correct for both; a `\b`-terminated
+ * pattern works here and silently fails for snooze.
+ *
+ * Which presets exist depends on the CURRENT TIME (Gmail drops "Tomorrow morning"
+ * once it is no longer meaningful), so a miss reports what the picker actually
+ * offered instead of claiming the feature is broken.
+ */
+export type ScheduleWhen = 'tomorrow-morning' | 'tomorrow-afternoon' | 'monday-morning';
+
+const SCHEDULE_TEXT: Record<ScheduleWhen, string[]> = {
+  'tomorrow-morning': ['^Tomorrow morning'],
+  'tomorrow-afternoon': ['^Tomorrow afternoon'],
+  'monday-morning': ['^Monday morning'],
+};
+
+export interface ScheduleResult {
+  ok: true;
+  to: string[];
+  subject?: string;
+  when: ScheduleWhen;
+  /** The picker row actually clicked, resolved time included. */
+  picked: string | null;
+  verified: boolean;
+  note?: string;
+}
+
+/** One trusted click — the compose menus gate synthetic events like every other. */
+async function composeTrustedClick(ctx: ComposeCtx, x: number, y: number): Promise<void> {
+  await ctx.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 });
+  await sleep(100);
+  await ctx.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1, buttons: 1 });
+  await sleep(60);
+  await ctx.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1, buttons: 0 });
+  await sleep(500);
+}
+
+/** Locate a visible element by matching its own text, innermost-first. */
+function jsFindByText(patterns: readonly string[], scope: string): string {
+  const j = JSON.stringify;
+  return `
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+  const pats = ${j(patterns)}.map((p) => new RegExp(p, 'i'));
+  const all = [...document.querySelectorAll(${j(scope)})].filter(vis);
+  const seen = all.map((e) => String(e.innerText || '').replace(/\\s+/g, ' ').trim())
+    .filter((t) => t && t.length < 46);
+  const hits = all.filter((e) => {
+    const t = String(e.innerText || '').replace(/\\s+/g, ' ').trim();
+    return pats.some((p) => p.test(t));
+  });
+  if (!hits.length) return { ok: false, miss: 'no-match', seen: [...new Set(seen)].slice(0, 20) };
+  // Innermost match, so the click lands on the row and not a wrapper that spans
+  // several of them.
+  const hit = hits[hits.length - 1];
+  hit.scrollIntoView({ block: 'center' });
+  await new Promise((r) => setTimeout(r, 250));
+  const b = hit.getBoundingClientRect();
+  if (b.width <= 0 || b.height <= 0) return { ok: false, miss: 'no-box' };
+  return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2),
+           text: String(hit.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 44),
+           seen: [...new Set(seen)].slice(0, 20) };`;
+}
+
+interface FoundPoint { ok: boolean; x?: number; y?: number; text?: string; miss?: string; seen?: string[] }
+
+/**
+ * Compose a message and SCHEDULE it instead of sending now.
+ *
+ * MEASURED 2026-08-01: "More send options" (aria-label) opens a menu holding
+ * "Schedule send"; clicking it with NO recipient raises Gmail's own alertdialog
+ * "Please specify at least one recipient", which is how the path was confirmed
+ * reachable before the picker had ever been seen.
+ *
+ * The message is fully composed first — same openPrefilledCompose/fillCompose/
+ * preflight path as composeAndSend — so everything that makes a send correct
+ * (address validation, attachments, body targeting) applies here too. Only the
+ * final click differs.
+ */
+export async function scheduleSend(
+  ctx: ComposeCtx,
+  input: ComposeInput,
+  when: ScheduleWhen,
+): Promise<ScheduleResult> {
+  const wanted = SCHEDULE_TEXT[when];
+  if (!wanted) throw new GmComposeError('INVALID_SCHEDULE', `unknown schedule preset "${when}"`);
+  if (!input.to || !input.to.length) throw new GmComposeError('INVALID_RECIPIENT', 'at least one `to` address is required');
+  validateAddresses('to', input.to);
+  validateAddresses('cc', input.cc);
+  validateAddresses('bcc', input.bcc);
+  const plan = planAttachments(input.attachments);
+
+  await assertDesktopMailUi(ctx);
+  const prefilled = await openPrefilledCompose(ctx, input);
+  const notes = await fillCompose(ctx, input, prefilled);
+  notes.push(
+    ...(await preflight(ctx, {
+      to: input.to,
+      cc: input.cc,
+      bcc: input.bcc,
+      body: input.body,
+      attachments: plan.files.map((f) => f.name),
+    })),
+  );
+
+  // 1. the send-options menu
+  const opts = await ctx.evaluate<FoundPoint>(`
+    const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+    const b = [...document.querySelectorAll('div[role="button"]')].filter(vis)
+      .find((x) => /more send options/i.test(x.getAttribute('aria-label') || ''));
+    if (!b) return { ok: false, miss: 'no-more-send-options' };
+    const r = b.getBoundingClientRect();
+    return { ok: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };`);
+  if (!opts?.ok || typeof opts.x !== 'number' || typeof opts.y !== 'number') {
+    throw new GmComposeError('SCHEDULE_MENU_NOT_FOUND', 'the compose has no "More send options" control');
+  }
+  await composeTrustedClick(ctx, opts.x, opts.y);
+  await sleep(1200);
+
+  // 2. "Schedule send"
+  const entry = await ctx.evaluate<FoundPoint>(jsFindByText(['^Schedule send$'], 'div[role="menuitem"], div[role="button"], span, div'));
+  if (!entry?.ok || typeof entry.x !== 'number' || typeof entry.y !== 'number') {
+    throw new GmComposeError(
+      'SCHEDULE_ENTRY_NOT_FOUND',
+      `the send-options menu has no "Schedule send" row; it offered: ${(entry?.seen || []).join(' | ').slice(0, 200)}`,
+    );
+  }
+  await composeTrustedClick(ctx, entry.x, entry.y);
+  await sleep(2200);
+
+  // 3. the preset
+  const pick = await ctx.evaluate<FoundPoint>(jsFindByText(wanted, 'div[role="dialog"] li, div[role="dialog"] div[role="button"], div[role="menuitem"], div[role="dialog"] span'));
+  if (!pick?.ok || typeof pick.x !== 'number' || typeof pick.y !== 'number') {
+    // Say what the picker DID offer: the presets depend on the time of day, so a
+    // miss is usually "that one is not on the menu right now", not a breakage.
+    throw new GmComposeError(
+      'SCHEDULE_PRESET_NOT_FOUND',
+      `the schedule picker does not offer "${when}" right now; it offered: ${(pick?.seen || []).join(' | ').slice(0, 240)}`,
+    );
+  }
+  const picked = pick.text || null;
+  await composeTrustedClick(ctx, pick.x, pick.y);
+  await sleep(2500);
+
+  // 4. verify from #scheduled, not from the click
+  let verified = false;
+  try {
+    await gotoHash(ctx, '#scheduled', S.listReady, 12000);
+    await sleep(1200);
+    const want = String(input.subject || '').trim();
+    verified = await ctx.evaluate<boolean>(`
+      const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+      const subs = [...document.querySelectorAll('tr.zA .bog')].filter(vis)
+        .map((e) => String(e.innerText || '').trim());
+      return subs.some((t) => t === ${JSON.stringify(String(input.subject || '').trim())});`);
+    void want;
+  } catch {
+    /* verification is best-effort; the note below says so */
+  }
+
+  const result: ScheduleResult = {
+    ok: true,
+    to: input.to,
+    subject: input.subject,
+    when,
+    picked,
+    verified,
+  };
+  if (!verified) notes.push('scheduled, but no matching row was found in #scheduled — confirm there');
+  if (notes.length) result.note = notes.join('; ');
+  return result;
+}
+
 /** Compose and SAVE AS DRAFT — nothing is delivered. */
 export async function composeDraft(ctx: ComposeCtx, input: ComposeInput): Promise<DraftResult> {
   validateAddresses('to', input.to);

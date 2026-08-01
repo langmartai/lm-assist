@@ -23,9 +23,11 @@
  *   POST /gmail/attachment/download   { threadId, name?|index?, saveDir?, inline? } — BYTES to disk
  *   GET  /gmail/unread?limit=         shorthand for is:unread
  *   GET  /gmail/labels                labels from the left nav
+ *   GET  /gmail/settings?filters=     signature/vacation/forwarding/filters — READ ONLY
  *   POST /gmail/sync                  { days?, label? } — fill the window cache
  *   GET  /gmail/sync-status           what the cache holds + how far back
  *   POST /gmail/send                  { to, subject, body, format? }
+ *   POST /gmail/schedule-send         { to, subject, body, when } — send LATER
  *   POST /gmail/reply                 { threadId, body, format? }
  *   POST /gmail/draft                 { to, subject, body, format? } — save, do not send
  *   POST /gmail/archive               { threadId } — remove the Inbox label
@@ -77,6 +79,8 @@ import {
   downloadAttachment,
   untrashThread,
   renameLabel,
+  scheduleSend,
+  readGmailSettings,
   deleteLabel,
   syncWindow,
   searchThreads,
@@ -396,6 +400,20 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
             success: true,
             data: await downloadAttachment(t.id, { name, index, saveDir, inline: b.inline === true }),
           };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // GET /gmail/settings?filters=<n> — READ ONLY audit of the account settings.
+    {
+      method: 'GET',
+      pattern: /^\/gmail\/settings$/,
+      handler: async (req: ParsedRequest) => {
+        const filtersLimit = clampInt(req.query?.filters, 40, 0, 200);
+        try {
+          return { success: true, data: await readGmailSettings({ filtersLimit }) };
         } catch (e) {
           return fail(e);
         }
@@ -765,6 +783,41 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
             attachments: att && att.length ? att : undefined,
           });
           return { success: true, data: { ...sent, format: f.format } };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/schedule-send { to, subject, body, when, cc?, bcc?, format?, attachments? }
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/schedule-send$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const to = Array.isArray(b.to) ? b.to.map((x) => String(x)) : typeof b.to === 'string' ? [b.to] : [];
+        if (!to.length) return { success: false, error: '`to` is required (string or array)' };
+        const when = String(b.when || 'tomorrow-morning');
+        const allowed = ['tomorrow-morning', 'tomorrow-afternoon', 'monday-morning'];
+        if (!allowed.includes(when)) {
+          return { success: false, error: `unknown \`when\` "${when}" — use ${allowed.join(', ')}` };
+        }
+        try {
+          return {
+            success: true,
+            data: await scheduleSend(
+              {
+                to,
+                cc: Array.isArray(b.cc) ? b.cc.map((x) => String(x)) : undefined,
+                bcc: Array.isArray(b.bcc) ? b.bcc.map((x) => String(x)) : undefined,
+                subject: typeof b.subject === 'string' ? b.subject : '',
+                body: typeof b.body === 'string' ? b.body : '',
+                format: b.format === 'html' || b.format === 'markdown' || b.format === 'text' ? b.format : undefined,
+                attachments: Array.isArray(b.attachments) ? b.attachments.map((x) => String(x)) : undefined,
+              },
+              when as 'tomorrow-morning' | 'tomorrow-afternoon' | 'monday-morning',
+            ),
+          };
         } catch (e) {
           return fail(e);
         }

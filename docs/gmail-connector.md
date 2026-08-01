@@ -170,7 +170,7 @@ exists for). Trust `gmail_status`, not the pid.
 
 ## Tools & scopes
 
-32 tools. Reads observe the mailbox; writes send real mail or mutate threads;
+35 tools. Reads observe the mailbox; writes send real mail or mutate threads;
 `gmail_login` drives interactive auth.
 
 | Tool | Scope | Purpose |
@@ -187,10 +187,12 @@ exists for). Trust `gmail_status`, not the pid.
 | `gmail_attachments` | read | attachment metadata on a thread (names/types, not bytes) |
 | `gmail_attachment_download` | read | download one attachment's BYTES to disk; returns the path, not the file |
 | `gmail_selfcheck` | read | internal validation sweep over the endpoints |
+| `gmail_settings` | read | audit signature / vacation / forwarding / filters — never writes |
 | `gmail_sync` / `gmail_sync_status` | read | populate + report on the local cache |
 | `gmail_send` | write | compose and send a new message (attachments supported) |
 | `gmail_reply` | write | reply to an existing thread |
 | `gmail_forward` | write | forward a thread to new recipients |
+| `gmail_schedule_send` | write | compose and send LATER (Gmail's Schedule send) |
 | `gmail_draft` | write | compose and save a draft, sending nothing |
 | `gmail_archive` · `gmail_trash` · `gmail_spam` | write | move a thread out of the inbox |
 | `gmail_untrash` | write | restore a thread OUT of Trash (only while it is still there) |
@@ -209,8 +211,8 @@ by every conversation. Its trigger words live on `gmail_search`.
 `GET /gmail/status` · `GET /gmail/summary?window=&refresh=` · `GET /gmail/threads?limit=&label=` ·
 `GET /gmail/thread?id=` · `GET /gmail/search?q=&limit=` · `GET /gmail/search-local` ·
 `GET /gmail/unread?limit=` · `GET /gmail/labels` · `GET /gmail/aliases` · `GET /gmail/drafts` ·
-`GET /gmail/attachments` · `POST /gmail/attachment/download` · `GET /gmail/selfcheck` · `GET /gmail/sync-status` · `POST /gmail/sync` ·
-`POST /gmail/send` · `POST /gmail/reply` · `POST /gmail/forward` · `POST /gmail/draft` ·
+`GET /gmail/attachments` · `POST /gmail/attachment/download` · `GET /gmail/settings?filters=` · `GET /gmail/selfcheck` · `GET /gmail/sync-status` · `POST /gmail/sync` ·
+`POST /gmail/send` · `POST /gmail/schedule-send` · `POST /gmail/reply` · `POST /gmail/forward` · `POST /gmail/draft` ·
 `POST /gmail/draft/send` · `POST /gmail/draft/delete` · `POST /gmail/triage` ·
 `POST /gmail/archive` · `POST /gmail/trash` · `POST /gmail/untrash` · `POST /gmail/spam` · `POST /gmail/mark-read` ·
 `POST /gmail/star` · `POST /gmail/move-to` · `POST /gmail/label/apply` ·
@@ -286,6 +288,33 @@ Both dialogs are `role="alertdialog"`: edit shows a pre-filled input with **Canc
 shows `Delete the label "X"?` with **Cancel/Delete**. Deleting a label does **not** delete mail.
 
 A nested label's real name is its FULL path (`Parent/Child`) — that is what both verbs expect.
+
+## Schedule send and the settings audit — measured 2026-08-01
+
+**Schedule send** is `More send options` (aria-label) -> `Schedule send` -> a preset. Confirmed
+reachable before the picker had ever been seen: clicking it with no recipient raises Gmail's own
+`Please specify at least one recipient` dialog.
+
+🔴 **The two time pickers format their rows DIFFERENTLY**, which punishes copying a pattern across:
+
+| picker | measured row text |
+|---|---|
+| snooze | `TomorrowSat, 8:00 AM` — **no separator** |
+| schedule send | `Tomorrow morning Aug 2, 8:00 AM` — with a space |
+
+A bare prefix (`^Tomorrow`) matches both. A `\b`-terminated pattern works for schedule send and
+**silently fails** for snooze, because in `TomorrowSat` the `w`→`S` junction is not a word boundary.
+Which presets exist also depends on the time of day, so a miss reports what the picker offered.
+
+**`gmail_settings`** is READ ONLY by design — every write there changes how the mailbox behaves for
+everyone who mails the operator. It reads signature, vacation responder, forwarding and filters, via
+aria-label anchors (`aria-label="Signature"`, `aria-label="Vacation responder"`) rather than hashable
+class names.
+
+🔴 **It distinguishes "none configured" from "could not read".** An unexpected forwarding address is
+a classic account-compromise signal, so reporting an empty list for an unreadable page would be the
+most dangerous possible output — `forwarding.read` and `vacation.enabled: null` carry that. Filters
+are capped (default 40) with the true `total` always reported; this account has 275.
 
 ## Limits and caveats
 
