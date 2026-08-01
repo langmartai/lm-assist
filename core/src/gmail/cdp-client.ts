@@ -2293,6 +2293,12 @@ export async function readGmailSettings(opts: { filtersLimit?: number } = {}): P
   });
 }
 
+/** Cancel a scheduled send — the message returns to Drafts, undelivered. */
+export async function cancelScheduledSend(threadId: string): Promise<Compose.CancelScheduleResult> {
+  const id = requireThreadId(threadId);
+  return op('mutate', (cdp) => Compose.cancelScheduledSend(cdp as unknown as Compose.ComposeCtx, id));
+}
+
 /** Compose and SCHEDULE a message instead of sending now. */
 export async function scheduleSend(
   input: Compose.ComposeInput,
@@ -2557,7 +2563,7 @@ export async function keepSessionWarm(): Promise<{ loggedIn: boolean; warmed: bo
 // surface they cannot legally call, since they have no session to pass.
 
 export type { SendAsIdentity } from './config';
-export type { MailFormat, DraftRow, ForwardResult, SendDraftResult, DeleteDraftResult, ScheduleWhen, ScheduleResult } from './compose';
+export type { MailFormat, DraftRow, ForwardResult, SendDraftResult, DeleteDraftResult, ScheduleWhen, ScheduleResult, CancelScheduleResult } from './compose';
 export type { ApplyResult, RemoveResult, CreateResult, LabelOpResult, MoveResult, LabelInfo } from './labels';
 export type { ActionResult, BulkResult } from './actions';
 export type { SyncProgress, SyncOptions } from './sync';

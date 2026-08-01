@@ -355,6 +355,22 @@ export const gmailDeleteLabelToolDef = {
   },
 };
 
+export const gmailScheduleCancelToolDef = {
+  name: 'gmail_schedule_cancel',
+  description:
+    'Cancel a scheduled send before it goes out. The message returns to Drafts, UNDELIVERED. ' +
+    'Trigger words: "cancel that scheduled email", "don\'t send it after all", "un-schedule it", ' +
+    '"stop that from sending". Takes the threadId from gmail_list_threads with label "scheduled". ' +
+    'Only works while it is still pending — once Gmail sends it, it cannot be recalled.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      threadId: { type: 'string', description: 'Thread id from the scheduled view.' },
+    },
+    required: ['threadId'],
+  },
+};
+
 export const gmailDraftSendToolDef = {
   name: 'gmail_draft_send',
   description:
@@ -730,6 +746,7 @@ export const GMAIL_TOOL_DEFS = [
   gmailSyncStatusToolDef,
   gmailAttachmentsToolDef,
   gmailAttachmentDownloadToolDef,
+  gmailScheduleCancelToolDef,
   gmailDraftSendToolDef,
   gmailDraftDeleteToolDef,
   gmailUntrashToolDef,
@@ -1328,6 +1345,22 @@ async function handleDeleteLabel(args: Record<string, unknown>): Promise<McpTool
   }
 }
 
+async function handleScheduleCancel(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = String(args.threadId ?? '').trim();
+  if (!threadId) return err('threadId is required (list label "scheduled" to find one).');
+  try {
+    const d = await workerPostLong<{ threadId: string; verified: boolean; note?: string }>(
+      '/gmail/schedule-cancel', { threadId }, 300000);
+    return ok(
+      `Cancelled the scheduled send for ${d.threadId}` +
+        `${d.verified ? ' — confirmed gone from Scheduled; it is back in Drafts, undelivered' : ' (NOT confirmed — verify it will not go out)'}.` +
+        `${d.note ? ` ${d.note}` : ''}`,
+    );
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function handleDraftSend(args: Record<string, unknown>): Promise<McpToolResult> {
   const draftId = String(args.draftId ?? '').trim();
   if (!draftId) return err('draftId is required (list drafts with gmail_drafts).');
@@ -1745,6 +1778,7 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_sync_status: () => handleSyncStatus(),
   gmail_attachments: handleAttachments,
   gmail_attachment_download: handleAttachmentDownload,
+  gmail_schedule_cancel: handleScheduleCancel,
   gmail_draft_send: handleDraftSend,
   gmail_draft_delete: handleDraftDelete,
   gmail_untrash: handleUntrash,

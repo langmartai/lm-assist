@@ -1864,6 +1864,108 @@ export async function scheduleSend(
   return result;
 }
 
+export interface CancelScheduleResult {
+  ok: true;
+  threadId: string;
+  verified: boolean;
+  note?: string;
+}
+
+/**
+ * Cancel a scheduled send — the message returns to Drafts, undelivered.
+ *
+ * 🔴 MEASURED 2026-08-02: the LIST toolbar in #scheduled has no cancel affordance
+ * at all (it offers Mark as unread / Snooze / Add to Tasks / Move to Inbox /
+ * Labels). "Cancel send" exists ONLY once the message is OPEN. So selecting the
+ * row — the pattern untrash and the triage verbs use — cannot work here; the row
+ * has to be clicked open first.
+ *
+ * Opening it by URL is equally out: the opened hash is
+ * `#scheduled/<KtbxL...>`, an id unrelated to the legacy thread id, so there is
+ * nothing to construct a URL from. Same conclusion openDraft reached for drafts.
+ * Land on the list, find the row by legacy id, click it.
+ */
+export async function cancelScheduledSend(ctx: ComposeCtx, threadId: string): Promise<CancelScheduleResult> {
+  const id = String(threadId || '').trim();
+  if (!id) throw new GmComposeError('INVALID_THREAD', 'threadId is required');
+
+  await assertDesktopMailUi(ctx);
+  await gotoHash(ctx, '#scheduled', S.listReady, 15000);
+
+  const found = await evalPage<{ hit: boolean; rows: number; scrolled: number }>(
+    ctx,
+    `const want = ${q(id)};
+     const rowFor = () => __visAll(${q(S.row)}).find((tr) => {
+       const el = tr.querySelector('[data-legacy-thread-id]');
+       return !!el && el.getAttribute('data-legacy-thread-id') === want;
+     });
+     let scrolled = 0;
+     let row = rowFor();
+     // Virtualised list: a row below the fold is simply absent from the DOM.
+     while (!row && scrolled < 6) {
+       const sc = document.querySelector('div[role="main"]') || document.scrollingElement;
+       if (!sc) break;
+       sc.scrollBy(0, sc.clientHeight * 1.5);
+       await new Promise((r) => setTimeout(r, 700));
+       scrolled++;
+       row = rowFor();
+     }
+     if (!row) return { ok: true, hit: false, rows: __visAll(${q(S.row)}).length, scrolled };
+     const subj = row.querySelector('.bog') || row;
+     subj.click();
+     return { ok: true, hit: true, rows: __visAll(${q(S.row)}).length, scrolled };`,
+  );
+  if (!found.hit) {
+    throw new GmComposeError(
+      'SCHEDULED_NOT_FOUND',
+      `thread ${id} is not in #scheduled (${found.rows} row(s) rendered after ${found.scrolled} scroll(s)) — ` +
+        'it may already have been sent, or was never scheduled',
+    );
+  }
+  await sleep(2500);
+
+  // "Cancel send" gates on isTrusted like every other Gmail control, so this
+  // takes the same trusted-click route the snooze/labels menus needed.
+  const btn = await ctx.evaluate<{ ok: boolean; x?: number; y?: number; seen?: string[] }>(`
+    const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+    const all = [...document.querySelectorAll('div[role="button"],button,span[role="link"]')].filter(vis);
+    const hit = all.find((b) => /^cancel send$/i.test(String(b.innerText || b.getAttribute('aria-label') || '').trim()));
+    if (!hit) return { ok: false, seen: all.map((b) => String(b.innerText || '').trim()).filter(Boolean).slice(0, 18) };
+    hit.scrollIntoView({ block: 'center' });
+    await new Promise((r) => setTimeout(r, 200));
+    const b = hit.getBoundingClientRect();
+    return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };`);
+  if (!btn?.ok || typeof btn.x !== 'number' || typeof btn.y !== 'number') {
+    throw new GmComposeError(
+      'CANCEL_SEND_NOT_FOUND',
+      `the opened message has no "Cancel send" control; it offered: ${(btn?.seen || []).join(' | ').slice(0, 200)}`,
+    );
+  }
+  await composeTrustedClick(ctx, btn.x, btn.y);
+  await sleep(2500);
+
+  // Verify by ABSENCE from #scheduled — a cancel that reports success while the
+  // message still goes out is the failure a caller cannot afford to miss.
+  let verified = false;
+  try {
+    await gotoHash(ctx, '#scheduled', S.listReady, 12000);
+    await sleep(1200);
+    verified = await ctx.evaluate<boolean>(`
+      const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+      const ids = [...document.querySelectorAll('tr.zA [data-legacy-thread-id]')].filter(vis)
+        .map((e) => e.getAttribute('data-legacy-thread-id'));
+      return !ids.includes(${q(id)});`);
+  } catch {
+    /* best effort — the note says so */
+  }
+
+  const out: CancelScheduleResult = { ok: true, threadId: id, verified };
+  out.note = verified
+    ? 'cancelled — the thread is gone from #scheduled and the message is back in Drafts, undelivered'
+    : 'clicked "Cancel send" but the thread could still be read in #scheduled; confirm before assuming it will not go out';
+  return out;
+}
+
 /** Compose and SAVE AS DRAFT — nothing is delivered. */
 export async function composeDraft(ctx: ComposeCtx, input: ComposeInput): Promise<DraftResult> {
   validateAddresses('to', input.to);

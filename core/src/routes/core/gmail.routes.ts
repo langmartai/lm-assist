@@ -28,6 +28,7 @@
  *   GET  /gmail/sync-status           what the cache holds + how far back
  *   POST /gmail/send                  { to, subject, body, format? }
  *   POST /gmail/schedule-send         { to, subject, body, when } — send LATER
+ *   POST /gmail/schedule-cancel       { threadId } — un-schedule; back to Drafts
  *   POST /gmail/reply                 { threadId, body, format? }
  *   POST /gmail/draft                 { to, subject, body, format? } — save, do not send
  *   POST /gmail/archive               { threadId } — remove the Inbox label
@@ -81,6 +82,7 @@ import {
   untrashThread,
   renameLabel,
   scheduleSend,
+  cancelScheduledSend,
   readGmailSettings,
   deleteLabel,
   syncWindow,
@@ -853,6 +855,22 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
               when as 'tomorrow-morning' | 'tomorrow-afternoon' | 'monday-morning',
             ),
           };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/schedule-cancel { threadId } — un-schedule a pending send.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/schedule-cancel$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        try {
+          return { success: true, data: await cancelScheduledSend(t.id) };
         } catch (e) {
           return fail(e);
         }
