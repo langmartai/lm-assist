@@ -170,7 +170,7 @@ exists for). Trust `gmail_status`, not the pid.
 
 ## Tools & scopes
 
-35 tools. Reads observe the mailbox; writes send real mail or mutate threads;
+37 tools. Reads observe the mailbox; writes send real mail or mutate threads;
 `gmail_login` drives interactive auth.
 
 | Tool | Scope | Purpose |
@@ -194,6 +194,7 @@ exists for). Trust `gmail_status`, not the pid.
 | `gmail_forward` | write | forward a thread to new recipients |
 | `gmail_schedule_send` | write | compose and send LATER (Gmail's Schedule send) |
 | `gmail_draft` | write | compose and save a draft, sending nothing |
+| `gmail_draft_send` · `gmail_draft_delete` | write | send or discard a saved draft — completes the lifecycle |
 | `gmail_archive` · `gmail_trash` · `gmail_spam` | write | move a thread out of the inbox |
 | `gmail_untrash` | write | restore a thread OUT of Trash (only while it is still there) |
 | `gmail_mark_read` · `gmail_star` | write | per-thread state |
@@ -339,6 +340,30 @@ is down the relay has nowhere to land and the connector errors with 'MCP down', 
 Why it escaped testing: the tools were exercised through their REST routes, which never build the
 MCP server. Only an MCP request does. `core/src/__tests__/mcp-tool-scopes.test.ts` now runs the
 assertion at `npm test`.
+
+## 🔴 `loggedIn: false` used to mean two different things
+
+`GET /gmail/status` probes the live browser over CDP. When that probe failed it
+reported `loggedIn: false` — which collapsed two states an operator must tell apart:
+
+| what actually happened | what to do |
+|---|---|
+| the browser process is dead, credential intact | **relaunch** (`gmail_login`, no human needed) |
+| the profile is genuinely signed out | **sign in** (a human types credentials) |
+
+MEASURED 2026-08-01: Core restarts kill the Gmail browser on Linux (Chrome is a
+child in Core's cgroup; Windows re-parents and survives). Both 117 and 123 then read
+`loggedIn:false` — yet 123's profile was fully authenticated and `gmail_login`
+restored it in SECONDS with no interaction. The credential had never gone anywhere.
+
+Status now answers with four fields instead of one:
+
+- `loggedIn` — `true` / `false` / **`null` when UNKNOWN** (no browser to ask).
+  A caller treating `null` as "signed out" sends a human to re-authenticate for nothing.
+- `browserRunning` — was the CDP probe reachable at all
+- `credentialOnDisk` — does the driver profile hold a persisted Google session
+  (pure disk state, answers with no browser running)
+- `needsAction` — `relaunch` / `sign-in` / `null`, so the caller need not infer it
 
 ## Limits and caveats
 

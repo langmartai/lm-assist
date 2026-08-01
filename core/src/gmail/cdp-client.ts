@@ -2311,6 +2311,32 @@ export async function deleteLabel(name: string): Promise<Labels.LabelOpResult> {
   return op('mutate', (cdp) => Labels.deleteLabel(cdp, name));
 }
 
+/**
+ * Does the driver profile hold a persisted Google session?
+ *
+ * Pure DISK state: it answers with no browser running, which is the whole point.
+ * A dead browser leaves the credential completely intact — measured 2026-08-01,
+ * when a node reporting loggedIn:false was restored by gmail_login in seconds with
+ * no interaction at all. Without this, "the browser died" and "you are signed out"
+ * look identical and an operator gets sent to re-authenticate for nothing.
+ *
+ * Chrome keeps the session in the profile's Cookies DB. Its PRESENCE and non-zero
+ * size is the signal; the contents are never read.
+ */
+export function gmailProfileHasCredential(profile = 'gmail'): boolean {
+  const safe = String(profile || 'gmail').replace(/[^\w.-]+/g, '_') || 'gmail';
+  const dir = path.join(GM_DATA_DIR, 'login-profile', safe);
+  for (const rel of ['Default/Cookies', 'Default/Network/Cookies']) {
+    try {
+      const st = fs.statSync(path.join(dir, rel));
+      if (st.isFile() && st.size > 0) return true;
+    } catch {
+      /* absent — try the next known location */
+    }
+  }
+  return false;
+}
+
 /** Restore a thread from Trash — see Labels.untrashThread for why this is not
  *  just moveToLabel(id, 'inbox'). */
 export async function untrashThread(threadId: string): Promise<Labels.MoveResult> {
