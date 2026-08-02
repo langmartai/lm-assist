@@ -57,6 +57,7 @@ import {
   listDrafts,
   deleteDraft,
   starThread,
+  starState,
   gmailSummary,
   searchThreads,
   readThread,
@@ -819,28 +820,41 @@ async function checkDraftRoundTrip(): Promise<string> {
   }
 }
 
-/*
- * 🔴 NO star-toggle check, deliberately — three attempts, three different failures,
- * all on a HEALTHY mailbox:
+/**
+ * Star toggle, verified from the STAR CONTROL'S OWN aria-label.
  *
- *   1. listThreads({label:'starred'}) -> routes to #label/starred, a view Gmail
- *      does not have (its starred view is #starred). PAGE_NOT_READY.
- *   2. searchThreads('is:starred')    -> the search INDEX lags the DOM, so an
- *      immediate re-read of a toggle that visibly took reads as unchanged.
- *   3. same search                    -> #search/is%3Astarred did not render
- *      within the wait, even from a freshly reset page.
+ * 🔴 Restored after three failures. Every earlier attempt verified on a SLOWER
+ * basis than the action and went red on a healthy mailbox: `label:'starred'`
+ * routes to a view Gmail does not have; `is:starred` search has an index that lags
+ * the DOM; that search view sometimes will not render. The action is a click on a
+ * row, so the verification has to be in the same DOM pass — which is exactly what
+ * the control's aria-label ("Starred" / "Not starred") gives, measured 2026-08-03.
  *
- * The common thread: the ACTION is a click on a row, and every verification route
- * available is slower and less reliable than the action itself. A check that
- * verifies on a weaker basis than the thing it tests will go red on a healthy
- * mailbox — which is precisely the crying-wolf failure this whole harness exists
- * to prevent, and worse than having no check at all.
- *
- * gmail_star stays covered by gmail_bulk's own star/unstar path and by manual
- * verification. If someone wants it here, it needs a verification basis as fast as
- * the click — reading the row's own star state in the same DOM pass, not a
- * navigation.
+ * Restores the ORIGINAL state: reading first means a star the user set is never
+ * silently cleared.
  */
+async function checkStarToggle(): Promise<string> {
+  const rows = await listThreads({ limit: 10, label: 'inbox' });
+  const target = safeToOpen(rows);
+  if (!target?.threadId) return 'SKIPPED — no safe inbox thread to toggle';
+  const id = target.threadId;
+
+  const before = await starState(id);
+  if (before === null) throw new SoftFail(`could not read the star control for ${id}`);
+  try {
+    await starThread(id, !before);
+    const after = await starState(id);
+    if (after === null) throw new SoftFail('star state unreadable after the toggle');
+    if (after === before) throw new Error(`star toggle did not take on ${id} (still ${before ? 'starred' : 'unstarred'})`);
+    return `toggled ${id} ${before ? 'off' : 'on'} and restored it, verified via the control's own aria-label`;
+  } finally {
+    try {
+      await starThread(id, before); // exact restore, not "unstar"
+    } catch {
+      /* the body reports if the toggle itself failed */
+    }
+  }
+}
 
 /** Read-only surface probes: these tools must at least answer coherently. */
 async function checkReadSurface(): Promise<string> {
@@ -960,6 +974,7 @@ export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheck
     checks.push(await gated('feature.read_surface', 'critical', checkReadSurface));
     checks.push(await gated('feature.label_roundtrip', 'critical', checkLabelRoundTrip));
     checks.push(await gated('feature.draft_roundtrip', 'critical', checkDraftRoundTrip));
+  checks.push(await gated('feature.star_toggle', 'warn', checkStarToggle));
     }
 
   if (opts?.deep === true) {

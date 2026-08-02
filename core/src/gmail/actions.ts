@@ -1493,6 +1493,36 @@ export async function snoozeThread(
   });
 }
 
+/**
+ * Is this thread starred? Asked of the STAR CONTROL itself.
+ *
+ * 🔴 MEASURED 2026-08-03: the row's star carries its own state in aria-label —
+ * "Not starred" / "Starred". That is the native answer, available in the same DOM
+ * pass as the click.
+ *
+ * Everything else that was tried verified on a SLOWER basis than the action and
+ * failed on a healthy mailbox: `label:'starred'` routes to #label/starred, a view
+ * Gmail does not have; `is:starred` search has an index that lags the DOM, so a
+ * toggle that visibly took reads as unchanged; and that search view sometimes will
+ * not render at all. A check must verify at least as fast as the thing it tests.
+ *
+ * (For comparison: `unread` has NO native signal — measured, the row exposes no
+ * aria-label for it — so that one legitimately still reads the `zE` class.)
+ */
+export async function readStarState(cdp: Cdp, threadId: string): Promise<boolean | null> {
+  const id = String(threadId || "").trim();
+  if (!id) throw new GmError("INVALID_THREAD", "threadId is required");
+  if (!(await ensureRowInSomeList(cdp, id))) return null;
+  const j = JSON.stringify;
+  return cdp.evaluate<boolean | null>(`${JS_PRE}
+    const row = __row(${j(id)});
+    if (!row) return null;
+    const el = [...row.querySelectorAll('[aria-label]')].filter(__shown)
+      .find((e) => /^(not )?starred$/i.test((e.getAttribute('aria-label') || '').trim()));
+    if (!el) return null;
+    return /^starred$/i.test((el.getAttribute('aria-label') || '').trim());`);
+}
+
 /** Hard cap — a triage sweep, not a mailbox migration. */
 export const BULK_MAX = 25;
 

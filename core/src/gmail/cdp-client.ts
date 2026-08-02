@@ -2387,6 +2387,12 @@ export async function scheduleSend(
  * Supersedes both the chip scrape (returns nothing) and the label INDEX below
  * (lags, bounded per label, minutes to build). One menu open, always current.
  */
+/** Is this thread starred? Read from the star control's own aria-label. */
+export async function starState(threadId: string): Promise<boolean | null> {
+  const id = requireThreadId(threadId);
+  return op('read', (cdp) => Actions.readStarState(cdp, id));
+}
+
 export async function threadLabelsLive(threadId: string): Promise<string[]> {
   const id = requireThreadId(threadId);
   return op('read', (cdp) => Labels.readThreadLabelsViaMenu(cdp, id));

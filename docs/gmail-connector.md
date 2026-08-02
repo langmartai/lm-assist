@@ -500,6 +500,26 @@ LAGS and is capped per label, and reports `builtAt` / `labelsWalked` / `perLabel
 failed labels with every answer so a partial index cannot present itself as
 complete. Prefer the menu for a single thread.
 
+## Prefer Gmail's OWN control over inferring state
+
+The recurring lesson of this connector: when you need a piece of state, find the
+native control that already states it, rather than deriving it from chips, classes
+or a second query. Three cases, all measured:
+
+| state | inferred (failed) | native control (works) |
+|---|---|---|
+| importance | no marker rendered on the row | the More menu offers only the INVERSE action |
+| thread labels | row/thread chips return `[]` | Labels menu — `menuitemcheckbox` + `aria-checked` |
+| starred | `#label/starred` (no such view); `is:starred` (index lags; view won't render) | the star control's own `aria-label`: `Starred` / `Not starred` |
+
+🔴 **A check must verify at least as fast as the action it performs.** The star
+check failed three times because a row CLICK was being verified by a SEARCH. The
+control's aria-label is in the same DOM pass, so the check now passes.
+
+⚠️ Not everything has one. **`unread` has NO native signal** — measured, the row
+exposes no `aria-label` for it — so reading `tr.classList.contains('zE')` there is
+correct rather than lazy. Checked, not assumed.
+
 ## Limits and caveats
 
 - **The thread list is virtualized.** A read returns the most-recent RENDERED threads
