@@ -462,6 +462,44 @@ async function openLiveSession(base: string): Promise<Cdp | null> {
   return null;
 }
 
+/**
+ * Last rung of the recovery ladder: restart the browser itself.
+ *
+ * openSession already retried and recycled the TAB. When that fails the old code
+ * threw BROWSER_UNRESPONSIVE saying "the browser itself needs restarting" — and
+ * then made the caller do it. Every Gmail tool call died on a condition the
+ * connector could fix in a couple of seconds.
+ *
+ * 🔴 RATE LIMITED, and deliberately not clever. A relaunch loop against a browser
+ * that cannot start would spawn Chrome processes as fast as calls arrive, which is
+ * far worse than a clear error. One relaunch per cooldown, process-wide.
+ *
+ * 🔴 Only when the profile already holds a session. Relaunching a signed-OUT
+ * profile just parks a browser on a Google login page that nobody is looking at,
+ * turning a clear "sign in" into a silent hang. That case must keep telling the
+ * truth.
+ */
+const RELAUNCH_COOLDOWN_MS = 60_000;
+let lastRelaunchAt = 0;
+
+async function relaunchBrowser(): Promise<boolean> {
+  const since = Date.now() - lastRelaunchAt;
+  if (since < RELAUNCH_COOLDOWN_MS) return false;
+  if (!gmailProfileHasCredential()) return false;
+  lastRelaunchAt = Date.now();
+  try {
+    // Lazy import: login.ts pulls in the browser launcher, and a static import
+    // here would make cdp-client -> login -> cdp-client circular.
+    const { gmailLogin } = await import('./login');
+    const r = (await gmailLogin({})) as { ok?: boolean };
+    if (r?.ok !== true) return false;
+    console.log('[gmail] browser was unreachable — relaunched it automatically');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function openSession(): Promise<{ cdp: Cdp; close(): void }> {
   const base = resolveCdpBase();
 
@@ -470,8 +508,24 @@ async function openSession(): Promise<{ cdp: Cdp; close(): void }> {
   const first = await openLiveSession(base);
   if (first) return { cdp: first, close: () => first.close() };
 
-  await recycleGmailTab(base);
-  const cdp = await openLiveSession(base);
+  // Rung 2: recycle the tab. This THROWS BROWSER_NOT_RUNNING when nothing is
+  // listening at all — which is a relaunchable condition, not a dead end, so it
+  // must not escape before rung 3 has had a turn.
+  let recycleErr: unknown = null;
+  try {
+    await recycleGmailTab(base);
+  } catch (e) {
+    recycleErr = e;
+  }
+  let cdp = recycleErr ? null : await openLiveSession(base);
+
+  // Rung 3: restart the browser.
+  if (!cdp && (await relaunchBrowser())) {
+    await sleep(2500);
+    cdp = await openLiveSession(base);
+  }
+  if (!cdp && recycleErr && !(recycleErr instanceof GmError)) throw recycleErr;
+  if (!cdp && recycleErr) throw recycleErr;
   if (!cdp) {
     throw new GmError(
       'BROWSER_UNRESPONSIVE',

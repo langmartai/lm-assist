@@ -442,6 +442,32 @@ different ways on a healthy mailbox (`#label/starred` does not exist; the
 action is a row click and every verification route available is slower than it —
 a check that verifies on a weaker basis than the thing it tests goes red on a
 healthy mailbox, which is worse than no check.
+## Self-healing on every Gmail call
+
+`openSession()` — the choke point every Gmail tool goes through — now has a
+three-rung recovery ladder:
+
+1. open a session and prove the page ANSWERS (a wedged renderer accepts the
+   debugger socket and replies to nothing, so every op would hang)
+2. **recycle the tab** and retry
+3. **relaunch the browser** and retry
+
+Rung 3 is new. The old code threw `BROWSER_UNRESPONSIVE` saying *"the browser
+itself needs restarting"* — and then made the caller do it. On Linux the browser
+dies with every Core restart, so that was a routine, self-inflicted failure.
+
+Verified: Chrome killed outright, then an ordinary `gmail_list_threads` with no
+manual step → 3 threads returned in 28s, one `relaunched it automatically` logged.
+
+🔴 **Rate limited to one relaunch per 60s, process-wide.** A relaunch loop against
+a browser that cannot start would spawn Chrome as fast as calls arrive — far worse
+than a clear error. Verified: browser killed twice and three rapid calls fired, ONE
+relaunch total, no process storm.
+
+🔴 **Only when the profile already holds a session.** Relaunching a signed-OUT
+profile parks a browser on a Google login page nobody is watching, turning a clear
+"sign in" into a silent hang. That case still tells the truth.
+
 ## Limits and caveats
 
 - **The thread list is virtualized.** A read returns the most-recent RENDERED threads
