@@ -355,6 +355,31 @@ export const gmailDeleteLabelToolDef = {
   },
 };
 
+export const gmailBulkToolDef = {
+  name: 'gmail_bulk',
+  description:
+    'Apply ONE action to MANY threads at once: archive, trash, read, unread, star, unstar. ' +
+    'Trigger words: "archive all of these", "mark them all read", "star these three", "bin the lot". ' +
+    'Capped at 25 threads per call — ids beyond the cap are REPORTED as failures, never silently ' +
+    'dropped. Only threads whose change was CONFIRMED count as succeeded.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      threadIds: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Thread ids from gmail_list_threads or gmail_search. Max 25 per call.',
+      },
+      action: {
+        type: 'string',
+        enum: ['archive', 'trash', 'read', 'unread', 'star', 'unstar'],
+        description: 'The single action to apply to every listed thread.',
+      },
+    },
+    required: ['threadIds', 'action'],
+  },
+};
+
 export const gmailScheduleCancelToolDef = {
   name: 'gmail_schedule_cancel',
   description:
@@ -746,6 +771,7 @@ export const GMAIL_TOOL_DEFS = [
   gmailSyncStatusToolDef,
   gmailAttachmentsToolDef,
   gmailAttachmentDownloadToolDef,
+  gmailBulkToolDef,
   gmailScheduleCancelToolDef,
   gmailDraftSendToolDef,
   gmailDraftDeleteToolDef,
@@ -1345,6 +1371,31 @@ async function handleDeleteLabel(args: Record<string, unknown>): Promise<McpTool
   }
 }
 
+async function handleBulk(args: Record<string, unknown>): Promise<McpToolResult> {
+  const ids = Array.isArray(args.threadIds) ? args.threadIds.map((x) => String(x).trim()).filter(Boolean) : [];
+  if (!ids.length) return err('threadIds must be a non-empty array (from gmail_list_threads or gmail_search).');
+  const action = String(args.action ?? '').trim();
+  if (!action) return err('action is required: archive, trash, read, unread, star or unstar.');
+  try {
+    const d = await workerPostLong<{
+      action: string; requested: number; succeeded: number; failedCount: number;
+      done: string[]; failed: { id: string; error: string }[];
+    }>('/gmail/bulk', { threadIds: ids, action }, 600000);
+
+    const lines = [`${action}: ${d.succeeded}/${d.requested} confirmed.`];
+    if (d.failed.length) {
+      // Name every failure. A bulk result that reports only successes reads as
+      // "all of them worked" — which is exactly what a capped or partly-failed
+      // run is not.
+      lines.push(`${d.failedCount} not confirmed:`);
+      for (const f of d.failed.slice(0, 25)) lines.push(`  - ${f.id}: ${f.error}`);
+    }
+    return ok(lines.join('\n'));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function handleScheduleCancel(args: Record<string, unknown>): Promise<McpToolResult> {
   const threadId = String(args.threadId ?? '').trim();
   if (!threadId) return err('threadId is required (list label "scheduled" to find one).');
@@ -1778,6 +1829,7 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_sync_status: () => handleSyncStatus(),
   gmail_attachments: handleAttachments,
   gmail_attachment_download: handleAttachmentDownload,
+  gmail_bulk: handleBulk,
   gmail_schedule_cancel: handleScheduleCancel,
   gmail_draft_send: handleDraftSend,
   gmail_draft_delete: handleDraftDelete,
