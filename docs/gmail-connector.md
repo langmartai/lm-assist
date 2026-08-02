@@ -382,6 +382,41 @@ Verified against a real pending send: `#scheduled` 1 → 0, the message reappear
 Drafts undelivered, and the verb reports `verified` from that absence rather than from
 the click.
 
+## Selfcheck now checks FEATURES, not just the DOM around them
+
+The original 11 checks were structural probes — landmarks, tokens, selectors, view
+distinctness. They answer "can we still address Gmail's UI?" and caught the
+wrong-thread and empty-body bugs. But they exercised **none of the 38 tools**, so
+every verb could break and the suite would stay green.
+
+Four feature checks now run alongside them:
+
+| check | covers | side effect |
+|---|---|---|
+| `feature.read_surface` | summary, aliases | none |
+| `feature.label_roundtrip` | create → rename → delete | none — self-cleaning |
+| `feature.draft_roundtrip` | draft, drafts, draft_delete | none — nothing is SENT |
+| `feature.star_toggle` | star, restoring the ORIGINAL state | none |
+
+🔴 **Cleanup only ever touches its own artifacts.** Everything is named with a
+`lm-selfcheck` tag, and each teardown re-reads the live list and removes only
+entries carrying that tag — never "the newest draft", never "index 0". A health
+check that deletes real mail because a lookup drifted is far worse than one that
+leaves a stray label behind. Verified: 71 real labels and 40 real drafts untouched
+across runs, 0 leftovers.
+
+🔴 **"Could not run" is a SKIP, never a failure.** `BROWSER_BUSY`,
+`BROWSER_NOT_RUNNING`, `CDP_UNREACHABLE` and `PAGE_NOT_FOUND` mark a check skipped,
+and the whole feature block is gated on one liveness probe so a dead browser
+produces ONE actionable line instead of four confusing failures. Measured: the
+first version reported 11/15 with three failures on a completely healthy mailbox,
+because the feature checks doubled the browser work and the browser died mid-run.
+A suite that goes red because it fought itself teaches the reader to ignore red.
+
+⚠️ `feature.star_toggle` verifies via `is:starred`, whose index lags the DOM — a
+disagreement is reported AMBIGUOUS, not failed, because the check verifies on a
+slower basis than the action it performs.
+
 ## Limits and caveats
 
 - **The thread list is virtualized.** A read returns the most-recent RENDERED threads

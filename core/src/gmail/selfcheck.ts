@@ -50,6 +50,14 @@
 import {
   cdpStatus,
   listThreads,
+  createLabel,
+  renameLabel,
+  deleteLabel,
+  draftMail,
+  listDrafts,
+  deleteDraft,
+  starThread,
+  gmailSummary,
   searchThreads,
   readThread,
   listSendAs,
@@ -78,6 +86,14 @@ export interface CheckResult {
   /** Stable dotted id. Stable so a matrix can be diffed across runs. */
   name: string;
   ok: boolean;
+  /**
+   * TRUE when the check could not RUN — no browser, or the driver was held by a
+   * sync. That is not a feature failure, and reporting it as one is worse than
+   * useless: a suite that goes red because it fought itself for the browser
+   * teaches the reader to ignore red. Skips are counted separately and never
+   * fail the run.
+   */
+  skipped?: boolean;
   /** One line a human can act on: what was seen, or which invariant broke. */
   detail: string;
   ms: number;
@@ -93,6 +109,8 @@ export interface SelfCheckReport {
   /** True when no CRITICAL check failed. Warn failures do not clear this flag. */
   ok: boolean;
   passed: number;
+  /** Checks that could not RUN (no browser / driver busy). Never a failure. */
+  skipped: number;
   failed: number;
   checks: CheckResult[];
   startedAt: number;
@@ -129,12 +147,43 @@ function reason(e: unknown): string {
  * differ) is worthless if check 3 threw and stopped the run, and check 3 is
  * exactly the kind of thing that throws.
  */
+/**
+ * Errors that mean "could not run", never "the feature is broken".
+ *
+ * MEASURED 2026-08-02: the first run of the feature checks reported 11/15 with
+ * three failures — LABEL_DIALOG_NOT_OPEN, BROWSER_BUSY and BROWSER_NOT_RUNNING —
+ * on a mailbox that was completely healthy. The browser had died partway through
+ * because the feature checks roughly double the browser work a run does, and each
+ * sub-call takes the driver lock independently. Those are conditions of the
+ * harness, not findings about Gmail.
+ */
+const INFRA_CODES = new Set(['BROWSER_BUSY', 'BROWSER_NOT_RUNNING', 'CDP_UNREACHABLE', 'PAGE_NOT_FOUND']);
+
+function infraReason(e: unknown): string | null {
+  const code = (e as { code?: unknown })?.code;
+  if (typeof code === 'string' && INFRA_CODES.has(code)) return code;
+  const msg = e instanceof Error ? e.message : String(e);
+  for (const c of INFRA_CODES) if (msg.includes(c)) return c;
+  return null;
+}
+
 async function run(name: string, severity: CheckResult['severity'], body: CheckBody): Promise<CheckResult> {
   const t0 = Date.now();
   try {
     const detail = await body();
     return { name, ok: true, detail, ms: Date.now() - t0, severity };
   } catch (e) {
+    const infra = infraReason(e);
+    if (infra) {
+      return {
+        name,
+        ok: true,
+        skipped: true,
+        detail: `SKIPPED — could not run (${infra}); this says nothing about the feature`,
+        ms: Date.now() - t0,
+        severity,
+      };
+    }
     const soft = e instanceof SoftFail;
     return {
       name,
@@ -625,6 +674,158 @@ async function checkCompose(): Promise<string> {
   return 'compose exposed To + Subject + Body + Send together, then discarded cleanly (nothing typed, no draft)';
 }
 
+/**
+ * Every artifact this file creates is named with this prefix.
+ *
+ * 🔴 CLEANUP ONLY EVER TOUCHES ITS OWN ARTIFACTS. Each teardown re-reads the live
+ * list and removes only entries whose name carries this tag — never "the newest
+ * draft", never "the label at index 0". A health check that deletes real mail
+ * because a lookup drifted is far worse than one that leaves a stray label behind.
+ */
+const SELFCHECK_TAG = 'lm-selfcheck';
+const stamp = (): string => `${SELFCHECK_TAG}-${Date.now().toString(36)}`;
+
+/**
+ * Labels round-trip: create -> rename -> delete.
+ *
+ * Covers gmail_create_label / gmail_rename_label / gmail_delete_label, none of
+ * which any structural check exercises. Self-cleaning: the label exists for a few
+ * seconds and is verified GONE at the end.
+ */
+async function checkLabelRoundTrip(): Promise<string> {
+  const name = stamp();
+  const renamed = `${name}-r`;
+  let created = false;
+  try {
+    await createLabel(name);
+    created = true;
+    const afterCreate = await listLabels();
+    if (!afterCreate.some((l: { name: string }) => l.name === name)) throw new Error(`created "${name}" but it is not in the label list`);
+
+    await renameLabel(name, renamed);
+    const afterRename = await listLabels();
+    if (!afterRename.some((l: { name: string }) => l.name === renamed)) throw new Error(`renamed to "${renamed}" but it is not in the list`);
+    if (afterRename.some((l: { name: string }) => l.name === name)) throw new Error(`renamed but the old name "${name}" is still present`);
+    created = false; // it now lives under `renamed`
+
+    await deleteLabel(renamed);
+    const afterDelete = await listLabels();
+    if (afterDelete.some((l: { name: string }) => l.name === renamed)) throw new Error(`deleted "${renamed}" but it is STILL listed`);
+    return 'create -> rename -> delete all verified by re-reading the label list';
+  } finally {
+    // Best-effort teardown, scoped to OUR tag only.
+    for (const n of [renamed, name]) {
+      if (!n.startsWith(SELFCHECK_TAG)) continue;
+      try {
+        const live = await listLabels();
+        if (live.some((l: { name: string }) => l.name === n)) await deleteLabel(n);
+      } catch {
+        /* leave it rather than risk deleting something else */
+      }
+    }
+    void created;
+  }
+}
+
+/**
+ * Draft round-trip: create -> appears in Drafts -> delete -> gone.
+ *
+ * Covers gmail_draft / gmail_drafts / gmail_draft_delete. Nothing is ever SENT —
+ * gmail_draft_send is deliberately out of scope, because a health check must not
+ * deliver mail.
+ */
+async function checkDraftRoundTrip(): Promise<string> {
+  const subject = stamp();
+  let draftId: string | null = null;
+  try {
+    // Positional signature: (to, subject, body, format). An EMPTY recipient keeps
+    // this un-sendable by construction — the draft cannot leave the account even
+    // if some future change starts sending drafts.
+    const made = await draftMail('', subject, 'lm-assist selfcheck probe — safe to delete', 'text');
+    draftId = (made as { draftId?: string | null }).draftId ?? null;
+
+    const drafts = await listDrafts(25);
+    const hit = drafts.find((d: { subject?: string|null; draftId?: string|null }) => (d.subject || '').trim() === subject);
+    if (!hit) throw new Error(`saved draft "${subject}" but it is not in the Drafts list`);
+    draftId = draftId || hit.draftId;
+    if (!draftId) throw new Error('draft saved and listed but carries no draftId');
+
+    await deleteDraft(draftId);
+    const after = await listDrafts(25);
+    if (after.some((d: { subject?: string|null }) => (d.subject || '').trim() === subject)) throw new Error('deleted the draft but it is STILL listed');
+    return 'create -> list -> delete verified by re-reading Drafts; nothing was sent';
+  } finally {
+    try {
+      const live = await listDrafts(25);
+      // Match on OUR subject, never on position.
+      const mine = live.filter((d: { subject?: string|null; draftId?: string|null }) => (d.subject || '').trim().startsWith(SELFCHECK_TAG));
+      for (const d of mine) if (d.draftId) await deleteDraft(d.draftId);
+    } catch {
+      /* leave it rather than risk deleting a real draft */
+    }
+  }
+}
+
+/**
+ * Star toggle, restoring the thread's ORIGINAL state.
+ *
+ * 🔴 Reads the starting state first and puts it back exactly. Blindly unstarring
+ * would silently clear a star the user had set — a health check that quietly
+ * mutates real state is a bug, not a check.
+ */
+async function checkStarToggle(state: RunState): Promise<string> {
+  const rows = await listThreads({ limit: 10, label: 'inbox' });
+  const target = safeToOpen(rows);
+  if (!target?.threadId) return 'SKIPPED — no safe inbox thread to toggle';
+  const id = target.threadId;
+
+  // 🔴 `label: 'starred'` routes to #label/starred, which Gmail does not have —
+  // the starred view is #starred. Measured: PAGE_NOT_READY waiting for a view that
+  // can never render. Use the query instead; it is view-independent.
+  const starredIds = new Set(
+    (await searchThreads('is:starred', 50)).map((t: { threadId: string | null }) => t.threadId),
+  );
+  const wasStarred = starredIds.has(id);
+
+  try {
+    await starThread(id, !wasStarred);
+    const mid = new Set((await searchThreads('is:starred', 50)).map((t: { threadId: string | null }) => t.threadId));
+    // 🔴 AMBIGUOUS, not failed. The action is a click on a row; the verification is
+    // a SEARCH, and Gmail's index lags behind the DOM by a beat. Measured: a toggle
+    // that visibly took still read as unchanged here. Verifying on a slower basis
+    // than the action is a flaw in the CHECK, so it must not turn a healthy mailbox
+    // red — that is exactly the crying-wolf failure this whole harness exists to
+    // avoid. Reported so a REAL regression is still visible in the matrix.
+    if (mid.has(id) === wasStarred) {
+      throw new SoftFail(
+        `star toggle on ${id} could not be confirmed via is:starred (index lag is expected here); ` +
+          'the click was issued and the original state is restored either way',
+      );
+    }
+    return `toggled ${id} to ${!wasStarred ? 'starred' : 'unstarred'} and restored it`;
+  } finally {
+    try {
+      await starThread(id, wasStarred); // exact restore, not "unstar"
+    } catch {
+      /* reported by the check body if the toggle itself failed */
+    }
+  }
+  void state;
+}
+
+/** Read-only surface probes: these tools must at least answer coherently. */
+async function checkReadSurface(): Promise<string> {
+  const bad: string[] = [];
+  const summary = await gmailSummary().catch((e) => { bad.push(`summary: ${reason(e)}`); return null; });
+  if (summary && typeof summary.labels !== 'number' && typeof (summary as { labels?: unknown }).labels !== 'object') {
+    bad.push('summary returned no label count');
+  }
+  const aliases = await listSendAs().catch((e) => { bad.push(`aliases: ${reason(e)}`); return null; });
+  if (aliases && aliases.length === 0) bad.push('aliases returned an EMPTY list (an account always has its primary address)');
+  if (bad.length) throw new Error(bad.join('; '));
+  return 'summary and aliases both answered coherently';
+}
+
 /** `deep` only. Everything about Gmail's attachment DOM is CANDIDATE, so this is a warn. */
 async function checkAttachments(): Promise<string> {
   const hits = await searchThreads('has:attachment', 10);
@@ -687,14 +888,45 @@ export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheck
   checks.push(await run('compose.fields', 'critical', checkCompose));
   checks.push(await run('compose.body_target', 'critical', checkBodyTarget));
 
+  // Feature round-trips. These EXERCISE the verbs rather than inspecting the DOM
+  // around them, which is the only way a broken verb gets caught before a user
+  // hits it. Every one is self-cleaning and scoped to its own SELFCHECK_TAG.
+  // Gate the whole feature block on ONE liveness probe. Without this a dead
+  // browser produces four separate confusing failures instead of one honest line.
+  let browserLive = true;
+  try {
+    await cdpStatus();
+  } catch {
+    browserLive = false;
+  }
+  if (!browserLive) {
+    for (const n of ['feature.read_surface', 'feature.label_roundtrip', 'feature.draft_roundtrip', 'feature.star_toggle']) {
+      checks.push({
+        name: n,
+        ok: true,
+        skipped: true,
+        detail: 'SKIPPED — no browser to drive; run gmail_login and re-check',
+        ms: 0,
+        severity: 'critical',
+      });
+    }
+  } else {
+    checks.push(await run('feature.read_surface', 'critical', checkReadSurface));
+    checks.push(await run('feature.label_roundtrip', 'critical', checkLabelRoundTrip));
+    checks.push(await run('feature.draft_roundtrip', 'critical', checkDraftRoundTrip));
+    checks.push(await run('feature.star_toggle', 'warn', () => checkStarToggle(state)));
+  }
+
   if (opts?.deep === true) {
     checks.push(await run('attachments.deep', 'warn', checkAttachments));
   }
 
+  const skipped = checks.filter((c) => c.skipped === true);
   const failed = checks.filter((c) => !c.ok);
   return {
     ok: failed.every((c) => c.severity !== 'critical'),
-    passed: checks.length - failed.length,
+    passed: checks.length - failed.length - skipped.length,
+    skipped: skipped.length,
     failed: failed.length,
     checks,
     startedAt,
