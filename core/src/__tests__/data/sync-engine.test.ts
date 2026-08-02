@@ -46,6 +46,26 @@ function mkRecord(id: string, fields: Record<string, unknown> = {}): DataRecord 
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+/*
+ * 🔴 These manifests declare `scope: 'fleet'` EXPLICITLY.
+ *
+ * MEASURED 2026-08-02: without it the engine defaults to `scope: 'cluster'`
+ * (sync-engine.ts, `m.scope ?? 'cluster'`), and the cluster guard then resolves the
+ * REAL cluster identity of whatever host the suite runs on — via getMyCluster() /
+ * getClusterRecords(), which read live config, not test fixtures. On a host with no
+ * cluster config every node collapses to 'default' and these pass; on a configured
+ * host (measured here: getMyCluster() === 'dev') peer 'A' resolves elsewhere,
+ * shouldPullDataset() returns false, reconcile silently pulls NOTHING, and the
+ * suite fails with "replica descriptor must be present on B".
+ *
+ * That made the outcome depend on the machine rather than the code — and it fails
+ * QUIETLY, because a reconcile that pulls nothing still reports success. Note the
+ * "second reconcile is idempotent (applied=0)" test PASSED throughout, for exactly
+ * the wrong reason.
+ *
+ * These tests are about FULL-MODE REPLICATION; cluster scoping has its own coverage
+ * in sync-engine-scope.test.ts, which sets its cluster context up deliberately.
+ */
 test('SyncEngine: full reconcile replicates records from peer A to B', async () => {
   const a = svc('A');
   const b = svc('B');
@@ -63,7 +83,7 @@ test('SyncEngine: full reconcile replicates records from peer A to B', async () 
     listPeers: async (): Promise<NodeInfo[]> => [{ node: 'A', hostname: 'hostA', platform: 'linux' }],
     manifest: async (_node: string) => ({
       node: 'A',
-      datasets: [{ id: 'tickets', syncMode: 'full', ownerNode: 'A', backend: 'cache' }] as ManifestEntry[],
+      datasets: [{ id: 'tickets', syncMode: 'full', ownerNode: 'A', backend: 'cache', scope: 'fleet' }] as ManifestEntry[],
     }),
     exportFrom: async (_node: string, ds: string, since?: string) =>
       a.backend.exportSince(ds, since),
@@ -114,7 +134,7 @@ test('SyncEngine: second reconcile is idempotent (applied=0)', async () => {
     listPeers: async () => [{ node: 'A2', hostname: 'hA', platform: 'linux' }],
     manifest: async () => ({
       node: 'A2',
-      datasets: [{ id: 'tickets', syncMode: 'full', ownerNode: 'A2', backend: 'cache' }] as ManifestEntry[],
+      datasets: [{ id: 'tickets', syncMode: 'full', ownerNode: 'A2', backend: 'cache', scope: 'fleet' }] as ManifestEntry[],
     }),
     exportFrom: async (_n, ds, since) => a.backend.exportSince(ds, since),
     getFrom: async (_n, ds, id) => a.backend.get(ds, id),
@@ -143,7 +163,7 @@ test('SyncEngine: update on A propagates to B on next reconcile (convergence)', 
     listPeers: async () => [{ node: 'A3', hostname: 'hA', platform: 'linux' }],
     manifest: async () => ({
       node: 'A3',
-      datasets: [{ id: 'tickets', syncMode: 'full', ownerNode: 'A3', backend: 'cache' }] as ManifestEntry[],
+      datasets: [{ id: 'tickets', syncMode: 'full', ownerNode: 'A3', backend: 'cache', scope: 'fleet' }] as ManifestEntry[],
     }),
     exportFrom: async (_n, ds, since) => a.backend.exportSince(ds, since),
     getFrom: async (_n, ds, id) => a.backend.get(ds, id),
