@@ -170,7 +170,7 @@ exists for). Trust `gmail_status`, not the pid.
 
 ## Tools & scopes
 
-38 tools. Reads observe the mailbox; writes send real mail or mutate threads;
+39 tools. Reads observe the mailbox; writes send real mail or mutate threads;
 `gmail_login` drives interactive auth.
 
 | Tool | Scope | Purpose |
@@ -197,6 +197,7 @@ exists for). Trust `gmail_status`, not the pid.
 | `gmail_draft` | write | compose and save a draft, sending nothing |
 | `gmail_draft_send` · `gmail_draft_delete` | write | send or discard a saved draft — completes the lifecycle |
 | `gmail_archive` · `gmail_trash` · `gmail_spam` | write | move a thread out of the inbox |
+| `gmail_bulk` | write | one verb (archive/trash/read/unread/star/unstar) over up to 25 threads |
 | `gmail_untrash` | write | restore a thread OUT of Trash (only while it is still there) |
 | `gmail_mark_read` · `gmail_star` | write | per-thread state |
 | `gmail_triage` | write | mute/unmute, important/unimportant, **snooze** |
@@ -217,7 +218,7 @@ by every conversation. Its trigger words live on `gmail_search`.
 `POST /gmail/send` · `POST /gmail/schedule-send` · `POST /gmail/schedule-cancel` · `POST /gmail/reply` · `POST /gmail/forward` · `POST /gmail/draft` ·
 `POST /gmail/draft/send` · `POST /gmail/draft/delete` · `POST /gmail/triage` ·
 `POST /gmail/archive` · `POST /gmail/trash` · `POST /gmail/untrash` · `POST /gmail/spam` · `POST /gmail/mark-read` ·
-`POST /gmail/star` · `POST /gmail/move-to` · `POST /gmail/label/apply` ·
+`POST /gmail/star` · `POST /gmail/bulk` · `POST /gmail/move-to` · `POST /gmail/label/apply` ·
 `POST /gmail/label/remove` · `POST /gmail/label/create` · `POST /gmail/label/rename` · `POST /gmail/label/delete` ·
 `POST /gmail/login` ·
 `GET /gmail/login/status?port=` · `POST /gmail/keepalive`
@@ -382,11 +383,26 @@ Verified against a real pending send: `#scheduled` 1 → 0, the message reappear
 Drafts undelivered, and the verb reports `verified` from that absence rather than from
 the click.
 
+## Bulk — what `succeeded` does and does not mean
+
+`gmail_bulk` runs one verb over up to 25 threads, SEQUENTIALLY (they mutate one
+shared DOM; concurrent clicks would race over which view is visible).
+
+🔴 **Only CONFIRMED changes count as succeeded.** A thread whose change could not be
+re-read lands in `failed` with an `UNVERIFIED:` prefix — and the verb STOPS rather
+than re-applying, because a blind retry on a toggle can undo the thing it just did.
+Measured on a live run: `succeeded: 2` of 3 while an independent listing showed all
+3 starred. It UNDER-reports rather than over-reports, deliberately.
+
+🔴 **Ids past the cap are REPORTED, never dropped.** A capped call that trims its
+input and returns a short success list is indistinguishable from partial success.
+Every id beyond 25 comes back in `failed` as `BULK_CAP_EXCEEDED`.
+
 ## Selfcheck now checks FEATURES, not just the DOM around them
 
 The original 11 checks were structural probes — landmarks, tokens, selectors, view
 distinctness. They answer "can we still address Gmail's UI?" and caught the
-wrong-thread and empty-body bugs. But they exercised **none of the 38 tools**, so
+wrong-thread and empty-body bugs. But they exercised **none of the 39 tools**, so
 every verb could break and the suite would stay green.
 
 Four feature checks now run alongside them:

@@ -35,6 +35,7 @@
  *   POST /gmail/trash                 { threadId } — move to Trash (30-day recovery)
  *   POST /gmail/mark-read             { threadId, read } — read flag; `read` REQUIRED
  *   POST /gmail/star                  { threadId, starred } — `starred` REQUIRED
+ *   POST /gmail/bulk                  { threadIds[], action } — one verb over many threads
  *   POST /gmail/spam                  { threadId, spam } — `spam` REQUIRED
  *   POST /gmail/label/apply           { threadId, label } — add an EXISTING label
  *   POST /gmail/label/remove          { threadId, label } — take a label off a thread
@@ -83,6 +84,7 @@ import {
   renameLabel,
   scheduleSend,
   cancelScheduledSend,
+  bulkAction,
   readGmailSettings,
   deleteLabel,
   syncWindow,
@@ -1013,6 +1015,44 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
         if ('error' in s) return { success: false, error: s.error };
         try {
           return { success: true, data: await starThread(t.id, s.value) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/bulk { threadIds: string[], action }
+    //
+    // One verb over many threads, SEQUENTIALLY (they mutate one shared DOM, so
+    // concurrent clicks would race over which view is visible). The result
+    // separates VERIFIED successes from everything else on purpose — see
+    // actions.ts bulkAction.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/bulk$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const ids = Array.isArray(b.threadIds) ? b.threadIds.map((x) => String(x).trim()).filter(Boolean) : [];
+        if (!ids.length) return { success: false, error: '`threadIds` must be a non-empty array' };
+        const action = String(b.action || '').trim();
+        const allowed = ['archive', 'trash', 'read', 'unread', 'star', 'unstar'];
+        if (!allowed.includes(action)) {
+          return { success: false, error: `unknown \`action\` "${action}" — use ${allowed.join(', ')}` };
+        }
+        try {
+          const out = await bulkAction(ids, action as 'archive' | 'trash' | 'read' | 'unread' | 'star' | 'unstar');
+          return {
+            success: true,
+            data: {
+              action,
+              requested: ids.length,
+              // Counts as well as the lists: a caller that only reads `done.length`
+              // must not be able to mistake a capped run for a complete one.
+              succeeded: out.done.length,
+              failedCount: out.failed.length,
+              ...out,
+            },
+          };
         } catch (e) {
           return fail(e);
         }

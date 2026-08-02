@@ -395,6 +395,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   gmail_schedule_send: 'write',
   // Cancelling PREVENTS a real delivery — a mutation either way.
   gmail_schedule_cancel: 'write',
+  // One verb over up to 25 threads — unambiguously a mutation.
+  gmail_bulk: 'write',
   gmail_list_threads: 'read',
   gmail_read_thread: 'read',
   gmail_search: 'read',
