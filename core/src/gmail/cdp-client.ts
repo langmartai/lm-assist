@@ -93,6 +93,14 @@ import * as Actions from './actions';
 import { extractPreFromOriginalPage, parseRfc822 } from './mime';
 import { startSync, syncProgress, type SyncProgress } from './sync';
 import {
+  buildLabelIndex,
+  enrichRowsWithLabels,
+  labelsForThread,
+  readLabelIndex,
+  writeLabelIndex,
+  type LabelIndex,
+} from './label-index';
+import {
   FILTERS_MAX,
   JS_SIGNATURE,
   JS_VACATION,
@@ -1268,7 +1276,10 @@ export async function listThreads(opts: { limit?: number; label?: string } = {})
   return op('read', async (cdp) => {
     await gotoHash(cdp, hash, SELECTORS.listReady);
     await ensureRows(cdp, limit);
-    return (await cdp.evaluate<GmailThread[]>(JS_THREAD_ROWS(limit))) || [];
+    const rows = (await cdp.evaluate<GmailThread[]>(JS_THREAD_ROWS(limit))) || [];
+    // Fill `labels` from the index for any row whose chip did not render. A
+    // non-empty scrape is left alone — that is first-hand and fresher.
+    return enrichRowsWithLabels(rows).rows;
   });
 }
 
@@ -2360,6 +2371,41 @@ export async function scheduleSend(
 ): Promise<Compose.ScheduleResult> {
   return op('mutate', (cdp) => Compose.scheduleSend(cdp as unknown as Compose.ComposeCtx, input, when));
 }
+
+/**
+ * Rebuild the thread -> labels index by walking labels.
+ *
+ * Uses the PROVEN direction: `#label/<name>` listing, which returns exactly the
+ * right threads. See label-index.ts for why the chip scrape cannot be trusted.
+ *
+ * Expensive by nature — one list per label — so it is an explicit operation, not
+ * something a read silently triggers.
+ */
+/**
+ * A thread's labels, asked of the Labels MENU rather than inferred.
+ *
+ * Supersedes both the chip scrape (returns nothing) and the label INDEX below
+ * (lags, bounded per label, minutes to build). One menu open, always current.
+ */
+export async function threadLabelsLive(threadId: string): Promise<string[]> {
+  const id = requireThreadId(threadId);
+  return op('read', (cdp) => Labels.readThreadLabelsViaMenu(cdp, id));
+}
+
+export async function refreshLabelIndex(opts: { perLabel?: number; maxLabels?: number } = {}): Promise<LabelIndex> {
+  const labels = await listLabels();
+  const names = labels.map((l) => l.name).filter((n): n is string => !!n);
+  const ix = await buildLabelIndex(names, async (label, limit) => listThreads({ limit, label }), opts);
+  writeLabelIndex(ix);
+  return ix;
+}
+
+/** Labels for one thread, from the index. `known:false` means NO index exists. */
+export function threadLabelsFromIndex(threadId: string): ReturnType<typeof labelsForThread> {
+  return labelsForThread(requireThreadId(threadId));
+}
+
+export { readLabelIndex };
 
 /** Rename a user label (Settings -> Labels -> edit). */
 export async function renameLabel(from: string, to: string): Promise<Labels.LabelOpResult> {

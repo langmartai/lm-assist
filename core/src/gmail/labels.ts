@@ -2320,6 +2320,57 @@ export async function untrashThread(cdp: LabelCdp, threadId: string): Promise<Mo
   };
 }
 
+/**
+ * A thread's labels, read from the Labels MENU.
+ *
+ * 🔴 This replaces chip-scraping, which does not work. MEASURED 2026-08-02 in a
+ * single page evaluation (so both readings describe the same rows at the same
+ * instant): a row whose DOM carried `["HY: Microsoft"]` came back from the row
+ * extractor as `[]`. The thread-view chip path was empty for the same threads.
+ * `labels: []` was therefore indistinguishable from "this thread has no labels" —
+ * wrong in the worst way, because it reads as a fact.
+ *
+ * The Labels menu is the UI's OWN answer: every label is a
+ * `role="menuitemcheckbox"` carrying `aria-checked`, and the checked ones are
+ * exactly this thread's labels. Measured 2026-08-03. It needs no index, cannot go
+ * stale, and asks Gmail the question directly instead of inferring it.
+ *
+ * Costs one menu open per thread, so it is a per-thread call — not something a
+ * list read does for every row.
+ */
+export async function readThreadLabelsViaMenu(cdp: LabelCdp, threadId: string): Promise<string[]> {
+  const id = String(threadId || '').trim();
+  if (!id) throw new GmError('INVALID_THREAD', 'threadId is required');
+  if (!(await selectRowForThread(cdp, id, ['#inbox', '#all']))) {
+    throw new GmError(
+      'ROW_NOT_SELECTABLE',
+      `could not check the row for thread ${id} in #inbox or #all — the Labels menu only exists on the list toolbar with a row selected`,
+    );
+  }
+  const opened = await trustedClickControl(cdp, '^labels?$');
+  if (!opened.ok) {
+    throw new GmError('LABELS_MENU_NOT_OPEN', `the Labels control did not open: ${opened.why || 'unknown'}`);
+  }
+  await sleep(900);
+  const names = await cdp.evaluate<string[]>(`
+    const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+    const menu = [...document.querySelectorAll('div[role="menu"]')].filter(vis).pop();
+    if (!menu) return [];
+    return [...menu.querySelectorAll('div[role="menuitemcheckbox"]')]
+      .filter(vis)
+      .filter((e) => e.getAttribute('aria-checked') === 'true')
+      // 🔴 textContent, NOT innerText. MEASURED 2026-08-03: Gmail wraps the
+      // type-ahead-matched character in an inline element, and innerText is
+      // LAYOUT-AWARE — it inserts whitespace at that boundary, so "HY: Microsoft"
+      // came back as "HY: Micro oft", the s replaced by a space. textContent
+      // concatenates text nodes verbatim. (The reverse hazard is real too: for
+      // attachment names textContent LOSES a needed newline. Per-surface choice.)
+      .map((e) => String(e.textContent || '').replace(/\\s+/g, ' ').trim())
+      .filter(Boolean);`);
+  await closeMenu(cdp);
+  return Array.isArray(names) ? [...new Set(names)] : [];
+}
+
 export async function moveToLabel(cdp: LabelCdp, threadId: string, label: string): Promise<MoveResult> {
   // Inbox is not a label you can apply - it is a system view, absent from the
   // Labels menu, and "apply then archive" cancels itself for it. See moveToInbox.

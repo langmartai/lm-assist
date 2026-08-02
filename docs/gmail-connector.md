@@ -468,6 +468,38 @@ relaunch total, no process storm.
 profile parks a browser on a Google login page nobody is watching, turning a clear
 "sign in" into a silent hang. That case still tells the truth.
 
+## Thread labels come from the Labels MENU, not from chips
+
+🔴 **Chip scraping does not work, in either place it was tried.** MEASURED
+2026-08-02 in a SINGLE page evaluation, so both readings describe the same rows at
+the same instant:
+
+    idx | subject        | extractor | DOM chips
+      6 | Security alert | []        | ["HY: Microsoft"]
+
+The thread-view chip path was empty for the same threads. So `labels: []` was
+indistinguishable from "this thread has no labels" — wrong in the worst way,
+because it reads as a fact.
+
+**The Labels toolbar menu is the UI's own answer.** Every label is a
+`role="menuitemcheckbox"` carrying `aria-checked`; the checked ones ARE the
+thread's labels. No index, cannot go stale, asks Gmail directly instead of
+inferring. `GET /gmail/thread-labels?threadId=` — one menu open per thread.
+
+🔴 **Read it with `textContent`, never `innerText`.** Gmail wraps the
+type-ahead-matched character in an inline element, and `innerText` is layout-aware:
+it inserts whitespace at that boundary, so `HY: Microsoft` came back as
+`HY: Micro oft` — the `s` silently replaced by a space. A label name that is subtly
+wrong is worse than one that is missing. Note the REVERSE hazard is also real: for
+attachment names `textContent` loses a needed newline. Per-surface choice, not a
+rule.
+
+There is also a bounded label INDEX (`POST /gmail/label-index/refresh`) that walks
+`#label/X` views to enrich many list rows at once without a menu open per row. It
+LAGS and is capped per label, and reports `builtAt` / `labelsWalked` / `perLabel` /
+failed labels with every answer so a partial index cannot present itself as
+complete. Prefer the menu for a single thread.
+
 ## Limits and caveats
 
 - **The thread list is virtualized.** A read returns the most-recent RENDERED threads
