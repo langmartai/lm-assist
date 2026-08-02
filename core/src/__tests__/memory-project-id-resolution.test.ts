@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -152,4 +152,31 @@ test('a large memory file round-trips intact through the read path', async () =>
     assert.equal(res.data?.body.length, big.length, 'body must not be truncated');
     assert.equal(res.data?.body, big, 'body must be byte-identical');
   });
+});
+
+/**
+ * Close the memory cache when the suite finishes.
+ *
+ * 🔴 MEASURED 2026-08-02: without this the whole `npm test` run reported a HUNG
+ * suite and exited 1. The tests call resetMemoryCache() at the START of a body to
+ * clear state, but the cache the API then creates is never closed — and
+ * MemoryCache holds a chokidar watcher AND an open LMDB store, both of which keep
+ * node's event loop alive forever. node:test then waits on a process that will
+ * never exit, costing the runner its 240s batch timeout on every single run.
+ *
+ * The failure is invisible in the suite's own output: every assertion passes. Only
+ * the runner notices, and it reports it as a leaked handle rather than a test bug,
+ * which is exactly what it is.
+ */
+after(async () => {
+  const { resetMemoryCache } = await import('../memory-cache');
+  resetMemoryCache();
+  // 🔴 SessionCache too, and it is the one that actually hung the runner.
+  // createMemoryApiImpl pulls it in transitively, so the suite ends up holding a
+  // SECOND chokidar watcher plus an LMDB store that nothing here ever opened
+  // explicitly. Measured: all 5 assertions pass in ~130ms, then the process sits
+  // forever on "[SessionCache] Parsed 8640 lines" — the tests were never the
+  // problem, the teardown was incomplete.
+  const { stopSessionCache } = await import('../session-cache');
+  stopSessionCache();
 });
