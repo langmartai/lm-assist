@@ -42,6 +42,26 @@ function mkRecord(id: string, fields: Record<string, unknown> = {}): DataRecord 
 
 // ── Test 1: local-miss → remote fetch → lazy cache ───────────────────────────
 
+/*
+ * 🔴 These manifests declare `scope: 'fleet'` EXPLICITLY.
+ *
+ * MEASURED 2026-08-02: without it the engine defaults to `scope: 'cluster'`
+ * (sync-engine.ts, `m.scope ?? 'cluster'`), and the cluster guard then resolves the
+ * REAL cluster identity of whatever host the suite runs on — via getMyCluster() /
+ * getClusterRecords(), which read live config, not test fixtures. On a host with no
+ * cluster config every node collapses to 'default' and these pass; on a configured
+ * host (measured here: getMyCluster() === 'dev') peer 'A' resolves elsewhere,
+ * shouldPullDataset() returns false, reconcile silently pulls NOTHING, and the
+ * suite fails with "replica descriptor must be present on B".
+ *
+ * That made the outcome depend on the machine rather than the code — and it fails
+ * QUIETLY, because a reconcile that pulls nothing still reports success. Note the
+ * "second reconcile is idempotent (applied=0)" test PASSED throughout, for exactly
+ * the wrong reason.
+ *
+ * These tests are about FULL-MODE REPLICATION; cluster scoping has its own coverage
+ * in sync-engine-scope.test.ts, which sets its cluster context up deliberately.
+ */
 test('partial mode: local miss triggers remote fetch and lazy-caches the record', async () => {
   const { datasets, backend, backends, manager } = mkSvc('P1');
 
@@ -158,7 +178,7 @@ test('SyncEngine: reconcile registers partial descriptor without importing recor
     listPeers: async (): Promise<NodeInfo[]> => [{ node: 'peer-node', hostname: 'ph', platform: 'darwin' }],
     manifest: async () => ({
       node: 'peer-node',
-      datasets: [{ id: 'lazy-ds', syncMode: 'partial', ownerNode: 'peer-node', backend: 'cache' }] as ManifestEntry[],
+      datasets: [{ id: 'lazy-ds', syncMode: 'partial', ownerNode: 'peer-node', backend: 'cache', scope: 'fleet' }] as ManifestEntry[],
     }),
     exportFrom: async () => { exportFromCalls++; return [partialRecord]; },
     getFrom: async () => null,
