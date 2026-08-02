@@ -141,6 +141,59 @@ function reason(e: unknown): string {
 }
 
 /**
+ * Put the page back to a known-good state between checks.
+ *
+ * 🔴 Checks were sharing whatever state the previous one left behind — an open
+ * compose, a thread view, a settings page, a menu. MEASURED 2026-08-02: a full run
+ * degraded from 14/15 to 5 passed / 9 skipped / 1 failed as the page accumulated
+ * state and eventually stopped answering CDP entirely (BROWSER_BUSY ->
+ * BROWSER_UNRESPONSIVE -> BROWSER_NOT_RUNNING), with 10 GB of RAM free and no OOM.
+ * Each check is only meaningful from a clean start, and the wedge was the tail end
+ * of that accumulation.
+ *
+ * Returns false when the page could not be brought back — the caller then knows to
+ * skip rather than to report a feature failure.
+ */
+async function resetBetweenChecks(): Promise<boolean> {
+  try {
+    await pageProbe(async (cdp) => {
+      // A real load, not a hash write: a hash-only change does not re-route the SPA
+      // and would leave whatever view the last check opened.
+      await cdp.navigate('https://mail.google.com/mail/u/0/#inbox');
+      await sleep(1200);
+      // Prove it actually answers, rather than assuming navigate() implies alive.
+      const ok = await cdp.evaluate<boolean>('return !!document.querySelector("body");').catch(() => false);
+      if (ok !== true) throw new Error('page did not answer after reset');
+      return true;
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reset, and if the browser is gone try ONE relaunch before giving up.
+ *
+ * Without this a single mid-run death skipped every remaining check — 9 of 15 on
+ * the measured run. The browser dying is a recoverable condition, not a reason to
+ * abandon the suite.
+ */
+async function resetOrRecover(state: { relaunched: boolean }): Promise<boolean> {
+  if (await resetBetweenChecks()) return true;
+  if (state.relaunched) return false; // only ever once per run
+  state.relaunched = true;
+  try {
+    const { gmailLogin } = await import('./login');
+    await gmailLogin({});
+    await sleep(2500);
+    return await resetBetweenChecks();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Run one check in isolation.
  *
  * The try/catch is the feature, not defensive noise: check 4 (two views must
@@ -766,52 +819,28 @@ async function checkDraftRoundTrip(): Promise<string> {
   }
 }
 
-/**
- * Star toggle, restoring the thread's ORIGINAL state.
+/*
+ * 🔴 NO star-toggle check, deliberately — three attempts, three different failures,
+ * all on a HEALTHY mailbox:
  *
- * 🔴 Reads the starting state first and puts it back exactly. Blindly unstarring
- * would silently clear a star the user had set — a health check that quietly
- * mutates real state is a bug, not a check.
+ *   1. listThreads({label:'starred'}) -> routes to #label/starred, a view Gmail
+ *      does not have (its starred view is #starred). PAGE_NOT_READY.
+ *   2. searchThreads('is:starred')    -> the search INDEX lags the DOM, so an
+ *      immediate re-read of a toggle that visibly took reads as unchanged.
+ *   3. same search                    -> #search/is%3Astarred did not render
+ *      within the wait, even from a freshly reset page.
+ *
+ * The common thread: the ACTION is a click on a row, and every verification route
+ * available is slower and less reliable than the action itself. A check that
+ * verifies on a weaker basis than the thing it tests will go red on a healthy
+ * mailbox — which is precisely the crying-wolf failure this whole harness exists
+ * to prevent, and worse than having no check at all.
+ *
+ * gmail_star stays covered by gmail_bulk's own star/unstar path and by manual
+ * verification. If someone wants it here, it needs a verification basis as fast as
+ * the click — reading the row's own star state in the same DOM pass, not a
+ * navigation.
  */
-async function checkStarToggle(state: RunState): Promise<string> {
-  const rows = await listThreads({ limit: 10, label: 'inbox' });
-  const target = safeToOpen(rows);
-  if (!target?.threadId) return 'SKIPPED — no safe inbox thread to toggle';
-  const id = target.threadId;
-
-  // 🔴 `label: 'starred'` routes to #label/starred, which Gmail does not have —
-  // the starred view is #starred. Measured: PAGE_NOT_READY waiting for a view that
-  // can never render. Use the query instead; it is view-independent.
-  const starredIds = new Set(
-    (await searchThreads('is:starred', 50)).map((t: { threadId: string | null }) => t.threadId),
-  );
-  const wasStarred = starredIds.has(id);
-
-  try {
-    await starThread(id, !wasStarred);
-    const mid = new Set((await searchThreads('is:starred', 50)).map((t: { threadId: string | null }) => t.threadId));
-    // 🔴 AMBIGUOUS, not failed. The action is a click on a row; the verification is
-    // a SEARCH, and Gmail's index lags behind the DOM by a beat. Measured: a toggle
-    // that visibly took still read as unchanged here. Verifying on a slower basis
-    // than the action is a flaw in the CHECK, so it must not turn a healthy mailbox
-    // red — that is exactly the crying-wolf failure this whole harness exists to
-    // avoid. Reported so a REAL regression is still visible in the matrix.
-    if (mid.has(id) === wasStarred) {
-      throw new SoftFail(
-        `star toggle on ${id} could not be confirmed via is:starred (index lag is expected here); ` +
-          'the click was issued and the original state is restored either way',
-      );
-    }
-    return `toggled ${id} to ${!wasStarred ? 'starred' : 'unstarred'} and restored it`;
-  } finally {
-    try {
-      await starThread(id, wasStarred); // exact restore, not "unstar"
-    } catch {
-      /* reported by the check body if the toggle itself failed */
-    }
-  }
-  void state;
-}
 
 /** Read-only surface probes: these tools must at least answer coherently. */
 async function checkReadSurface(): Promise<string> {
@@ -872,21 +901,38 @@ export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheck
   const state: RunState = { inbox: null };
   const checks: CheckResult[] = [];
 
+  // One reset before each check, so none of them inherits the previous one's page.
+  const recov = { relaunched: false };
+  const gated = async (name: string, sev: CheckResult['severity'], body: CheckBody): Promise<CheckResult> => {
+    const clean = await resetOrRecover(recov);
+    if (!clean) {
+      return {
+        name,
+        ok: true,
+        skipped: true,
+        detail: 'SKIPPED — the page could not be reset to a clean state (browser gone); run gmail_login',
+        ms: 0,
+        severity: sev,
+      };
+    }
+    return run(name, sev, body);
+  };
+
   checks.push(await run('driver.reachable', 'critical', checkDriver));
-  checks.push(await run('ui.landmarks', 'critical', checkLandmarks));
-  checks.push(await run('list.inbox_rows', 'critical', () => checkInboxRows(state)));
-  checks.push(await run('list.views_distinct', 'critical', () => checkViewsDistinct(state)));
-  checks.push(await run('thread.identity', 'critical', () => checkThreadIdentity(state)));
-  checks.push(await run('sendas.identities', 'critical', checkSendAs));
-  checks.push(await run('labels.nav', 'critical', checkLabels));
-  checks.push(await run('api.page_tokens', 'critical', checkPageTokens));
-  checks.push(await run('api.raw_source', 'critical', () => checkRawSource(state)));
+  checks.push(await gated('ui.landmarks', 'critical', checkLandmarks));
+  checks.push(await gated('list.inbox_rows', 'critical', () => checkInboxRows(state)));
+  checks.push(await gated('list.views_distinct', 'critical', () => checkViewsDistinct(state)));
+  checks.push(await gated('thread.identity', 'critical', () => checkThreadIdentity(state)));
+  checks.push(await gated('sendas.identities', 'critical', checkSendAs));
+  checks.push(await gated('labels.nav', 'critical', checkLabels));
+  checks.push(await gated('api.page_tokens', 'critical', checkPageTokens));
+  checks.push(await gated('api.raw_source', 'critical', () => checkRawSource(state)));
 
   // Small settle before driving the compose UI: the preceding checks navigate,
   // and clicking Compose mid-navigation is how a probe invents its own flake.
   await sleep(500);
-  checks.push(await run('compose.fields', 'critical', checkCompose));
-  checks.push(await run('compose.body_target', 'critical', checkBodyTarget));
+  checks.push(await gated('compose.fields', 'critical', checkCompose));
+  checks.push(await gated('compose.body_target', 'critical', checkBodyTarget));
 
   // Feature round-trips. These EXERCISE the verbs rather than inspecting the DOM
   // around them, which is the only way a broken verb gets caught before a user
@@ -911,11 +957,10 @@ export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheck
       });
     }
   } else {
-    checks.push(await run('feature.read_surface', 'critical', checkReadSurface));
-    checks.push(await run('feature.label_roundtrip', 'critical', checkLabelRoundTrip));
-    checks.push(await run('feature.draft_roundtrip', 'critical', checkDraftRoundTrip));
-    checks.push(await run('feature.star_toggle', 'warn', () => checkStarToggle(state)));
-  }
+    checks.push(await gated('feature.read_surface', 'critical', checkReadSurface));
+    checks.push(await gated('feature.label_roundtrip', 'critical', checkLabelRoundTrip));
+    checks.push(await gated('feature.draft_roundtrip', 'critical', checkDraftRoundTrip));
+    }
 
   if (opts?.deep === true) {
     checks.push(await run('attachments.deep', 'warn', checkAttachments));

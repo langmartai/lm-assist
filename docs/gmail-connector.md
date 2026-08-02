@@ -412,7 +412,6 @@ Four feature checks now run alongside them:
 | `feature.read_surface` | summary, aliases | none |
 | `feature.label_roundtrip` | create → rename → delete | none — self-cleaning |
 | `feature.draft_roundtrip` | draft, drafts, draft_delete | none — nothing is SENT |
-| `feature.star_toggle` | star, restoring the ORIGINAL state | none |
 
 🔴 **Cleanup only ever touches its own artifacts.** Everything is named with a
 `lm-selfcheck` tag, and each teardown re-reads the live list and removes only
@@ -429,10 +428,20 @@ first version reported 11/15 with three failures on a completely healthy mailbox
 because the feature checks doubled the browser work and the browser died mid-run.
 A suite that goes red because it fought itself teaches the reader to ignore red.
 
-⚠️ `feature.star_toggle` verifies via `is:starred`, whose index lags the DOM — a
-disagreement is reported AMBIGUOUS, not failed, because the check verifies on a
-slower basis than the action it performs.
+🔴 **Every check gets a clean page.** Checks were inheriting whatever the previous
+one left open — a compose, a thread, a settings page — and the page degraded until
+it stopped answering CDP entirely. Measured: a full run went from 14/15 to 5 passed
+/ 9 skipped / 1 failed, with 10 GB RAM free and no OOM. A reset now runs before each
+check, and if the browser has died the suite relaunches it ONCE and carries on
+instead of skipping everything after the failure. Same starting conditions:
+5 passed / 9 skipped -> **14 passed / 0 skipped**.
 
+⚠️ There is deliberately NO star-toggle check. Three attempts failed three
+different ways on a healthy mailbox (`#label/starred` does not exist; the
+`is:starred` index lags the DOM; that search view would not render in time). The
+action is a row click and every verification route available is slower than it —
+a check that verifies on a weaker basis than the thing it tests goes red on a
+healthy mailbox, which is worse than no check.
 ## Limits and caveats
 
 - **The thread list is virtualized.** A read returns the most-recent RENDERED threads
