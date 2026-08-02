@@ -170,7 +170,7 @@ exists for). Trust `gmail_status`, not the pid.
 
 ## Tools & scopes
 
-37 tools. Reads observe the mailbox; writes send real mail or mutate threads;
+38 tools. Reads observe the mailbox; writes send real mail or mutate threads;
 `gmail_login` drives interactive auth.
 
 | Tool | Scope | Purpose |
@@ -193,6 +193,7 @@ exists for). Trust `gmail_status`, not the pid.
 | `gmail_reply` | write | reply to an existing thread |
 | `gmail_forward` | write | forward a thread to new recipients |
 | `gmail_schedule_send` | write | compose and send LATER (Gmail's Schedule send) |
+| `gmail_schedule_cancel` | write | un-schedule a pending send — returns it to Drafts, undelivered |
 | `gmail_draft` | write | compose and save a draft, sending nothing |
 | `gmail_draft_send` · `gmail_draft_delete` | write | send or discard a saved draft — completes the lifecycle |
 | `gmail_archive` · `gmail_trash` · `gmail_spam` | write | move a thread out of the inbox |
@@ -213,7 +214,7 @@ by every conversation. Its trigger words live on `gmail_search`.
 `GET /gmail/thread?id=` · `GET /gmail/search?q=&limit=` · `GET /gmail/search-local` ·
 `GET /gmail/unread?limit=` · `GET /gmail/labels` · `GET /gmail/aliases` · `GET /gmail/drafts` ·
 `GET /gmail/attachments` · `POST /gmail/attachment/download` · `GET /gmail/settings?filters=` · `GET /gmail/selfcheck` · `GET /gmail/sync-status` · `POST /gmail/sync` ·
-`POST /gmail/send` · `POST /gmail/schedule-send` · `POST /gmail/reply` · `POST /gmail/forward` · `POST /gmail/draft` ·
+`POST /gmail/send` · `POST /gmail/schedule-send` · `POST /gmail/schedule-cancel` · `POST /gmail/reply` · `POST /gmail/forward` · `POST /gmail/draft` ·
 `POST /gmail/draft/send` · `POST /gmail/draft/delete` · `POST /gmail/triage` ·
 `POST /gmail/archive` · `POST /gmail/trash` · `POST /gmail/untrash` · `POST /gmail/spam` · `POST /gmail/mark-read` ·
 `POST /gmail/star` · `POST /gmail/move-to` · `POST /gmail/label/apply` ·
@@ -364,6 +365,22 @@ Status now answers with four fields instead of one:
 - `credentialOnDisk` — does the driver profile hold a persisted Google session
   (pure disk state, answers with no browser running)
 - `needsAction` — `relaunch` / `sign-in` / `null`, so the caller need not infer it
+
+## Cancelling a scheduled send — measured 2026-08-02
+
+🔴 **The `#scheduled` LIST toolbar has no cancel affordance.** With a row selected it
+offers Mark as unread / Snooze / Add to Tasks / Move to Inbox / Labels — nothing else.
+`Cancel send` exists ONLY once the message is OPEN. So the select-the-row pattern that
+untrash and the triage verbs use cannot work here; the row must be clicked open first.
+
+🔴 **And it cannot be opened by URL.** The opened hash is `#scheduled/<KtbxL…>`, an id
+unrelated to the legacy thread id, so there is nothing to construct a URL from — the
+same conclusion `openDraft` reached for drafts. Land on the list, find the row by
+legacy id, click it, then trusted-click `Cancel send`.
+
+Verified against a real pending send: `#scheduled` 1 → 0, the message reappeared in
+Drafts undelivered, and the verb reports `verified` from that absence rather than from
+the click.
 
 ## Limits and caveats
 
