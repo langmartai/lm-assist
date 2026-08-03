@@ -1908,6 +1908,32 @@ export async function removeLabel(cdp: LabelCdp, threadId: string, label: string
  * a `#settings/labels` request came back reading `#search/in:inbox...`. Re-assert
  * until the hash sticks rather than acting on whichever view happened to win.
  */
+/**
+ * Poll until the Labels settings table has actually rendered a per-label row.
+ *
+ * A row is only counted when it carries a "Remove" control, because that is what
+ * makes it a LABEL row rather than one of the page's other tables — the same
+ * signal the action finder uses, so this waits for exactly what it will read.
+ */
+async function waitForLabelRows(cdp: LabelCdp, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const n = await cdp
+      .evaluate<number>(`
+        const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+        let n = 0;
+        for (const tr of [...document.querySelectorAll('tr')].filter(vis)) {
+          const acts = [...tr.querySelectorAll('span,a')].filter(vis).map((x) => String(x.innerText || '').trim());
+          if (acts.some((t) => /^remove$/i.test(t))) n++;
+        }
+        return n;`)
+      .catch(() => 0);
+    if (typeof n === 'number' && n > 0) return true;
+    await sleep(400);
+  }
+  return false;
+}
+
 async function openLabelSettings(cdp: LabelCdp): Promise<void> {
   for (let i = 0; i < 5; i++) {
     await cdp
@@ -1917,7 +1943,14 @@ async function openLabelSettings(cdp: LabelCdp): Promise<void> {
     await reloadPage(cdp);
     await sleep(i === 0 ? 4000 : 3000);
     const hash = await cdp.evaluate<string>(`return String(location.hash || '');`).catch(() => '');
-    if (typeof hash === 'string' && /settings\/labels/.test(hash)) return;
+    if (typeof hash !== 'string' || !/settings\/labels/.test(hash)) continue;
+    // 🔴 The hash is not the page. MEASURED 2026-08-03: one second after the
+    // reload the hash already read `#settings/labels` while the label table held
+    // ZERO rows; it filled in at ~2s. Returning on the hash alone let the caller
+    // scan an empty page and conclude the label did not exist. Wait for the thing
+    // that is actually going to be read.
+    const filled = await waitForLabelRows(cdp, 12000);
+    if (filled) return;
   }
   throw new GmError(
     'SETTINGS_NOT_REACHED',
@@ -1956,6 +1989,11 @@ function jsFindLabelAction(name: string, action: 'edit' | 'remove'): string {
     if (b.top < 0 || b.bottom > innerHeight) return { ok: false, miss: 'off-screen-after-scroll' };
     return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };
   }
+  // 🔴 EMPTY IS NOT ABSENT. Zero readable label rows means the settings table did
+  // not render, not that the account has no labels — and on an account with 71 of
+  // them the difference is the whole answer. Reporting it as 'no-such-label' is how
+  // "it has: (none read)" ended up in a LABEL_NOT_FOUND on a label that existed.
+  if (!seen.length) return { ok: false, miss: 'labels-unreadable' };
   return { ok: false, miss: 'no-such-label', seen: seen.slice(0, 25) };`;
 }
 
@@ -2034,6 +2072,15 @@ async function openLabelDialog(cdp: LabelCdp, name: string, action: 'edit' | 're
   await openLabelSettings(cdp);
   const pt = await cdp.evaluate<ActionPoint>(jsFindLabelAction(name, action));
   if (!pt?.ok || typeof pt.x !== 'number' || typeof pt.y !== 'number') {
+    if (pt?.miss === 'labels-unreadable') {
+      throw new GmError(
+        'LABELS_UNREADABLE',
+        'the Labels settings page rendered no label rows, so whether "' +
+          name +
+          '" exists is UNKNOWN — this is not a report that it is missing. ' +
+          'Usually the page was navigated away mid-read (the background sync drives the same tab); retry.',
+      );
+    }
     if (pt?.miss === 'no-such-label') {
       // Name what DOES exist — "not found" against an invisible list is unactionable,
       // and a nested label's real name is its full path ("Parent/Child").

@@ -746,6 +746,72 @@ async function gotoHash(cdp: Cdp, hash: string, readySel: string, timeoutMs = 15
   const ready = await waitFor(cdp, `!!document.querySelector(${sel})`, timeoutMs);
   if (!ready) throw new GmError('PAGE_NOT_READY', `timed out waiting for ${hash} to render (${readySel})`);
   await sleep(600);
+  await assertLanded(cdp, hash, readySel, timeoutMs);
+}
+
+/**
+ * Prove the page is showing what was ASKED FOR before anyone reads it.
+ *
+ * 🔴 A ready selector answers "did something render", never "did the RIGHT thing
+ * render". MEASURED 2026-08-03 on 123: a request for `#search/has%3Aattachment`
+ * came back with `location.hash === '#inbox'`, 50 rows and `ready === true`, so
+ * searchThreads('has:attachment') would have returned FIFTY INBOX THREADS as
+ * attachment results — a wrong answer wearing a right answer's clothes, which is
+ * the exact failure this module already suffered on 2026-07-31 with `#drafts`.
+ *
+ * The cause is that the driver tab has more than one writer: the arrival watcher's
+ * background sync navigates it (`#search/newer_than:1d/p2`) WITHOUT the driver
+ * lock. Directly observed: after setting the hash, a writer that is not this call
+ * moved the page SEVEN times in thirty seconds. Locking that writer is a separate,
+ * larger change; refusing to hand back its results as ours is this one, and it is
+ * the half that turns silent corruption into a plain error.
+ *
+ * `JS_VIEW_MATCHES` already existed for precisely this — written for the `#drafts`
+ * incident, wired into compose.ts, and never called from the module that owns
+ * navigation. It compares the view SEGMENT, so it cannot tell two searches apart;
+ * the query is therefore compared here as well.
+ *
+ * ONE retry, because the two causes look different over time: a rival writer is
+ * transient and a genuine hash normalisation is permanent, so retrying separates
+ * them without a catalogue of special cases.
+ */
+function sameQuery(want: string, got: string): boolean {
+  const norm = (h: string): string =>
+    decodeURIComponent(String(h || '').trim())
+      .replace(/^#/, '')
+      .replace(/\+/g, ' ')
+      .replace(/\/p\d+$/i, '') // `/p2` is pagination WITHIN the same view
+      .replace(/\/+$/, '')
+      .toLowerCase();
+  const w = norm(want);
+  const g = norm(got);
+  return g === w || g.startsWith(`${w}/`);
+}
+
+async function assertLanded(cdp: Cdp, hash: string, readySel: string, timeoutMs: number): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const view = await cdp.evaluate<boolean>(`${JS_VIEW_MATCHES(hash)}`).catch(() => null);
+    const got = await cdp.evaluate<string>('return String(location.hash || "");').catch(() => '');
+    // A non-search hash is fully described by its view segment; a search is not,
+    // so `#search/a` must not be satisfied by `#search/b`.
+    const isSearch = /^#search\//i.test(hash);
+    const landed = view === true && (!isSearch || sameQuery(hash, got));
+    if (landed) return;
+    if (attempt === 1) {
+      throw new GmError(
+        'VIEW_NOT_APPLIED',
+        `asked for ${hash} but the page is showing ${got || 'an unknown view'}. ` +
+          'Another writer is driving this browser (the background sync navigates the shared tab), ' +
+          'so these rows are NOT the requested view and are deliberately not returned.',
+      );
+    }
+    await cdp.evaluate(`location.hash = ${JSON.stringify(hash)}; return true;`).catch(() => undefined);
+    await sleep(300);
+    await cdp.evaluate('location.reload(); return true;').catch(() => undefined);
+    await sleep(3200);
+    await waitFor(cdp, `!!document.querySelector(${JSON.stringify(readySel)})`, timeoutMs);
+    await sleep(600);
+  }
 }
 
 /** Scroll the thread list until at least `want` rows have rendered (or it stops growing). */
