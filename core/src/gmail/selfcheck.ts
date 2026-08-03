@@ -80,6 +80,9 @@ import {
   assertNavLabels,
   looksLikeThreadId,
 } from './validate';
+// Static import is safe here: the graph is selfcheck -> safety -> cdp-client, and
+// cdp-client only ever reaches back with `import type`, so nothing is cyclic.
+import { checkRate } from './safety';
 
 // ─── result shapes ───────────────────────────────────────────────────────────
 
@@ -142,6 +145,40 @@ function reason(e: unknown): string {
 }
 
 /**
+ * Why a reset did not happen. `rateLimited` is separated from every other cause
+ * because the two need OPPOSITE responses: wait, versus restart the browser.
+ */
+interface ResetOutcome {
+  ok: boolean;
+  rateLimited?: boolean;
+  detail?: string;
+}
+
+/**
+ * Stay inside the connector's own read budget instead of crashing into it.
+ *
+ * 🔴 The suite is the heaviest reader in the codebase: with a reset before every
+ * check, one deep run costs ~16 resets plus ~18 check reads — comfortably past the
+ * 20/min default. It was therefore GUARANTEED to trip its own limiter partway
+ * through, and which checks survived depended on how much budget happened to be
+ * left when it started. A canary whose verdict depends on when you last ran it is
+ * not a canary.
+ *
+ * `checkRate` is pure — it records nothing — so consulting it costs no quota, and
+ * `retryAfterMs` is the limiter's own answer for how long a slot takes to open.
+ * The wait is capped so a misconfigured `GMAIL_READ_MAX_PER_MIN=0` cannot hang the
+ * suite forever; that case surfaces as a rate-limited skip, which is the truth.
+ */
+const BUDGET_WAIT_CAP_MS = 70_000;
+
+async function awaitReadBudget(force = false): Promise<void> {
+  const v = checkRate('read');
+  if (v.allowed && !force) return;
+  const wait = Math.min(Math.max(v.retryAfterMs, force ? 1000 : 0) + 750, BUDGET_WAIT_CAP_MS);
+  if (wait > 0) await sleep(wait);
+}
+
+/**
  * Put the page back to a known-good state between checks.
  *
  * 🔴 Checks were sharing whatever state the previous one left behind — an open
@@ -155,7 +192,7 @@ function reason(e: unknown): string {
  * Returns false when the page could not be brought back — the caller then knows to
  * skip rather than to report a feature failure.
  */
-async function resetBetweenChecks(): Promise<boolean> {
+async function resetBetweenChecks(): Promise<ResetOutcome> {
   try {
     await pageProbe(async (cdp) => {
       // A real load, not a hash write: a hash-only change does not re-route the SPA
@@ -167,30 +204,57 @@ async function resetBetweenChecks(): Promise<boolean> {
       if (ok !== true) throw new Error('page did not answer after reset');
       return true;
     });
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (e) {
+    // 🔴 WHY THIS IS NOT A BOOLEAN. It was, and the single `false` collapsed two
+    // completely different worlds into one: "the browser is gone" and "we are out
+    // of read budget". The caller could only guess, guessed "browser", and told
+    // the reader to run gmail_login against a browser that was perfectly alive.
+    const code = (e as { code?: unknown })?.code;
+    if (code === 'RATE_LIMITED') return { ok: false, rateLimited: true, detail: String((e as Error).message || '') };
+    return { ok: false, rateLimited: false, detail: reason(e) };
   }
 }
 
 /**
- * Reset, and if the browser is gone try ONE relaunch before giving up.
+ * Reset, waiting out the read budget and relaunching the browser — but never
+ * confusing the two.
  *
- * Without this a single mid-run death skipped every remaining check — 9 of 15 on
- * the measured run. The browser dying is a recoverable condition, not a reason to
- * abandon the suite.
+ * 🔴 MEASURED 2026-08-03, deep run on 123: `ok=false, passed=4, skipped=10`. Check
+ * 5 tripped the limiter at read 21, and from then on EVERY remaining check was
+ * skipped as "browser gone; run gmail_login" — while the browser was fine and the
+ * mailbox was healthy. The reset probe is itself an `op('read')`, so once the
+ * budget was gone the recovery path could not run either, and the one recovery it
+ * did attempt was a browser relaunch for a rate limit.
+ *
+ * Two things follow, and both are the same principle this suite keeps re-learning:
+ *   - Pace, do not fail. The limiter already computes exactly how long to wait.
+ *   - Never report a cause you have not established. "Browser gone" was inferred
+ *     from a bare false, and it was wrong.
  */
-async function resetOrRecover(state: { relaunched: boolean }): Promise<boolean> {
-  if (await resetBetweenChecks()) return true;
-  if (state.relaunched) return false; // only ever once per run
+async function resetOrRecover(state: { relaunched: boolean }): Promise<ResetOutcome> {
+  await awaitReadBudget();
+  let r = await resetBetweenChecks();
+  if (r.ok) return r;
+
+  // Rate-limited even after pacing: wait the limiter's own figure and retry once.
+  // This is a budget condition; a relaunch would not help and would destroy state.
+  if (r.rateLimited) {
+    await awaitReadBudget(true);
+    r = await resetBetweenChecks();
+    if (r.ok) return r;
+    if (r.rateLimited) return r;
+  }
+
+  if (state.relaunched) return r; // only ever one relaunch per run
   state.relaunched = true;
   try {
     const { gmailLogin } = await import('./login');
     await gmailLogin({});
     await sleep(2500);
     return await resetBetweenChecks();
-  } catch {
-    return false;
+  } catch (e) {
+    return { ok: false, rateLimited: false, detail: reason(e) };
   }
 }
 
@@ -211,7 +275,18 @@ async function resetOrRecover(state: { relaunched: boolean }): Promise<boolean> 
  * sub-call takes the driver lock independently. Those are conditions of the
  * harness, not findings about Gmail.
  */
-const INFRA_CODES = new Set(['BROWSER_BUSY', 'BROWSER_NOT_RUNNING', 'CDP_UNREACHABLE', 'PAGE_NOT_FOUND']);
+const INFRA_CODES = new Set([
+  'BROWSER_BUSY',
+  'BROWSER_NOT_RUNNING',
+  'CDP_UNREACHABLE',
+  'PAGE_NOT_FOUND',
+  // 🔴 Added 2026-08-03 after a deep run reported `thread.identity` and
+  // `attachments.deep` as FAILED when both were simply past the 20-reads-per-minute
+  // budget. The suite hitting its OWN limiter is the purest possible harness
+  // condition — the feature was never exercised — and grading it as a failure is
+  // how a green-when-idle, red-when-busy canary teaches people to ignore red.
+  'RATE_LIMITED',
+]);
 
 function infraReason(e: unknown): string | null {
   const code = (e as { code?: unknown })?.code;
@@ -233,7 +308,11 @@ async function run(name: string, severity: CheckResult['severity'], body: CheckB
         name,
         ok: true,
         skipped: true,
-        detail: `SKIPPED — could not run (${infra}); this says nothing about the feature`,
+        detail:
+          infra === 'RATE_LIMITED'
+            ? `SKIPPED — the suite ran out of its own read budget mid-check (${reason(e)}). ` +
+              'The feature was never exercised, so this is not a verdict on it.'
+            : `SKIPPED — could not run (${infra}); this says nothing about the feature`,
         ms: Date.now() - t0,
         severity,
       };
@@ -919,12 +998,17 @@ export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheck
   const recov = { relaunched: false };
   const gated = async (name: string, sev: CheckResult['severity'], body: CheckBody): Promise<CheckResult> => {
     const clean = await resetOrRecover(recov);
-    if (!clean) {
+    if (!clean.ok) {
+      // Say which of the two it was. The old text asserted "browser gone" for
+      // both, and on the measured run it was wrong ten times out of ten.
       return {
         name,
         ok: true,
         skipped: true,
-        detail: 'SKIPPED — the page could not be reset to a clean state (browser gone); run gmail_login',
+        detail: clean.rateLimited
+          ? `SKIPPED — out of read budget, not a browser fault (${clean.detail || 'rate limited'}). ` +
+            'Raise GMAIL_READ_MAX_PER_MIN or re-run in a minute; the browser is fine.'
+          : `SKIPPED — the page could not be reset to a clean state: ${clean.detail || 'unknown'}; run gmail_login`,
         ms: 0,
         severity: sev,
       };
