@@ -1062,7 +1062,14 @@ export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheck
     }
 
   if (opts?.deep === true) {
-    checks.push(await run('attachments.deep', 'warn', checkAttachments));
+    // 🔴 gated(), NOT run(). This was the ONLY check in the suite that bypassed
+    // the per-check reset, because the list of names the gate was applied to
+    // simply did not include it. Running LAST with no reset, it inherited ~7
+    // minutes of accumulated page state — and failed PAGE_NOT_READY three runs
+    // in a row while the identical search passed standalone in 32s on a fresh
+    // page. The gap between "fails in the suite" and "passes alone" was the
+    // missing reset, not the feature, not the timeout, not the encoding.
+    checks.push(await gated('attachments.deep', 'warn', checkAttachments));
   }
 
   const skipped = checks.filter((c) => c.skipped === true);
