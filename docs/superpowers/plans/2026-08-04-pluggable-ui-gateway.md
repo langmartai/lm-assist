@@ -875,7 +875,7 @@ loginRouter.get('/auth/login', async (req: Request, res: Response) => {
   const challenge = b64url(createHash('sha256').update(verifier).digest());
   const state = b64url(randomBytes(16));
   const nonce = b64url(randomBytes(16));
-  const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : '/';
+  const returnTo = safeReturnTo(req.query.returnTo); // same-origin relative path only — see safeReturnTo below
   pending.set(state, { verifier, nonce, returnTo, exp: Date.now() + 10 * 60 * 1000 });
   const q = new URLSearchParams({
     response_type: 'code', client_id: CLIENT_ID, redirect_uri: REDIRECT_URI,
@@ -929,6 +929,17 @@ cd /home/ubuntu/LangMartDesign
 git add ui-gateway/src/session/ ui-gateway/src/oidc/login.ts ui-gateway/src/app.ts ui-gateway/src/__tests__/session.test.ts
 git commit -m "feat(ui-gateway): server-side sessions + OIDC login/callback/logout routes"
 ```
+
+**Post-review hardening (required — the illustrative code above is imperfect):**
+1. **Open redirect (CWE-601):** add a module-scope pure helper and use it for `returnTo`:
+   ```ts
+   export function safeReturnTo(raw: unknown): string {
+     // same-origin relative path only: single leading '/', not '//' or '/\'
+     return typeof raw === 'string' && /^\/(?![/\\])/.test(raw) ? raw : '/';
+   }
+   ```
+   Unit-test it (`__tests__/return-to.test.ts`): `'/'` and `'/ui/x?a=b'` pass through; `https://evil`, `//evil`, `/\evil`, `''`, non-strings all collapse to `'/'`.
+2. **Crash-safe async:** Express 4 does NOT auto-forward async-middleware rejections and Node 20 crashes the process on an unhandled rejection. Wrap the `await`s in `loadSession` (globally mounted — fail CLOSED to `session=null`, never crash), `/auth/logout` (best-effort: always `clearCookie` + respond), and `/auth/login`'s `getDiscovery()` (502 on failure). `/auth/callback` already has try/catch — mirror it.
 
 ---
 
