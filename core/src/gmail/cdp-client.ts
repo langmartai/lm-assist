@@ -193,6 +193,18 @@ const SELECTORS = {
 } as const;
 
 /**
+ * How long a SEARCH may take to render before it counts as broken.
+ *
+ * Deliberately NOT the shared 15s used for view switches. Moving to #inbox or
+ * #label/X re-renders data the page already holds; a search is a round trip to
+ * Google across the whole mailbox, so it is the one navigation where "slow" is
+ * normal rather than a symptom. MEASURED 2026-08-03: `has:attachment` on a
+ * 71-label account took 32s and the 15s default called it PAGE_NOT_READY — a
+ * search that was still running, reported as a broken feature.
+ */
+export const SEARCH_READY_TIMEOUT_MS = 45_000;
+
+/**
  * The MOBILE_UI guard's landmarks. At least ONE must be present or we are not
  * looking at the desktop mail app.
  *
@@ -1359,7 +1371,13 @@ export async function searchThreads(query: string, limit = 25): Promise<GmailThr
   if (!q) throw new GmError('INVALID_QUERY', 'query is required');
   const n = Math.max(1, Math.min(limit, 100));
   return op('read', async (cdp) => {
-    await gotoHash(cdp, `#search/${encodeURIComponent(q)}`, SELECTORS.listReady);
+    // 🔴 Search needs a LONGER budget than a view switch, and the difference is not
+    // cosmetic. Switching to #inbox or #label/X re-renders data the page already
+    // has; a search is a round trip to Google over the whole mailbox. MEASURED
+    // 2026-08-03 on a 71-label account: `has:attachment` took 32s end to end and
+    // the shared 15s default reported PAGE_NOT_READY for a search that was simply
+    // still running — a timeout being read as a broken feature.
+    await gotoHash(cdp, `#search/${encodeURIComponent(q)}`, SELECTORS.listReady, SEARCH_READY_TIMEOUT_MS);
     await ensureRows(cdp, n);
     return (await cdp.evaluate<GmailThread[]>(JS_THREAD_ROWS(n))) || [];
   });
@@ -2034,6 +2052,17 @@ export async function syncWindow(
       days,
       label: /^inbox$/i.test(label) ? undefined : label,
       includeBodies: opts.includeBodies !== false,
+      // 🔴 THE POINT OF THIS ARGUMENT. Above, `op('read', async () => undefined)`
+      // takes the driver lock, does nothing and releases it — it is a LOGIN PROBE
+      // that reads like a guard, and for a long time nothing guarded the walk at
+      // all. The sync then navigated the shared tab for minutes while interactive
+      // reads navigated it too, and whoever read second got the other's page.
+      //
+      // It cannot simply be hoisted to wrap the whole job: a multi-minute lock
+      // turns every concurrent read into BROWSER_BUSY. So the walk takes the SAME
+      // lock every other browser touch takes, once per page and once per thread
+      // body, and yields it in between. A reader now waits one step, not one job.
+      exclusive: <T>(fn: (cdp: Cdp) => Promise<T>) => withCdp(fn),
     });
   } catch (e) {
     throw toGmError(e);
