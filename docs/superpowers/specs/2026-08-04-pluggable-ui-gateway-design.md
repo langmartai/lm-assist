@@ -36,24 +36,31 @@ never transit the `/w/` relay.
   system*: surgery on three smeared authorization layers across two repos, and it still cannot
   isolate without a new origin — you end up building A anyway, entangled.
 
-## 3. Identity — federate, don't build
+## 3. Identity — standard OIDC relying party
 
-The gateway is a relying party against LangMartDesign's existing auth (Google/GitHub/Microsoft
-social login, `users` table, `GET /auth/validate`).
+LangMart's AS is an OIDC provider since `7dfa6cbe` (live on `https://mcp.langmart.ai`:
+discovery, JWKS, RS256 id_token, userinfo). The gateway federates as a **standard OIDC
+relying party** — any off-the-shelf client library, zero custom federation code.
 
-- Login: gateway redirects to LangMart login → one-time code (the existing 60s cross-app bridge)
-  → the **gateway redeems the code server-side**.
-- The redeemed LangMart `sk-…` key lives **only in the gateway's server-side session store**. It
-  never appears in a Set-Cookie, a response body, or a page.
+- Login: authorization-code + PKCE redirect to the AS with scope `openid profile email` and a
+  `nonce`. How the AS logs the human in (its web login bridge) is the AS's internal detail —
+  the gateway never touches it.
+- The gateway verifies the returned `id_token` against the published JWKS (`iss`, `aud`,
+  `nonce`, `exp`) and starts its own session from the claims (`sub`, email, name, picture).
+- The gateway holds **no full-power LangMart key, ever** — stronger than the earlier draft,
+  which parked a redeemed `sk-…` key server-side. What the token endpoint returns is an
+  OAuth-minted access token that (per scope fix `f71918f0`) reaches only `/mcp` and
+  `/oauth/userinfo`; the gateway keeps it and the rotating refresh token server-side solely to
+  re-confirm the account periodically.
+- Client registration: one pre-registered OAuth client for the gateway (DCR at deploy time or a
+  seeded registry row) carrying the gateway's redirect URI.
 - This deliberately breaks with the current assist-web pattern (JS-readable `langmart_session`
   cookie copied into `localStorage` as a full-power key). That pattern is the anti-goal.
-- **No OIDC dependency.** LangMart's AS has no id_token / userinfo / JWKS today. Adding an OIDC
-  layer is a worthwhile follow-up once there is a second consumer; it is not a prerequisite.
 
 ## 4. Sessions
 
 - Gateway session cookie: **HttpOnly, Secure, SameSite=Lax**, gateway origin only. Opaque id →
-  server-side record `{userId, langmartKey, createdAt, exp}`.
+  server-side record `{userId, claims, refreshToken, createdAt, exp}`.
 - TTL 7 days sliding. Logout deletes the record — which also kills every future token mint.
 
 ## 5. View tokens — one claim set
@@ -107,14 +114,15 @@ only the gateway consumes the registry.
 - E2E A/B (the proof style that verified the MCP scope fix):
   1. a view token for UI-X reaches X's granted path and gets 403 on any other path;
   2. every byte the browser receives across the full login+render flow is grepped for the
-     LangMart key and the node api-token — **both must be absent**;
+     OAuth access/refresh tokens and the node api-token — **all must be absent**;
   3. a share-link token works logged-out and carries only its pinned grant.
 
 ## 10. Out of scope (follow-on specs)
 
-UI generation pipeline · catalog/discovery · component linting · OIDC layer on LangMart's AS ·
+UI generation pipeline · catalog/discovery · component linting ·
 migrating the three built-in UIs off `/w/` · LangMartDesign's open DCR + unread `permissions`
-field (its own finding, filed separately).
+field (its own finding, filed separately). The OIDC layer on LangMart's AS was originally
+listed here — it shipped early (`7dfa6cbe`) and is now the §3 login path.
 
 ## 11. Deployment shape
 
