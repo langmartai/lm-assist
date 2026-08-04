@@ -77,8 +77,10 @@ One committed migration (`datastore/tables/` + the dump), idempotent:
 - **E2E** (live, against dev AS on `api.xeenhub.com`, ui-gateway repointed):
   1. full login: ui-gateway `/auth/login` → platform `/oauth/authorize` (over a real `langmart_session`) → code → id_token → ui-gateway session; `/auth/me` returns the real user.
   2. **Headline A/B — the structural fence:** the identity `access_token` is *accepted* at `/oauth/userinfo` (200, correct claims) and *rejected* at a real authenticated `/api/*` route (401) — proving login can't mint an API-capable credential.
-  3. **Quarantine proof:** the MCP AS `/.well-known/openid-configuration` now 404s, while `POST mcp.*/oauth/token` still mints an `mcp:read/write` connector token (the MCP flow is intact).
+  3. **Quarantine proof:** the MCP AS's `oauth-authorization-server` metadata advertises only `mcp:read/write` (no `openid`/`jwks_uri`) and `mcp.*/oauth/token` mints only a connector token with no `id_token`. (Note: `/.well-known/openid-configuration` is served app-wide by the platform provider — since both hosts hit the same gateway-type1, a request to that path on `mcp.*` returns the *platform* doc, whose `issuer` points at `api.*`; it does not 404. Security is unaffected — no RP fetches OIDC from `mcp.*`, and the MCP token endpoint no longer signs id_tokens.)
 
 ## 11. Deployment
 
 `gateway-type1` change → surgical SG deploy (per `sg-prod-surgical-hotfix`: overwrite the changed files from the target sha, rebuild only gateway-type1, `./core.sh restart 1`). The `oidc_clients` table + `api_keys.metadata` migration applied via `psql` (idempotent). `ui-gateway/.env` `OIDC_ISSUER` repoint + restart. Dev first (`api.xeenhub.com`), then SG when the user asks. Seed the gateway's `oidc_clients` row on each environment.
+
+**Per-env env vars (must set on prod):** `PLATFORM_OIDC_ISSUER=https://api.langmart.ai` (defaults to the dev host `api.xeenhub.com`; if unset on prod the id_token `iss` + discovery are wrong). Keep it in lockstep with the web `mcp-redirect` `allowedReturnPrefixes` (which hardcodes both real issuers) and with `MCP_PUBLIC_BASE_URL`.
