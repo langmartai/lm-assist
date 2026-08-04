@@ -36,9 +36,9 @@ Endpoints (issuer root):
 `/oauth/authorize` (`response_type=code`, `client_id`, `redirect_uri`, `code_challenge`+`S256`, `scope`, `state`, `nonce`):
 1. Validate `client_id` against `oidc_clients`; `redirect_uri` must be in that client's `redirect_uris` — else reject **before** any redirect.
 2. Require PKCE S256.
-3. Resolve the human via the **existing session**: run the request through `optionalAuth` (the `langmart_session` cookie's value is a `sk-session` api_key → `req.user`). 
-   - Logged in → mint a one-time auth code (10-min TTL) bound to `{userId, clientId, redirectUri, codeChallenge, scope, nonce}`; 302 to `redirect_uri?code&state`.
-   - Not logged in → 302 to the existing web login with a return URL back to this `/oauth/authorize` (so social/SAML runs as today, sets `langmart_session`, then returns here with the session present). The MCP SSO bridge already does exactly this via `LANGMART_WEB_URL/mcp-redirect`; the implementation confirms the exact platform login-entry URL against the web app (the one external unknown) and reuses that bounce mechanism rather than inventing a page.
+3. Resolve the human via the **`exchange_code` SSO bridge** — the proven pattern the MCP AS already uses (NOT a server-read of `langmart_session`; that cookie is a one-shot handoff the SPA exchanges into a `localStorage` key, and `optionalAuth` reads only headers, so a browser redirect to `authorize` carries no server-readable identity). Resolution order (mirrors `oauth-mcp.ts`): (a) `req.user` if a Bearer was attached (server/SPA path, via `optionalAuth`); (b) `?exchange_code=` → `redeemExchangeCode()` → `userId` (the browser path); (c) else bounce.
+   - Resolved → mint a one-time auth code (10-min TTL) bound to `{userId, clientId, redirectUri, codeChallenge, scope, nonce}`; 302 to `redirect_uri?code&state`.
+   - Not resolved → 302 to the web bridge `LANGMART_WEB_URL/mcp-redirect?return=<this authorize URL>`; the bridge page runs as the logged-in SPA user, mints an `exchange_code` via `/api/auth/exchange-code`, and returns to `authorize?exchange_code=…`. The bridge's `allowedReturnPrefixes` must include the platform authorize URL (a one-line web-app addition). A dedicated (non-MCP-named) platform bridge page is a follow-up.
 
 Auth codes live in an in-memory Map with a periodic sweep (acceptable — a restart re-bounces an in-flight Connect through the already-present session; same posture as `oauth-mcp.ts`).
 
