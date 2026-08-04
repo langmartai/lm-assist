@@ -28,6 +28,7 @@
 import type { McpToolResult } from './configure';
 import { fleetIdentity } from './fleet-identity';
 import { listConversations } from '../utils/claudeai-session';
+import { extractConversationRows } from './tools/list-claudeai-conversations';
 import { getSessionCache } from '../session-cache';
 import { currentMcpContext } from './principal-context';
 import type { WorkerRecord } from '../worker-role/types';
@@ -403,9 +404,24 @@ function startSlot(deps: RecencyDeps): Slot {
     const out: CallerCandidates = { resolvedAt: Date.now() };
     // claude.ai (network; the node's real cookie) — most-recently-updated conversation.
     try {
-      const resp: any = await loadConversationsBounded(deps, ctrl.signal);
-      const arr: any[] = Array.isArray(resp) ? resp : (resp?.conversations ?? resp?.data ?? []);
-      const top = arr.filter((c) => c && c.uuid).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0];
+      const resp: unknown = await loadConversationsBounded(deps, ctrl.signal);
+      // The rows arrive inside the ClaudeAIResponse ENVELOPE `{status, statusText, headers,
+      // body}` — `body.data` for chat_conversations_v2, or a bare `body` array on the legacy
+      // shape. This used to read `.conversations`/`.data` off the ENVELOPE, which has
+      // neither, so it could only ever produce `[]`: a healthy, configured, 200-OK cookie
+      // never identified its caller. Unwrapped through the one exported helper the MCP tool
+      // already uses, so there is no fourth hand-rolled copy of this hop to get wrong.
+      const rows = extractConversationRows(resp);
+      if (rows === undefined) {
+        // `undefined` means the payload was not a conversation list at all; `[]` means an
+        // account with no conversations. Collapsing those two is what kept this defect
+        // invisible — the `catch` below reads "not configured", so a drifted shape looked
+        // like an ordinary unconfigured node. The unrecognised case now says so.
+        console.error('[MCP] caller-identity: unrecognised claude.ai conversation-list shape — the claude.ai caller will not be identified');
+      }
+      const top = (rows ?? [])
+        .filter((c: any) => c && c.uuid)
+        .sort((a: any, b: any) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0] as any;
       if (top) out.claudeAi = { id: String(top.uuid), label: top.name || '(untitled)', updatedAt: top.updated_at };
     } catch { /* claude.ai not configured / deadline → omit */ }
     // Claude Code (session store snapshot) — most-recently-modified session.
