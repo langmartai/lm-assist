@@ -466,6 +466,29 @@ export const terminalSlashToolDef = {
   },
 };
 
+export const terminalSendToolDef = {
+  name: 'terminal_send',
+  description:
+    'Press SPECIAL KEYS and/or type text in a tmux session on a LINUX host — the tmux counterpart of ' +
+    'windows_terminal_send, and the only tool here that can press Escape/arrows/Tab (terminal_prompt ' +
+    'only types text + Enter, so menus and dialogs were undriveable). Order per call: `text` is typed ' +
+    'literally (multiline lands as ONE bracketed paste, not line-by-line submits), then `keys` are ' +
+    'pressed (named keys: Enter, Escape, Tab, BTab, Space, BSpace, Delete, Insert, Up/Down/Left/Right, ' +
+    'Home, End, PageUp, PageDown, F1-F12, M-Enter, C-a…C-z minus C-c/C-d/C-z — Ctrl-C is ' +
+    'terminal_interrupt\'s job), then `enter` presses Enter last. WRITE — drives a live session.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      name: { type: 'string', description: 'tmux session name from terminal_list.' },
+      text: { type: 'string', description: 'Literal text to type (newlines do not submit).' },
+      keys: { type: 'array', items: { type: 'string' }, description: 'Named keys pressed after text, e.g. ["Escape"] or ["Up","Up","Enter"].' },
+      enter: { type: 'boolean', description: 'Press Enter last (default false).' },
+    },
+    required: ['name'],
+  },
+};
+
 // ─── admin tier (scope: admin — gateway requires out-of-band confirm) ────
 
 export const agentExecuteToolDef = {
@@ -1151,6 +1174,7 @@ export const EXPANDED_TOOL_DEFS = [
   agentResumeToolDef,
   terminalPromptToolDef,
   terminalSlashToolDef,
+  terminalSendToolDef,
   // admin
   agentExecuteToolDef,
   terminalInterruptToolDef,
@@ -1721,6 +1745,26 @@ async function handleTerminalSlash(args: Record<string, unknown>): Promise<McpTo
   if (args.args) body.args = String(args.args);
   try {
     return ok(pretty(await workerPost(`/terminal/cc/${enc(name)}/slash`, body)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleTerminalSend(args: Record<string, unknown>): Promise<McpToolResult> {
+  const name = String(args.name || '').trim();
+  if (!name) return err('name is required.');
+  const text = typeof args.text === 'string' && args.text.length > 0 ? args.text : null;
+  const keys = Array.isArray(args.keys) ? (args.keys as unknown[]).map((k) => String(k)) : null;
+  const enter = args.enter === true;
+  if (text === null && !(keys && keys.length > 0) && !enter) {
+    return err('nothing to send: pass text, keys (e.g. ["Escape"]), or enter:true.');
+  }
+  const body: Record<string, unknown> = {};
+  if (text !== null) body.text = text;
+  if (keys && keys.length > 0) body.keys = keys;
+  if (enter) body.enter = true;
+  try {
+    return ok(pretty(await workerPost(`/terminal/tmux/${enc(name)}/send-keys`, body)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -2334,6 +2378,7 @@ export const EXPANDED_HANDLERS: Record<
   agent_resume: handleAgentResume,
   terminal_prompt: handleTerminalPrompt,
   terminal_slash: handleTerminalSlash,
+  terminal_send: handleTerminalSend,
   // admin
   agent_execute: handleAgentExecute,
   terminal_interrupt: handleTerminalInterrupt,

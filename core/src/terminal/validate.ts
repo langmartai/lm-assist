@@ -13,6 +13,7 @@
  */
 
 import { TerminalError } from './errors';
+import { NAMED_KEYS } from './types';
 import type {
   SendKeysInput, WaitForInput, CaptureInput,
   CCLaunchInput, CCPromptInput, CCPivotInput,
@@ -127,12 +128,33 @@ export function parseTabKind(v: unknown): TabKind {
 
 export function parseSendKeys(body: unknown): SendKeysInput {
   const b = (body || {}) as Record<string, unknown>;
-  return {
-    keys: asString(b.keys, 'keys', { maxLen: 65536, allowEmpty: false }),
-    literal: asBool(b.literal, 'literal', false),
-    enter: asBool(b.enter, 'enter', false),
-    paneQualifier: parsePaneQualifier(b.paneQualifier ?? b.target),
-  };
+  const literal = asBool(b.literal, 'literal', false);
+  const enter = asBool(b.enter, 'enter', false);
+  const paneQualifier = parsePaneQualifier(b.paneQualifier ?? b.target);
+  const text = b.text === undefined || b.text === null
+    ? null
+    : asString(b.text, 'text', { maxLen: 65536 });
+  let keys: string | null = null;
+  let keyNames: string[] = [];
+  if (Array.isArray(b.keys)) {
+    // keys as an ARRAY = named special keys (Escape, Up, …), pressed in order.
+    if (literal) bad('literal cannot be combined with a keys array — named keys are never literal; send literal text via `text`');
+    if (b.keys.length === 0) bad('keys array must not be empty — omit it or name at least one key');
+    if (b.keys.length > 32) bad('keys array exceeds 32 keys per call');
+    keyNames = (b.keys as unknown[]).map((k, i) => {
+      const s = asString(k, `keys[${i}]`, { maxLen: 16 });
+      if (!NAMED_KEYS.has(s)) {
+        bad(`keys[${i}] '${s}' is not an allowed key name (C-c/C-d/C-z are deliberately excluded — interrupt goes through the interrupt endpoint)`, { key: s });
+      }
+      return s;
+    });
+  } else if (b.keys !== undefined && b.keys !== null) {
+    keys = asString(b.keys, 'keys', { maxLen: 65536, allowEmpty: false });
+  }
+  if (text === null && keys === null && keyNames.length === 0 && !enter) {
+    bad('nothing to send: provide text, keys, or enter:true');
+  }
+  return { keys, text, keyNames, literal, enter, paneQualifier };
 }
 
 export function parseWaitFor(body: unknown): WaitForInput {
@@ -184,7 +206,7 @@ export function parseCCPrompt(body: unknown): CCPromptInput {
   const text = asString(b.text, 'text', { maxLen: 65536, allowEmpty: false });
   const allowNewlines = asBool(b.allowNewlines, 'allowNewlines', false);
   if (!allowNewlines && /\r|\n/.test(text)) {
-    bad('text contains a newline; CC submits on Enter and would split the prompt. Pass allowNewlines:true to override.');
+    bad('text contains a newline; pass allowNewlines:true to deliver it as ONE bracketed paste (CC inserts the lines without submitting).');
   }
   return { text, allowNewlines };
 }

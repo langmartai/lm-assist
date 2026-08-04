@@ -191,6 +191,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   agent_resume: 'write',
   terminal_prompt: 'write',
   terminal_slash: 'write',
+  terminal_send: 'write',
   // expanded admin tier
   agent_execute: 'admin',
   terminal_interrupt: 'admin',
