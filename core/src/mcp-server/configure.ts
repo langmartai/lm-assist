@@ -437,6 +437,13 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   backup_remove: 'admin',
   // cowork task creation (write — starts a real background session)
   cowork_create_task: 'write',
+  // desktop automation: reads observe the screen; window/input synthesize real
+  // pointer/keyboard events on the operator's live desktop (write).
+  desktop_status: 'read',
+  desktop_windows: 'read',
+  desktop_screenshot: 'read',
+  desktop_window: 'write',
+  desktop_input: 'write',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */

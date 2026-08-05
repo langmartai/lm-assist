@@ -159,21 +159,37 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   windows_terminal_list: { measuredBytes: 52395, budgetBytes: 73000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY', note: '~950 B per terminal x 55.' },
   mission_graph: { measuredBytes: 42771, budgetBytes: 60000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Nodes+edges for every mission.' },
   ccr_cloud_list: { measuredBytes: 41480, budgetBytes: 58000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: '~829 B per cloud session x 50.' },
-  backlog_list: { measuredBytes: 24015, budgetBytes: 34000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: '~895 B per item x 22; unbounded but small today.' },
+  backlog_list: { measuredBytes: 46625, budgetBytes: 60000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note:
+    '~895 B per item. GREW 24,015 -> 46,625 B (2026-08-05, +94%) purely from the backlog accumulating on the live ' +
+    'fleet — an unrelated drift the desktop-automation full-build test run was the first live sweep to observe. ' +
+    'Budget bumped deliberately to 60,000 (still under the 64 KiB cap); the standing NEEDS-CAP debt is unchanged — ' +
+    'it is still a bare NOTHING-bound collection and wants detail/limit/offset like backlog_graph got.' },
   session_footprints: { measuredBytes: 19547, budgetBytes: 27000, bound: 'NOTHING', verdict: 'NEEDS-CAP' },
   backlog_graph: { measuredBytes: 13146, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   list_session_messages: {
-    measuredBytes: 27840, budgetBytes: 45000, bound: 'NOTHING', verdict: 'NEEDS-CAP',
+    measuredBytes: 65865, budgetBytes: 66000, bound: 'NOTHING', verdict: 'NEEDS-CAP',
     note: 'GREW 19,362 -> 27,840 B (+44%) DURING the audit session, and the guard caught it — the ' +
       'only live demonstration we have of the ratchet firing on real growth. Cause: it returns ' +
       'EVERY stored session-message with its full free-text body plus ack history, filterable by ' +
       'session/status but with NO limit. The audit itself sent four long messages to a sibling ' +
       'mission; that alone moved it 8 KB. It therefore grows with ordinary fleet chatter, not with ' +
       'anything rare. Budget raised deliberately to 45,000 with the reclassification, not to ' +
-      'silence the failure.',
+      'silence the failure. 2026-08-05: measured 65,865 B — it now RIDES THE 64 KiB RESULT CAP ' +
+      '(truncated every call), so the byte number can no longer grow; what it needs is the sane ' +
+      'default limit flagged below, not more budget. Budget set to the cap so the guard watches ' +
+      'for the cap itself moving.',
   },
   terminal_list: { measuredBytes: 9007, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   machine_access: { measuredBytes: 6254, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
+  // Desktop automation reads. desktop_screenshot returns a FIXED caption plus an
+  // IMAGE block — the image is deliberately NOT byte-counted (Claude tokenizes it
+  // by dimensions), so its text is a couple hundred bytes regardless of screen
+  // size. desktop_windows renders one line per window, hard-capped at MAX_WINDOWS
+  // (100). desktop_status is a fixed readiness table. Measured on 117 (GNOME/4K)
+  // 2026-08-05.
+  desktop_screenshot: { measuredBytes: 520, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE', note: 'Text = a fixed caption + coord-mapping sentence; the screenshot itself is an image block, not counted by bytes.' },
+  desktop_windows: { measuredBytes: 3200, budgetBytes: 25000, bound: 'HARD_LIMIT', verdict: 'SAFE', note: '~130 B per window row, hard-capped at MAX_WINDOWS=100.' },
+  desktop_status: { measuredBytes: 900, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE', note: 'Fixed readiness table + backend inventory + a few warnings.' },
   // Honestly 'NOTHING': both serialise a whole collection with no caller limit (the
   // machine_access precedent). SAFE only because the collection is the IN-CLUSTER NODE
   // LIST — one row per node, a handful of tokens plus <=4KB of notes — not user data.
@@ -336,6 +352,37 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
   ].map((n) => [n, 'collector-only read; page-bounded, size asserted by backup-output-size.test.ts']),
   ...['backup_run', 'backup_remove',
   ].map((n) => [n, 'write: starts a capture or deletes backed-up data (repacking an archive)']),
+  // Desktop automation writes. desktop_input can also return a screenshot IMAGE
+  // block (not byte-counted by design), but it synthesizes real pointer/keyboard
+  // events, so it is a write and never auto-invoked by the guard.
+  ...['desktop_window', 'desktop_input',
+  ].map((n) => [n, 'write: synthesizes real pointer/keyboard/window events on the live desktop']),
+  // Gmail + LinkedIn connectors. EVERY tool here (reads included) drives a real
+  // logged-in CDP browser session, so the guard MUST NOT auto-invoke them — a
+  // sweep would navigate the operator's live mailbox/feed. Bounds are structural
+  // instead (route-level limits + the 64 KiB result cap), like the backup
+  // collector above. 🔴 These were on the advertised surface with NO
+  // classification until 2026-08-05: the coverage guard only fires against a live
+  // Core that advertises them, and CI runs no live Core, so the gap slipped in
+  // when the Gmail/LinkedIn connectors landed. Exposed by the desktop-automation
+  // full-build test run on a live dev :3200 and classified here.
+  ...['gmail_status', 'gmail_summary', 'gmail_drafts', 'gmail_forward', 'gmail_triage', 'gmail_login',
+    'gmail_list_threads', 'gmail_read_thread', 'gmail_search', 'gmail_search_local', 'gmail_sync',
+    'gmail_sync_status', 'gmail_attachments', 'gmail_attachment_download', 'gmail_bulk', 'gmail_schedule_cancel',
+    'gmail_draft_send', 'gmail_draft_delete', 'gmail_untrash', 'gmail_settings', 'gmail_schedule_send',
+    'gmail_rename_label', 'gmail_delete_label', 'gmail_labels', 'gmail_selfcheck', 'gmail_aliases',
+    'gmail_send', 'gmail_reply', 'gmail_draft', 'gmail_archive', 'gmail_trash', 'gmail_mark_read',
+    'gmail_star', 'gmail_spam', 'gmail_apply_label', 'gmail_remove_label', 'gmail_create_label', 'gmail_move_to',
+  ].map((n) => [n, 'connector: drives a live logged-in Gmail CDP browser; unsafe to auto-invoke — route-bounded + 64 KiB capped']),
+  ...['linkedin_status', 'linkedin_login', 'linkedin_list_conversations', 'linkedin_read_messages',
+    'linkedin_search', 'linkedin_send_message', 'linkedin_read_feed', 'linkedin_read_notifications',
+    'linkedin_post', 'linkedin_publish_article', 'linkedin_search_people', 'linkedin_follow',
+    'linkedin_connect', 'linkedin_message_profile', 'linkedin_comment', 'linkedin_delete_post',
+  ].map((n) => [n, 'connector: drives a live logged-in LinkedIn CDP browser; unsafe to auto-invoke — route-bounded + 64 KiB capped']),
+  // windows_terminal_restart — the newer sibling of the already-classified
+  // windows_terminal_* lifecycle tools; kills + relaunches a terminal.
+  ...['windows_terminal_restart',
+  ].map((n) => [n, 'destructive/lifecycle: restarts a Windows Terminal session']),
 ]);
 
 /**

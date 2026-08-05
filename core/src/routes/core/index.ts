@@ -74,6 +74,7 @@ import { createLifecycleRoutes } from './lifecycle.routes';
 import { createWhatsappRoutes } from './whatsapp.routes';
 import { createLinkedinRoutes } from './linkedin.routes';
 import { createGmailRoutes } from './gmail.routes';
+import { createDesktopRoutes } from './desktop.routes';
 import { createBackupRoutes } from './backup.routes';
 import { createElevatedRoutes } from './elevated.routes';
 import { createCoworkRoutes } from './cowork.routes';
@@ -152,6 +153,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createWhatsappRoutes(ctx),
     ...createLinkedinRoutes(ctx),
     ...createGmailRoutes(ctx),
+    ...createDesktopRoutes(ctx),
     ...createBackupRoutes(ctx),
     ...createElevatedRoutes(ctx),
     ...createCoworkRoutes(ctx),
