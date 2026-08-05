@@ -47,7 +47,7 @@ export async function GET(req: NextRequest) {
     if (!tr.ok || !tok.id_token) return fail(req, 'oidc');
 
     // 2. Verify id_token: RS256 via the issuer JWKS, iss, aud, exp (jose) + nonce (ours).
-    const { payload } = await jwtVerify(tok.id_token, jwksFor(issuer), { issuer, audience: CLIENT_ID });
+    const { payload } = await jwtVerify(tok.id_token, jwksFor(issuer), { issuer, audience: CLIENT_ID, algorithms: ['RS256'] });
     if (!ck.nonce || payload.nonce !== ck.nonce) return fail(req, 'oidc');
 
     // 3. The authorization rule — identical to cloud-verify: only the device-bound user is admitted.
