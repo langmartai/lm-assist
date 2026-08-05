@@ -1,3 +1,4 @@
+/** @deprecated Replaced by the OIDC LAN login (oidc-start/oidc-callback). Kept one release for rollback; remove after the fleet is on the OIDC flow. */
 import { NextRequest, NextResponse } from 'next/server';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';

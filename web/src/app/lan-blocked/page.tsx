@@ -12,8 +12,23 @@ export default function LanBlockedPage() {
   const [verifyStatus, setVerifyStatus] = useState<VerifyStatus>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cloudBound, setCloudBound] = useState<boolean | null>(null);
-  const [hubDomain, setHubDomain] = useState('langmart.ai');
   const [expired, setExpired] = useState(false);
+
+  // Fragment grant handoff from /api/auth/oidc-callback (#granted=<token>&returnTo=<path>).
+  // Runs first, before any other mount effect, so the token is captured and the
+  // hash scrubbed from the URL/history before anything else can act on the page.
+  useEffect(() => {
+    const h = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const granted = h.get('granted');
+    if (!granted) return;
+    localStorage.setItem('assist_access_key', granted);
+    const rt = h.get('returnTo') || '/';
+    // Same-origin relative path only — mirrors oidc-start/oidc-callback's safeReturnTo guard.
+    const dest = /^\/(?![/\\])[^\x00-\x1f\x7f]*$/.test(rt) ? rt : '/';
+    window.history.replaceState({}, '', '/lan-blocked'); // scrub the token from the URL/history
+    setVerifyStatus('success');
+    setTimeout(() => router.replace(dest), 800);
+  }, [router]);
 
   // If user is actually local (localhost or same-machine LAN IP), redirect to dashboard
   useEffect(() => {
@@ -44,83 +59,38 @@ export default function LanBlockedPage() {
     } catch { /* ignore */ }
   }, []);
 
-  // Is a cloud account bound to this device, and which hub to sign in against?
-  // Read the web's OWN same-origin /api/server — reachable from a LAN browser
-  // WITHOUT the worker token (unlike /hub/status, which 401s for the exact
-  // audience of this page and used to hide the Sign In button entirely).
+  // Sign-in failure — /api/auth/oidc-callback (and oidc-start, on misconfiguration)
+  // redirects here with ?error=<code>. Surfaced via errorMessage alone; verifyStatus
+  // stays idle so the Sign In button is immediately available again for a retry.
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get('error');
+    if (!code) return;
+    setErrorMessage(
+      code === 'owner_mismatch'
+        ? "This account is not the owner bound to this device. Sign in with the device owner's account."
+        : code === 'no_hub'
+          ? 'This device is not connected to a cloud account. Connect it on localhost first.'
+          : 'Sign-in failed. Try again.',
+    );
+  }, []);
+
+  // Is a cloud account bound to this device? Read the web's OWN same-origin
+  // /api/server — reachable from a LAN browser WITHOUT the worker token (unlike
+  // /hub/status, which 401s for the exact audience of this page and used to hide
+  // the Sign In button entirely).
   useEffect(() => {
     fetch('/api/server')
       .then(r => r.json())
-      .then(d => {
-        setCloudBound(d.cloudBound === true);
-        if (d.hubDomain) setHubDomain(d.hubDomain);
-      })
+      .then(d => setCloudBound(d.cloudBound === true))
       .catch(() => setCloudBound(false));
   }, []);
 
-  // Listen for postMessage from the OAuth popup (verify mode)
-  useEffect(() => {
-    const handler = async (event: MessageEvent) => {
-      // Validate origin: must be a known platform domain (not a subdomain spoof)
-      let originHost: string;
-      try { originHost = new URL(event.origin).hostname; } catch { return; }
-      const isValid = originHost === hubDomain || originHost === `www.${hubDomain}`;
-      if (!isValid) return;
-      if (event.data?.type !== 'langmart-assist-verify') return;
-
-      const receivedKey = event.data.apiKey;
-      if (!receivedKey || typeof receivedKey !== 'string') return;
-
-      // Got the OAuth user's API key — verify against device-bound user
-      setVerifyStatus('verifying');
-      setErrorMessage(null);
-
-      try {
-        const res = await fetch('/api/auth/cloud-verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ apiKey: receivedKey }),
-        });
-
-        const result = await res.json();
-
-        if (result.valid && result.token) {
-          // Store the LAN access token and redirect to dashboard
-          localStorage.setItem('assist_access_key', result.token);
-          setVerifyStatus('success');
-          setTimeout(() => {
-            router.replace('/');
-          }, 1500);
-        } else {
-          setVerifyStatus('error');
-          setErrorMessage(result.error || 'Verification failed');
-        }
-      } catch {
-        setVerifyStatus('error');
-        setErrorMessage('Could not reach the verification server');
-      }
-    };
-
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-    // NOTE: must depend on hubDomain — the handler validates event.origin against
-    // it, and hubDomain is set asynchronously from /hub/status (e.g. 'xeenhub.com'
-    // for the dev hub). Without this dep the handler keeps the initial
-    // 'langmart.ai' value, rejects the popup's postMessage from xeenhub.com, and
-    // the page hangs on "Waiting for sign in...".
-  }, [router, hubDomain]);
-
-  // Open the OAuth popup in verify mode
+  // Same-tab redirect into the OIDC code+PKCE flow (oidc-start mints the
+  // verifier/state/nonce cookie and 302s to the platform's authorize endpoint).
   const handleSignIn = useCallback(() => {
-    const origin = encodeURIComponent(window.location.origin);
     setVerifyStatus('waiting');
-    setErrorMessage(null);
-    window.open(
-      `https://${hubDomain}/assist-connect?origin=${origin}&mode=verify`,
-      'langmart-verify',
-      'width=460,height=560,left=200,top=100',
-    );
-  }, [hubDomain]);
+    window.location.href = '/api/auth/oidc-start?returnTo=%2F';
+  }, []);
 
   const showSignIn = cloudBound === true;
   // Only when we KNOW no account is bound (explicit false, not while loading) —
@@ -229,7 +199,7 @@ export default function LanBlockedPage() {
                 <LogIn size={16} />
               )}
               {verifyStatus === 'waiting'
-                ? 'Waiting for sign in...'
+                ? 'Redirecting to sign in...'
                 : verifyStatus === 'verifying'
                   ? 'Verifying identity...'
                   : 'Sign In'}
@@ -237,14 +207,14 @@ export default function LanBlockedPage() {
 
             {verifyStatus === 'waiting' && (
               <p style={{ fontSize: 11, color: 'var(--color-text-tertiary, #666)', lineHeight: 1.5 }}>
-                Complete sign in on the popup window.
+                Taking you to your cloud account to sign in.
               </p>
             )}
           </div>
         )}
 
         {/* Error message */}
-        {verifyStatus === 'error' && errorMessage && (
+        {errorMessage && (
           <div
             style={{
               width: '100%',
