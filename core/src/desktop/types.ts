@@ -202,10 +202,49 @@ export interface WindowActionResult {
   note?: string;
 }
 
+/** Clipboard get/set. */
+export interface ClipboardRequest {
+  mode: 'get' | 'set';
+  /** The text to place on the clipboard (set only). */
+  text?: string;
+}
+export interface ClipboardResult {
+  /** Present for get: the current clipboard text ('' when empty/non-text). */
+  text?: string;
+  /** Bytes placed on the clipboard (set only). */
+  bytes?: number;
+}
+
+/** One running process (desktop_process). */
+export interface ProcessInfo {
+  pid: number;
+  /** Executable / command name. */
+  name: string;
+  /** CPU percent, when the platform reports it. */
+  cpu?: number;
+  /** Resident memory in MiB, when reported. */
+  memMiB?: number;
+  /** Owning user, when reported. */
+  user?: string;
+}
+/** Filter/bound for a process query. */
+export interface ProcessQuery {
+  /** Case-insensitive substring matched against the process name (find). */
+  query?: string;
+  /** Max rows returned (the caller-facing cap). */
+  limit: number;
+}
+
 /**
  * The platform backend contract. `service.ts` depends ONLY on this; each
  * platform implements it. Backends return native-resolution data + typed
  * DesktopError on failure, and do NO model-facing formatting.
+ *
+ * 🔴 `clipboard` and `processes` are OPTIONAL on the interface on purpose: they
+ * were added after the Windows backend shipped, so a backend that has not yet
+ * implemented them still satisfies this contract and compiles. service.ts guards
+ * with DESKTOP_UNSUPPORTED when a backend lacks one. The Windows halves are owned
+ * by the win-automation session (node 107) — do not fork the contract to add them.
  */
 export interface DesktopBackend {
   readonly platform: DesktopPlatform;
@@ -219,4 +258,8 @@ export interface DesktopBackend {
   input(req: InputRequest): Promise<InputResult>;
   /** Window management. Re-queries state for the verified outcome. */
   windowAction(req: WindowActionRequest): Promise<WindowActionResult>;
+  /** Read/write the system clipboard. OPTIONAL — see the interface note. */
+  clipboard?(req: ClipboardRequest): Promise<ClipboardResult>;
+  /** List running processes (bounded). OPTIONAL — see the interface note. */
+  processes?(req: ProcessQuery): Promise<ProcessInfo[]>;
 }

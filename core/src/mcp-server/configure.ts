@@ -444,6 +444,11 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   desktop_screenshot: 'read',
   desktop_window: 'write',
   desktop_input: 'write',
+  desktop_process: 'read',
+  desktop_wait_for: 'read',
+  // clipboard get is a read but set mutates + can carry sensitive text, so the
+  // tool is write-scoped (approval-gated) like the other desktop writes.
+  desktop_clipboard: 'write',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */

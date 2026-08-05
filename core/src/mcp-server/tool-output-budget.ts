@@ -190,6 +190,8 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   desktop_screenshot: { measuredBytes: 520, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE', note: 'Text = a fixed caption + coord-mapping sentence; the screenshot itself is an image block, not counted by bytes.' },
   desktop_windows: { measuredBytes: 3200, budgetBytes: 25000, bound: 'HARD_LIMIT', verdict: 'SAFE', note: '~130 B per window row, hard-capped at MAX_WINDOWS=100.' },
   desktop_status: { measuredBytes: 900, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE', note: 'Fixed readiness table + backend inventory + a few warnings.' },
+  desktop_process: { measuredBytes: 3600, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE', note: '~65 B per row, hard-capped at MAX_PROCESS_ROWS=50.' },
+  desktop_wait_for: { measuredBytes: 200, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE', note: 'One matched-window line or a timeout line.' },
   // Honestly 'NOTHING': both serialise a whole collection with no caller limit (the
   // machine_access precedent). SAFE only because the collection is the IN-CLUSTER NODE
   // LIST — one row per node, a handful of tokens plus <=4KB of notes — not user data.
@@ -357,6 +359,8 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
   // events, so it is a write and never auto-invoked by the guard.
   ...['desktop_window', 'desktop_input',
   ].map((n) => [n, 'write: synthesizes real pointer/keyboard/window events on the live desktop']),
+  ...['desktop_clipboard',
+  ].map((n) => [n, 'write: mutates the system clipboard (and get can echo arbitrary user-copied text)']),
   // Gmail + LinkedIn connectors. EVERY tool here (reads included) drives a real
   // logged-in CDP browser session, so the guard MUST NOT auto-invoke them — a
   // sweep would navigate the operator's live mailbox/feed. Bounds are structural

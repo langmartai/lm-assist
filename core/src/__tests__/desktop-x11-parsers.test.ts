@@ -12,6 +12,7 @@ import {
   parseWindowState,
   splitModifiers,
   verifyWindowAction,
+  parseProcessList,
 } from '../desktop/x11-backend';
 import type { WindowInfo, WindowState } from '../desktop/types';
 
@@ -94,6 +95,22 @@ test('parseWindowState classifies hidden/maximized/active/normal', () => {
   assert.strictEqual(parseWindowState('_NET_WM_STATE_MAXIMIZED_VERT, _NET_WM_STATE_MAXIMIZED_HORZ', false), 'maximized');
   assert.strictEqual(parseWindowState('_NET_WM_STATE_FOCUSED', true), 'active');
   assert.strictEqual(parseWindowState('', false), 'normal');
+});
+
+test('parseProcessList parses ps -eo pid,rss,pcpu,user,comm rows', () => {
+  const out = [
+    '    771  1048576   3.4  ubuntu               google-chrome',
+    '      1     8192   0.0  root                 systemd',
+    'garbage line',
+  ].join('\n');
+  const rows = parseProcessList(out);
+  assert.strictEqual(rows.length, 2);
+  assert.strictEqual(rows[0].pid, 771);
+  assert.strictEqual(rows[0].memMiB, 1024); // 1048576 KiB -> 1024 MiB
+  assert.strictEqual(rows[0].cpu, 3.4);
+  assert.strictEqual(rows[0].user, 'ubuntu');
+  assert.strictEqual(rows[0].name, 'google-chrome');
+  assert.strictEqual(rows[1].name, 'systemd');
 });
 
 test('splitModifiers splits a combo into xdotool key names', () => {

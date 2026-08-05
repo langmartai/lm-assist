@@ -23,6 +23,9 @@ import {
   desktopScreenshot,
   desktopInput,
   desktopWindowAction,
+  desktopClipboard,
+  desktopProcess,
+  desktopWaitFor,
   type ScreenshotArgs,
   type InputArgs,
   type WindowArgs,
@@ -135,6 +138,46 @@ export function createDesktopRoutes(_ctx: RouteContext): RouteHandler[] {
             screenshot_after_ms: num(b.screenshot_after_ms),
           };
           return { success: true, data: await desktopInput(args) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/desktop\/clipboard$/,
+      handler: async (req) => {
+        try {
+          const b = (req.body ?? {}) as Record<string, unknown>;
+          return { success: true, data: await desktopClipboard({ mode: typeof b.mode === 'string' ? b.mode : undefined, text: typeof b.text === 'string' ? b.text : undefined }) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/desktop\/process$/,
+      handler: async (req) => {
+        try {
+          return { success: true, data: await desktopProcess({ query: req.query.query, limit: num(req.query.limit) }) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/desktop\/wait$/,
+      handler: async (req) => {
+        try {
+          const b = (req.body ?? {}) as Record<string, unknown>;
+          return { success: true, data: await desktopWaitFor({
+            title: typeof b.title === 'string' ? b.title : undefined,
+            app: typeof b.app === 'string' ? b.app : undefined,
+            state: typeof b.state === 'string' ? b.state : undefined,
+            timeout_ms: num(b.timeout_ms),
+          }) };
         } catch (e) {
           return fail(e);
         }

@@ -18,7 +18,7 @@
  * silently producing black frames.
  */
 
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -36,6 +36,10 @@ import {
   WindowInfo,
   WindowState,
   CaptureRequest,
+  ClipboardRequest,
+  ClipboardResult,
+  ProcessInfo,
+  ProcessQuery,
 } from './types';
 import { DESKTOP_TMP_DIR, CAPTURE_TIMEOUT_MS, INPUT_TIMEOUT_MS, WINDOW_TIMEOUT_MS, STATUS_TIMEOUT_MS } from './config';
 
@@ -588,9 +592,89 @@ export class X11Backend implements DesktopBackend {
     }
     return { window: normalizeWindowId(req.window), action: req.action, verified, resulting, note };
   }
+
+  async clipboard(req: ClipboardRequest): Promise<ClipboardResult> {
+    const display = this.requireDisplay();
+    const env = displayEnv(display);
+    if (!(await has('xclip'))) {
+      throw new DesktopError('TOOL_MISSING', 'xclip is required for clipboard access on X11 (sudo apt-get install xclip)');
+    }
+    if (req.mode === 'set') {
+      const text = req.text ?? '';
+      await runWithInput('xclip', ['-selection', 'clipboard', '-in'], text, INPUT_TIMEOUT_MS, env);
+      return { bytes: Buffer.byteLength(text, 'utf-8') };
+    }
+    // get: -o on an EMPTY clipboard exits non-zero with "target STRING not available" → treat as empty.
+    const r = await run('xclip', ['-selection', 'clipboard', '-out'], INPUT_TIMEOUT_MS, env);
+    if (r.code !== 0 && !r.stdout) {
+      if (/not available|no selection|Error:/i.test(r.stderr)) return { text: '' };
+      throw new DesktopError('INPUT_FAILED', `xclip read failed: ${r.stderr.trim() || `exit ${r.code}`}`);
+    }
+    return { text: r.stdout };
+  }
+
+  async processes(req: ProcessQuery): Promise<ProcessInfo[]> {
+    // rss is KiB; sort by rss desc so the heaviest processes come first when the
+    // list is capped. comm can be truncated by ps — good enough for a name filter.
+    const r = await run('ps', ['-eo', 'pid,rss,pcpu,user:20,comm', '--sort=-rss', '--no-headers'], STATUS_TIMEOUT_MS, { ...process.env });
+    if (r.code !== 0 && !r.stdout) throw new DesktopError('INPUT_FAILED', `ps failed: ${r.stderr.trim() || `exit ${r.code}`}`);
+    let rows = parseProcessList(r.stdout);
+    if (req.query) {
+      const q = req.query.toLowerCase();
+      rows = rows.filter((p) => p.name.toLowerCase().includes(q));
+    }
+    return rows.slice(0, Math.max(1, req.limit));
+  }
 }
 
 // ─── standalone helpers ──────────────────────────────────────────────────────
+
+/** Parse `ps -eo pid,rss,pcpu,user:20,comm --no-headers` rows into ProcessInfo. */
+export function parseProcessList(out: string): ProcessInfo[] {
+  const rows: ProcessInfo[] = [];
+  for (const line of out.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+([\d.]+)\s+(\S+)\s+(.+)$/);
+    if (!m) continue;
+    rows.push({
+      pid: parseInt(m[1], 10),
+      memMiB: Math.round((parseInt(m[2], 10) / 1024) * 10) / 10,
+      cpu: parseFloat(m[3]),
+      user: m[4],
+      name: m[5].trim(),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Spawn a binary and write `input` to its stdin (execFile has no stdin path).
+ *
+ * 🔴 xclip-shaped tools DAEMONIZE: `xclip -i` reads stdin, then FORKS a background
+ * child to keep OWNING the X11 selection (a selection must be held by a live
+ * client) and the parent exits. That daemon child inherits stdout/stderr, so a
+ * `close` listener (which waits for all stdio to end) NEVER fires and the call
+ * hangs forever. So: ignore stdout/stderr (don't hand the daemon our pipes),
+ * detach + unref it, and resolve on the PARENT's `exit` — the write is complete
+ * once the parent has consumed stdin and forked.
+ */
+function runWithInput(bin: string, args: string[], input: string, timeoutMs: number, env: NodeJS.ProcessEnv): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { env, detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* gone */ }
+      reject(new DesktopError('BACKEND_TIMEOUT', `${bin} did not accept input within ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.on('error', (e) => { clearTimeout(timer); reject(new DesktopError('INPUT_FAILED', `${bin} failed: ${e.message}`)); });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code === 0 || code === null) resolve(); // null = parent exited after forking the selection holder
+      else reject(new DesktopError('INPUT_FAILED', `${bin} exited ${code}`));
+    });
+    child.stdin.write(input);
+    child.stdin.end();
+    child.unref();
+  });
+}
 
 const MOUSE_ACTIONS = new Set(['left_click', 'right_click', 'middle_click', 'double_click', 'triple_click', 'scroll']);
 

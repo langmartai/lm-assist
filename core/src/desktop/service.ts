@@ -22,6 +22,7 @@ import {
   DisplayInfo,
   InputRequest,
   InputResult,
+  ProcessInfo,
   Rect,
   ScrollDirection,
   WindowAction,
@@ -310,6 +311,73 @@ export async function desktopWindowAction(args: WindowArgs): Promise<WindowActio
   return withWriteLock(() =>
     backend().windowAction({ window: args.window, action, x: args.x, y: args.y, width: args.width, height: args.height }),
   );
+}
+
+// ─── clipboard (read/write via the backend) ───────────────────────────────────
+
+export async function desktopClipboard(args: { mode?: string; text?: string }): Promise<{ mode: 'get' | 'set'; text?: string; bytes?: number }> {
+  const mode = args.mode === 'set' ? 'set' : args.mode === 'get' ? 'get' : undefined;
+  if (!mode) throw new DesktopError('BAD_ARGS', 'mode must be "get" or "set"');
+  if (mode === 'set' && typeof args.text !== 'string') throw new DesktopError('BAD_ARGS', 'text is required for clipboard set');
+  const b = backend();
+  if (!b.clipboard) throw new DesktopError('DESKTOP_UNSUPPORTED', `clipboard is not implemented on the ${b.platform} backend yet`);
+  // A clipboard write is a real mutation → serialize behind the same lock as input.
+  const run = () => b.clipboard!({ mode, text: args.text });
+  const r = mode === 'set' ? await withWriteLock(run) : await run();
+  return { mode, text: r.text, bytes: r.bytes };
+}
+
+// ─── process query (read) ──────────────────────────────────────────────────────
+
+export const MAX_PROCESS_ROWS = 50;
+
+export async function desktopProcess(args: { query?: string; limit?: number }): Promise<{ query: string | null; total: number; processes: ProcessInfo[] }> {
+  const b = backend();
+  if (!b.processes) throw new DesktopError('DESKTOP_UNSUPPORTED', `process query is not implemented on the ${b.platform} backend yet`);
+  const limit = clamp(args.limit ?? MAX_PROCESS_ROWS, 1, MAX_PROCESS_ROWS);
+  const query = typeof args.query === 'string' && args.query.trim() ? args.query.trim() : undefined;
+  const rows = await b.processes({ query, limit });
+  return { query: query ?? null, total: rows.length, processes: rows };
+}
+
+// ─── wait_for (backend-free: polls the window list) ────────────────────────────
+
+export interface WaitForArgs {
+  title?: string;
+  app?: string;
+  state?: string;
+  timeout_ms?: number;
+}
+
+/**
+ * Poll the window list until a window matching title/app (and optional state)
+ * appears, or the timeout elapses. Backend-agnostic — it only calls windows(),
+ * so it works on every platform the moment that platform lists windows.
+ */
+export async function desktopWaitFor(args: WaitForArgs): Promise<{ found: boolean; waitedMs: number; window: WindowInfo | null }> {
+  const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim().toLowerCase() : undefined;
+  const app = typeof args.app === 'string' && args.app.trim() ? args.app.trim().toLowerCase() : undefined;
+  const state = typeof args.state === 'string' ? args.state.trim().toLowerCase() : undefined;
+  if (!title && !app) throw new DesktopError('BAD_ARGS', 'wait_for needs a title or app substring to match');
+  const timeout = clamp(args.timeout_ms ?? 10_000, 200, 60_000);
+  const started = Date.now();
+  const b = backend();
+  const match = (w: WindowInfo): boolean =>
+    (title ? w.title.toLowerCase().includes(title) : true) &&
+    (app ? w.app.toLowerCase().includes(app) : true) &&
+    (state ? w.state === state : true);
+  for (;;) {
+    let hit: WindowInfo | null = null;
+    try {
+      const r = await b.windows();
+      hit = r.windows.find(match) ?? null;
+    } catch {
+      /* transient (e.g. WM briefly unavailable) — keep polling until timeout */
+    }
+    if (hit) return { found: true, waitedMs: Date.now() - started, window: hit };
+    if (Date.now() - started >= timeout) return { found: false, waitedMs: Date.now() - started, window: null };
+    await new Promise((r) => setTimeout(r, 400));
+  }
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

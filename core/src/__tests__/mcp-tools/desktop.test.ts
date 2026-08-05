@@ -32,9 +32,9 @@ afterEach(() => {
   lastBody = null;
 });
 
-test('all five tools are registered, scoped, and flow into the expanded surface', () => {
+test('all eight tools are registered, scoped, and flow into the expanded surface', () => {
   const names = DESKTOP_TOOL_DEFS.map((t) => t.name);
-  assert.deepStrictEqual(names.sort(), ['desktop_input', 'desktop_screenshot', 'desktop_status', 'desktop_window', 'desktop_windows']);
+  assert.deepStrictEqual(names.sort(), ['desktop_clipboard', 'desktop_input', 'desktop_process', 'desktop_screenshot', 'desktop_status', 'desktop_wait_for', 'desktop_window', 'desktop_windows']);
   for (const n of names) {
     assert.ok(n in DESKTOP_HANDLERS, `${n} has no handler`);
     assert.ok(n in TOOL_SCOPES, `${n} has no scope`);
@@ -45,10 +45,45 @@ test('all five tools are registered, scoped, and flow into the expanded surface'
   assert.strictEqual(TOOL_SCOPES.desktop_status, 'read');
   assert.strictEqual(TOOL_SCOPES.desktop_windows, 'read');
   assert.strictEqual(TOOL_SCOPES.desktop_screenshot, 'read');
+  assert.strictEqual(TOOL_SCOPES.desktop_process, 'read');
+  assert.strictEqual(TOOL_SCOPES.desktop_wait_for, 'read');
   assert.strictEqual(TOOL_SCOPES.desktop_window, 'write');
   assert.strictEqual(TOOL_SCOPES.desktop_input, 'write');
+  assert.strictEqual(TOOL_SCOPES.desktop_clipboard, 'write');
   // and the boot-time guard is satisfied (this is what crashes Core if a scope is missing)
   assert.doesNotThrow(() => assertScopesCoverTools());
+});
+
+test('desktop_process renders the heaviest-first table from /desktop/process', async () => {
+  stubFetch({ success: true, data: { query: 'chrome', total: 2, processes: [
+    { pid: 771, name: 'google-chrome', cpu: 3.4, memMiB: 1024, user: 'ubuntu' },
+    { pid: 812, name: 'chrome-sandbox', cpu: 0.1, memMiB: 40, user: 'ubuntu' },
+  ] } });
+  const r = await DESKTOP_HANDLERS.desktop_process({ query: 'chrome' });
+  assert.match(lastUrl, /\/desktop\/process\?query=chrome/);
+  assert.match(r.content[0].text as string, /google-chrome/);
+  assert.match(r.content[0].text as string, /matching "chrome"/);
+});
+
+test('desktop_clipboard get/set map to /desktop/clipboard and report bytes', async () => {
+  stubFetch({ success: true, data: { mode: 'set', bytes: 12 } });
+  let r = await DESKTOP_HANDLERS.desktop_clipboard({ mode: 'set', text: 'hello clip42' });
+  assert.match(lastUrl, /\/desktop\/clipboard$/);
+  assert.deepStrictEqual(lastBody, { mode: 'set', text: 'hello clip42' });
+  assert.match(r.content[0].text as string, /Clipboard set \(12 bytes\)/);
+  stubFetch({ success: true, data: { mode: 'get', text: 'copied text' } });
+  r = await DESKTOP_HANDLERS.desktop_clipboard({ mode: 'get' });
+  assert.match(r.content[0].text as string, /copied text/);
+});
+
+test('desktop_wait_for reports a found window or a timeout', async () => {
+  stubFetch({ success: true, data: { found: true, waitedMs: 850, window: { id: '0x1', title: 'Untitled - Notepad', app: 'Notepad', state: 'active', bounds: { x: 0, y: 0, width: 800, height: 600 } } } });
+  let r = await DESKTOP_HANDLERS.desktop_wait_for({ title: 'Notepad' });
+  assert.match(lastUrl, /\/desktop\/wait$/);
+  assert.match(r.content[0].text as string, /Found after 850ms.*Notepad/);
+  stubFetch({ success: true, data: { found: false, waitedMs: 10000, window: null } });
+  r = await DESKTOP_HANDLERS.desktop_wait_for({ title: 'Nope' });
+  assert.match(r.content[0].text as string, /Timed out after 10000ms/);
 });
 
 test('desktop_status renders the readiness table from /desktop/status', async () => {

@@ -122,6 +122,56 @@ export const desktopInputToolDef = {
   },
 };
 
+export const desktopClipboardToolDef = {
+  name: 'desktop_clipboard',
+  description:
+    'Read or write the system clipboard on a node. mode "get" returns the current clipboard text; mode "set" ' +
+    'puts text on it. Trigger words: "copy that", "what is on the clipboard", "paste this". PREFER set + a ' +
+    'ctrl+v (desktop_input key) over typing long/special text — it is exact and dodges keystroke glitches.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      mode: { type: 'string' as const, enum: ['get', 'set'] },
+      text: { type: 'string' as const, description: 'set only: the text to place on the clipboard.' },
+    },
+    required: ['mode'],
+  },
+};
+
+export const desktopProcessToolDef = {
+  name: 'desktop_process',
+  description:
+    'List running processes on a node (pid, name, cpu%, memory, user), heaviest first. Pass query to filter by ' +
+    'name substring. Trigger words: "what is running", "list processes", "is X running", "find the chrome process". ' +
+    'Read-only — it does not kill anything. Cross-node with node=<host>.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      query: { type: 'string' as const, description: 'Case-insensitive name substring to filter by (e.g. "chrome").' },
+      limit: { type: 'number' as const, description: 'Max rows (default 50, the ceiling).' },
+    },
+  },
+};
+
+export const desktopWaitForToolDef = {
+  name: 'desktop_wait_for',
+  description:
+    'Wait until a window matching title and/or app appears (optionally in a given state), or the timeout elapses. ' +
+    'Use after launching/switching an app instead of guessing a sleep. Trigger words: "wait for the window", ' +
+    '"until X opens". Returns the matched window (with its id/geometry) or found:false on timeout. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      title: { type: 'string' as const, description: 'Case-insensitive substring of the window title to wait for.' },
+      app: { type: 'string' as const, description: 'Case-insensitive substring of the app/WM_CLASS to wait for.' },
+      state: { type: 'string' as const, enum: ['active', 'minimized', 'maximized', 'normal'], description: 'Also require this window state.' },
+      timeout_ms: { type: 'number' as const, description: 'Give up after this many ms (default 10000, max 60000).' },
+    },
+  },
+};
+
 // ─── handlers ────────────────────────────────────────────────────────────────
 
 interface StatusData {
@@ -273,6 +323,49 @@ async function handleInput(args: Record<string, unknown>): Promise<McpToolResult
   }
 }
 
+interface ClipboardData { mode: 'get' | 'set'; text?: string; bytes?: number }
+async function handleClipboard(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const resp = await workerPostRaw('/desktop/clipboard', { mode: args.mode, text: args.text });
+    if (resp.success === false) return err(`desktop_clipboard failed: ${String(resp.error || 'unknown')}${resp.code ? ` (${String(resp.code)})` : ''}`);
+    const d = (resp.data || {}) as ClipboardData;
+    if (d.mode === 'set') return textResult(`Clipboard set (${d.bytes ?? 0} bytes). Tip: desktop_input key "ctrl+v" pastes it into the focused window.`);
+    const t = d.text ?? '';
+    return textResult(t ? `Clipboard contains (${Buffer.byteLength(t, 'utf-8')} bytes):\n${t}` : 'Clipboard is empty (or holds non-text content).');
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+interface ProcData { query: string | null; total: number; processes: { pid: number; name: string; cpu?: number; memMiB?: number; user?: string }[] }
+async function handleProcess(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const q = new URLSearchParams();
+    if (typeof args.query === 'string' && args.query.trim()) q.set('query', args.query.trim());
+    if (typeof args.limit === 'number') q.set('limit', String(args.limit));
+    const d = await workerGet<ProcData>(`/desktop/process${q.toString() ? `?${q}` : ''}`);
+    const lines = [`${d.total} process(es)${d.query ? ` matching "${d.query}"` : ''} (heaviest first):`];
+    for (const p of d.processes) lines.push(`  ${String(p.pid).padStart(7)}  ${(p.memMiB ?? 0).toFixed(0).padStart(6)}MiB  ${(p.cpu ?? 0).toFixed(1).padStart(5)}%  ${p.user ?? ''}  ${p.name}`);
+    return textResult(lines.join('\n'));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+interface WaitData { found: boolean; waitedMs: number; window: { id: string; title: string; app: string; state: string; bounds: { x: number; y: number; width: number; height: number } } | null }
+async function handleWaitFor(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const resp = await workerPostRaw('/desktop/wait', { title: args.title, app: args.app, state: args.state, timeout_ms: args.timeout_ms });
+    if (resp.success === false) return err(`desktop_wait_for failed: ${String(resp.error || 'unknown')}${resp.code ? ` (${String(resp.code)})` : ''}`);
+    const d = (resp.data || {}) as WaitData;
+    if (!d.found) return textResult(`Timed out after ${d.waitedMs}ms — no matching window appeared.`);
+    const w = d.window!;
+    return textResult(`Found after ${d.waitedMs}ms: ${w.id} [${w.state}] ${w.bounds.width}x${w.bounds.height}+${w.bounds.x}+${w.bounds.y} ${w.app} — ${w.title}`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /** Wrap text as a successful MCP result typed against configure's McpToolResult. */
 function textResult(text: string): McpToolResult {
   return { content: [{ type: 'text', text }] };
@@ -286,6 +379,9 @@ export const DESKTOP_TOOL_DEFS = [
   desktopScreenshotToolDef,
   desktopWindowToolDef,
   desktopInputToolDef,
+  desktopClipboardToolDef,
+  desktopProcessToolDef,
+  desktopWaitForToolDef,
 ];
 
 export const DESKTOP_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
@@ -294,4 +390,7 @@ export const DESKTOP_HANDLERS: Record<string, (args: Record<string, unknown>) =>
   desktop_screenshot: handleScreenshot,
   desktop_window: handleWindow,
   desktop_input: handleInput,
+  desktop_clipboard: handleClipboard,
+  desktop_process: handleProcess,
+  desktop_wait_for: handleWaitFor,
 };
