@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { homedir } from 'os';
 import path from 'path';
@@ -65,7 +65,10 @@ export async function GET(req: NextRequest) {
       cfg.lanAuthEnabled = true;
       cfg.lanAccessToken = randomBytes(32).toString('hex');
       mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-      writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n');
+      // 0600: the file holds the LAN credential — owner-only. mode applies only on
+      // create, so chmod too to repair a pre-existing world-readable file.
+      writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+      chmodSync(CONFIG_FILE, 0o600);
     }
 
     // 5. Fragment handoff — the token must never appear in a query string / server log.
