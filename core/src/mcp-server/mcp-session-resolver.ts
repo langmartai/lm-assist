@@ -45,7 +45,7 @@ export interface CallerCandidates {
   degraded?: boolean;
 }
 
-interface SessionState { firstSeen: number; lastSeen: number; bootstrappedAt?: number }
+interface SessionState { firstSeen: number; lastSeen: number; bootstrappedAt?: number; gateRefusedAt?: number }
 const REGISTRY = new Map<string, SessionState>();           // keyed by candidate id
 const RESOLVE_TTL_MS = 8000;
 const RESOLVE_TIMEOUT_MS = 2500;
@@ -542,6 +542,87 @@ export async function enrichBootstrapWithIdentity(result: McpToolResult): Promis
     bootstrapState(c);
     return prefixText(result, identityHeader(c));
   } catch { return result; }
+}
+
+// ── bootstrap gate (soft-block once) ────────────────────────────────────────
+//
+// A playbook-governed tool called by a session that never bootstrapped gets ONE
+// refusal carrying the instruction to bootstrap; any later call proceeds. The
+// original session-start-routing design (2026-07-25) rejected a per-call nudge
+// on latency + wrong-nudge risk — both have since changed shape: the resolver
+// is completion-stamped-cached (8s TTL, stale-while-revalidate), and refusing
+// only when NO candidate has bootstrapped, at most once per caller, bounds the
+// wrong-refusal cost to a single retry round-trip.
+//
+// Every uncertainty fails OPEN: unknown caller, degraded resolution, resolver
+// throw, LM_BOOTSTRAP_GATE=off — the gate exists to reach LLM callers who obey
+// refusals, not to be a security boundary (REST callers never see it anyway:
+// it lives at the configureMcpServer seam, which only MCP transports cross).
+
+/** Playbook-topic tools the gate deliberately never blocks: the original stdio
+ *  plugin surface, called constantly by local hooks/skills where bootstrap has
+ *  never been part of the flow. */
+export const GATE_EXEMPT_TOOLS: ReadonlySet<string> = new Set(['search', 'detail', 'feedback']);
+
+export interface GateVerdict {
+  block: boolean;
+  reason: 'disabled' | 'not-covered' | 'exempt' | 'no-identity' | 'degraded' | 'bootstrapped' | 'already-refused' | 'first-offence';
+  /** The governing playbook topic, when the tool has one. */
+  topic: string | null;
+}
+
+/** Pure decision core — exported for tests. `lookup` abstracts the registry. */
+export function evaluateBootstrapGate(
+  name: string,
+  topic: string | null,
+  c: CallerCandidates | null | undefined,
+  lookup: (id: string) => { bootstrappedAt?: number; gateRefusedAt?: number } | undefined,
+): GateVerdict {
+  if (!topic) return { block: false, reason: 'not-covered', topic };
+  if (GATE_EXEMPT_TOOLS.has(name)) return { block: false, reason: 'exempt', topic };
+  if (!c || c.degraded) return { block: false, reason: 'degraded', topic };
+  const candidates = [c.claudeAi, c.claudeCode].filter((x): x is Candidate => !!x);
+  if (!candidates.length) return { block: false, reason: 'no-identity', topic };
+  // Conservative on heuristic identity: if ANY plausible candidate bootstrapped, stay silent.
+  if (candidates.some((x) => lookup(x.id)?.bootstrappedAt)) return { block: false, reason: 'bootstrapped', topic };
+  // Soft-block ONCE: a caller we already refused proceeds, bootstrapped or not.
+  if (candidates.some((x) => lookup(x.id)?.gateRefusedAt)) return { block: false, reason: 'already-refused', topic };
+  return { block: true, reason: 'first-offence', topic };
+}
+
+/** Pure — the refusal result. Deliberately does NOT mention that a bare retry
+ *  would proceed: the fail-open is a safety property, not an advertised bypass. */
+export function buildBootstrapRefusal(name: string, topic: string | null): McpToolResult {
+  const lines = [
+    `BOOTSTRAP_REQUIRED: this conversation has not loaded the lm-assist playbooks, and \`${name}\` is a playbook-governed tool.`,
+    `Call bootstrap() once (no arguments) — it loads every use case plus the routing that prevents wrong-tool calls — then retry \`${name}\`.`,
+  ];
+  if (topic) lines.push(`This tool's playbook: guide("${topic}").`);
+  return { content: [{ type: 'text', text: lines.join('\n') }], isError: true };
+}
+
+/**
+ * The seam hook: null ⇒ proceed with dispatch; a result ⇒ return it INSTEAD of
+ * dispatching (checked BEFORE dispatch so a gated write has no side effects).
+ * Identity comes from the cached resolver — warm calls are a cache hit.
+ */
+export async function bootstrapGateCheck(name: string): Promise<McpToolResult | null> {
+  try {
+    if ((process.env.LM_BOOTSTRAP_GATE || 'on').toLowerCase() === 'off') return null;
+    const { playbookTopicForTool } = require('./tool-topics') as typeof import('./tool-topics');
+    const topic = playbookTopicForTool(name);
+    if (!topic || GATE_EXEMPT_TOOLS.has(name)) return null;  // skip resolution entirely for uncovered tools
+    const c = await resolveCallerCandidates();
+    const v = evaluateBootstrapGate(name, topic, c, (id) => REGISTRY.get(id));
+    if (!v.block) return null;
+    // Stamp EVERY candidate so the retry finds the refusal even if heuristic
+    // resolution flips to the other candidate between the two calls.
+    for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {
+      const st = REGISTRY.get(cand.id) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
+      st.lastSeen = Date.now(); st.gateRefusedAt = Date.now(); REGISTRY.set(cand.id, st);
+    }
+    return buildBootstrapRefusal(name, v.topic);
+  } catch { return null; }  // the gate must never break a call
 }
 
 function pretty(v: unknown): string { return JSON.stringify(v, null, 2); }

@@ -13,6 +13,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
+// This suite drives REAL covered tool names (mission_list) through the live
+// configureMcpServer seam to prove the cap. The bootstrap gate sits on that
+// same seam and would (a) refuse the un-bootstrapped fake caller and (b) spin
+// up the live identity resolver, whose session-cache watcher leaks an open
+// handle that hangs `node --test`. The gate is off here — it has its own
+// suite (bootstrap-gate.test.ts) whose pure core needs no live deps.
+process.env.LM_BOOTSTRAP_GATE = 'off';
+
 import {
   capToolResult,
   maxResultBytes,

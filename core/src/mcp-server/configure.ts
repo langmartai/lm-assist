@@ -497,10 +497,11 @@ ROUTING — if you skip bootstrap, you are working without the playbooks, and a 
 - "store or query structured data" → guide("data") (cloud reads need data_request_access on the SAME node).
 - "durable goal / mission" → guide("missions"). "worker/orchestration" → guide("roles"). "not installed here" → guide("install").
 Unsure which playbook? Call bootstrap. Every tool result also names the playbook governing that tool, so you can pick it up mid-task.
+This is ENFORCED: a playbook-governed tool called before bootstrap answers BOOTSTRAP_REQUIRED instead of running — call bootstrap() once, then retry the tool.
 
 TALKING TO THE USER — ids (bl_…, mission_…, cse_…, uuids) are handles for TOOLS, not names. Refer to a session/mission/item by its NAME and what it is ABOUT ("the mission controller session on the prod node", not "cse_01T4vuRj…"). In text an id may accompany the name; when SPEAKING (voice) never read one aloud — it is unusable in speech. Full rule: guide("speaking").`;
 
-import { enrichBootstrapWithIdentity } from './mcp-session-resolver';
+import { enrichBootstrapWithIdentity, bootstrapGateCheck } from './mcp-session-resolver';
 import { withOriginTag } from './result-origin';
 import { capToolResult, type ResultSize } from './result-cap';
 import { getHubConfig } from '../hub-client/hub-config';
@@ -583,7 +584,13 @@ export function configureMcpServer(
 
     let result: McpToolResult;
     try {
-      result = isToolDisabled(await currentOverlay(), name) ? disabledResult(name) : await dispatch(name, args);
+      // Bootstrap gate: a playbook-governed tool called by a session that never
+      // bootstrapped is refused ONCE with the instruction to bootstrap — BEFORE
+      // dispatch, so a gated write has no side effects. Fails open on any
+      // uncertainty; LM_BOOTSTRAP_GATE=off disables. Sits at this seam so both
+      // MCP transports are covered and REST/internal callers never see it.
+      const gated = await bootstrapGateCheck(name).catch(() => null);
+      result = gated ?? (isToolDisabled(await currentOverlay(), name) ? disabledResult(name) : await dispatch(name, args));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       result = { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
