@@ -6,6 +6,7 @@
 // cross-node, and multi-tool combinations — instead of reverse-engineering terse
 // tool descriptions. Content is hand-curated here.
 import type { McpToolResult } from '../configure';
+import { maxResultBytes } from '../result-cap';
 import { ok } from './_passthrough';
 import { fleetIdentity } from '../fleet-identity';
 import type { AuthSnapshot } from '../../monitor/auth-monitor';
@@ -806,28 +807,127 @@ export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speak
 
 /** The bootstrap preamble — content doc `bootstrap.header`. */
 export const BOOTSTRAP_HEADER_DEFAULT = [
-  '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
+  '# lm-assist — capability bootstrap (loading ALL use cases for this session)',
   '',
-  'You called `bootstrap`, so the COMPLETE set of lm-assist use-case playbooks is below — you do not need to look anything else up to start. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION). Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). 🔴 When the work only succeeds on the RIGHT machine — a node-bound credential, a working browser, an elevated worker, a repo that exists there — do not guess and do not infer from a hostname: `node_select` ranks the nodes with reasons, and `node_profile` is where you WRITE BACK what you learn so the next session does not rediscover it (guide "nodes"). To re-read ONE topic later, call `guide(topic=...)`.',
+  'You called `bootstrap`. The COMPLETE set of lm-assist use-case playbooks is delivered here, but it is larger than one MCP result may be, so it is PAGED: this is page 1, it carries the MANIFEST (every topic + which page it is on) plus the first run of full playbooks, and the footer tells you the exact call for the next page. Read the manifest and pull the remaining pages with `bootstrap(page=N)` — or jump straight to any single topic with `guide(topic=...)` (a tool name works too). Following the pages loses nothing; nothing is truncated. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION).',
   '',
-  '🔴 THE TAIL OF THIS RESPONSE IS CUT, and the topics you are missing are named here. Bootstrap is ~75 KB against a 64 KiB per-result ceiling, so the last ~15% never reaches you: measured 2026-07-31 the cut lands inside `machine-access` and takes `claude-ai`, `account`, `login`, `github`, `files`, `clusters` and the per-node auth + cluster status blocks with it. Everything ABOVE the cut is complete, and the ⟦RESULT TRUNCATED⟧ marker at the very end is the ground truth (no marker = this node raised `MCP_RESULT_MAX_BYTES` and nothing was dropped). THE REMEDY IS `guide(topic=...)`, not a retry — `bootstrap` takes no arguments, so that marker\'s generic "narrow the call with limit/offset" advice cannot apply here. `guide()` with no args prints the CURRENT topic list, which this sentence is only a snapshot of.',
+  'Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). 🔴 When the work only succeeds on the RIGHT machine — a node-bound credential, a working browser, an elevated worker, a repo that exists there — do not guess and do not infer from a hostname: `node_select` ranks the nodes with reasons, and `node_profile` is where you WRITE BACK what you learn so the next session does not rediscover it (guide "nodes").',
   '',
   'FLOW',
   '```mermaid',
   'flowchart LR',
-  '  L["ALL playbooks loaded below"] --> P["jump to the topic section you need"]',
-  '  P --> A["act with its tools (optional node=... after list_nodes)"]',
+  '  B1["bootstrap (page 1): manifest + first playbooks"] --> BN["bootstrap(page=N) for the rest"]',
+  '  BN --> A["act with its tools (optional node=... after list_nodes)"]',
   '  A -->|"re-read ONE topic later"| G["guide(topic=...)"]',
   '```',
 ].join('\n');
 
-/** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
-function buildBootstrap(lookup?: ContentLookup | null): string {
-  const header = lookup?.('bootstrap.header')?.contentOverride ?? BOOTSTRAP_HEADER_DEFAULT;
-  const sections = BOOTSTRAP_SECTION_ORDER
+/**
+ * Reserve, out of the per-result ceiling, for everything that wraps the playbook
+ * SECTIONS on a page: fleetIdentity + header + manifest + auth + cluster + footer. The
+ * page-1 wrapper is the largest and measures < 8 KiB; 12 KiB is deliberately generous so
+ * a page can never trip the central `capToolResult`. (A test caps every page and asserts
+ * no truncation, so this constant is guarded, not guessed.)
+ */
+export const BOOTSTRAP_WRAP_RESERVE = 12_288;
+
+/** One playbook section: its key and its (override-resolved) body. */
+export interface BootstrapEntry { key: string; body: string; }
+
+/** Every section in order, with content-override applied. */
+export function bootstrapEntries(lookup?: ContentLookup | null): BootstrapEntry[] {
+  return BOOTSTRAP_SECTION_ORDER
     .filter((k) => GUIDES[k])
-    .map((k) => lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k]);
-  return header + sep + sections.join(sep);
+    .map((k) => ({ key: k, body: lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k] }));
+}
+
+/**
+ * PURE greedy packer: group whole sections into pages so each page's section bytes stay
+ * within `contentBudget`. A section is never split. A single section larger than the
+ * budget becomes its own page (it will then be centrally capped — none exist today, a
+ * test pins that). Order is preserved and every key appears exactly once.
+ */
+export function paginateEntries(entries: BootstrapEntry[], contentBudget: number): string[][] {
+  const budget = Math.max(1, contentBudget);
+  const sepBytes = Buffer.byteLength(sep, 'utf8');
+  const pages: string[][] = [];
+  let cur: string[] = [];
+  let curBytes = 0;
+  for (const e of entries) {
+    const sz = Buffer.byteLength(e.body, 'utf8') + sepBytes;
+    if (cur.length > 0 && curBytes + sz > budget) {
+      pages.push(cur);
+      cur = [];
+      curBytes = 0;
+    }
+    cur.push(e.key);
+    curBytes += sz;
+  }
+  if (cur.length > 0) pages.push(cur);
+  return pages.length > 0 ? pages : [[]];
+}
+
+/** The manifest: every topic, its one-line blurb, and the page it is on. Generated (not
+ *  overlayable) so it always matches the live pagination. */
+function buildManifest(pages: string[][], lookup?: ContentLookup | null): string {
+  const pageOf = new Map<string, number>();
+  pages.forEach((keys, i) => keys.forEach((k) => pageOf.set(k, i + 1)));
+  const blurb = (k: string): string => lookup?.(`guide.${k}`)?.blurbOverride ?? BLURB[k] ?? '';
+  const lines = BOOTSTRAP_SECTION_ORDER
+    .filter((k) => GUIDES[k])
+    .map((k) => {
+      const b = blurb(k);
+      return `- \`${k}\`${b ? ' — ' + b : ''} (p${pageOf.get(k) ?? 1})`;
+    });
+  return [
+    `## Manifest — ${BOOTSTRAP_SECTION_ORDER.filter((k) => GUIDES[k]).length} topics across ${pages.length} page${pages.length === 1 ? '' : 's'}`,
+    'Pull a page with `bootstrap(page=N)`, or read one topic with `guide(topic=...)`.',
+    ...lines,
+  ].join('\n');
+}
+
+/** A page's footer: on a non-final page it names the next call and the topics it brings;
+ *  on the final page it announces completion. Both always cite guide(topic=…). */
+function pageFooter(pageNum: number, pages: string[][]): string {
+  const total = pages.length;
+  if (pageNum < total) {
+    const next = pages[pageNum]; // pages is 0-indexed; page N+1 is at index pageNum
+    const preview = next.slice(0, 8).join(', ') + (next.length > 8 ? ', …' : '');
+    return `── page ${pageNum} of ${total} · call \`bootstrap(page=${pageNum + 1})\` for the rest (${preview}) · or \`guide(topic=...)\` for any one topic ──`;
+  }
+  return `── page ${pageNum} of ${total} · bootstrap complete, no further pages · re-read any topic with \`guide(topic=...)\` ──`;
+}
+
+/** Assemble ONE page. Page 1 leads with fleetIdentity + header + manifest + auth +
+ *  cluster; page ≥ 2 leads with a compact continuation line. All pages end with the
+ *  footer. `pageNum` is clamped into range by the caller. */
+export function buildBootstrapPage(
+  pageNum: number,
+  parts: {
+    entries: BootstrapEntry[];
+    pages: string[][];
+    lookup?: ContentLookup | null;
+    identity?: string;
+    auth?: string;
+    cluster?: string;
+  },
+): string {
+  const { entries, pages, lookup } = parts;
+  const total = pages.length;
+  const idx = Math.min(Math.max(1, pageNum), total) - 1;
+  const bodyByKey = new Map(entries.map((e) => [e.key, e.body]));
+  const sectionText = pages[idx].map((k) => bodyByKey.get(k) ?? '').join(sep);
+  const footer = pageFooter(idx + 1, pages);
+
+  if (idx === 0) {
+    const header = lookup?.('bootstrap.header')?.contentOverride ?? BOOTSTRAP_HEADER_DEFAULT;
+    const manifest = buildManifest(pages, lookup);
+    const head = [parts.identity, header, manifest].filter(Boolean).join('\n\n');
+    const status = [parts.auth, parts.cluster].filter(Boolean).join('');
+    return head + sep + sectionText + status + sep + footer;
+  }
+  const contHeader = `# lm-assist bootstrap — page ${idx + 1} of ${total} (continued)\nTopics on this page: ${pages[idx].join(', ')}. Full manifest was on page 1.`;
+  return contHeader + sep + sectionText + sep + footer;
 }
 
 // ── Pure helpers (exported for unit tests) ──────────────────────────────────
@@ -899,9 +999,16 @@ async function clusterBlock(): Promise<string> {
   } catch { return ''; }
 }
 
-async function handleBootstrap(_args: Record<string, unknown>): Promise<McpToolResult> {
+async function handleBootstrap(args: Record<string, unknown>): Promise<McpToolResult> {
   const [lookup, auth, cluster] = await Promise.all([contentLookup(), authBlock(), clusterBlock()]);
-  return ok(fleetIdentity() + '\n\n' + buildBootstrap(lookup) + auth + cluster);
+  const entries = bootstrapEntries(lookup);
+  const contentBudget = maxResultBytes() - BOOTSTRAP_WRAP_RESERVE;
+  const pages = paginateEntries(entries, contentBudget);
+  // page defaults to 1 and clamps into range — a session-start auto-call must never fail,
+  // and an out-of-range page returns the last page rather than an error.
+  const rawPage = Number(args.page);
+  const pageNum = Number.isFinite(rawPage) && rawPage >= 1 ? Math.min(Math.floor(rawPage), pages.length) : 1;
+  return ok(buildBootstrapPage(pageNum, { entries, pages, lookup, identity: fleetIdentity(), auth, cluster }));
 }
 
 async function handleGuide(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -923,9 +1030,15 @@ export const GUIDE_TOOL_DEFS = [
   {
     name: 'bootstrap',
     description:
-      'CALL THIS FIRST, once, with no arguments. Loads the COMPLETE set of lm-assist use-case playbooks into your context in a SINGLE response, so this session is immediately AWARE of everything lm-assist can do (cross-host PROJECTS / SESSIONS / MEMORY / NODES, the structured data service, remote agents, terminal driving, claude.ai, GitHub) and HOW to do it (single-node + cross-node + combination workflows) — no per-topic lookups needed. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together). After bootstrapping, use guide(topic=...) only to re-read one topic. Read-only.',
+      'CALL THIS FIRST, once, with no arguments. Loads the COMPLETE set of lm-assist use-case playbooks so this session is AWARE of everything lm-assist can do (cross-host PROJECTS / SESSIONS / MEMORY / NODES, the structured data service, remote agents, terminal driving, claude.ai, GitHub) and HOW to do it (single-node + cross-node + combination workflows). The playbook is larger than one MCP result may be, so it is PAGED: the no-arg call returns PAGE 1 — a manifest naming every topic and its page, plus the first run of full playbooks — and its footer gives the exact `bootstrap(page=N)` call for the rest. Read the manifest, then pull the remaining page(s) with the `page` argument (or jump to one topic with guide(topic=...)); following the pages truncates nothing. On a node with a raised result ceiling it may all fit in one page. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills. Read-only.',
     annotations: { readOnlyHint: true },
-    inputSchema: { type: 'object' as const, properties: {}, required: [] as string[] },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        page: { type: 'number' as const, description: 'Which page to return (default 1). Page 1 carries the manifest + first playbooks; its footer names the next page. Out-of-range clamps to the last page.' },
+      },
+      required: [] as string[],
+    },
   },
   {
     name: 'guide',

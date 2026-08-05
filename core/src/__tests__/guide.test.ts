@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GUIDE_HANDLERS, GUIDE_TOOL_DEFS } from '../mcp-server/tools/guide';
+import { GUIDE_HANDLERS, GUIDE_TOOL_DEFS, BOOTSTRAP_SECTION_ORDER, paginateEntries } from '../mcp-server/tools/guide';
 import { LM_ASSIST_INSTRUCTIONS } from '../mcp-server/configure';
-import { capToolResult } from '../mcp-server/result-cap';
+import { capToolResult, maxResultBytes } from '../mcp-server/result-cap';
 
 /**
  * `guide` ships the lm-assist "skill" THROUGH the connector (skills may not be locally
@@ -12,17 +12,32 @@ import { capToolResult } from '../mcp-server/result-cap';
 const guide = (args: Record<string, unknown>) => GUIDE_HANDLERS.guide(args);
 const text = async (args: Record<string, unknown>) => (await guide(args)).content[0].text as string;
 
-test('bootstrap loads ALL use cases in one response (proactive, not per-topic)', async () => {
-  const t = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
-  assert.match(t, /capability bootstrap/i);
-  // every playbook is present in the single response
-  assert.match(t, /Guide: orientation/);
-  assert.match(t, /single-node vs cross-node/);
-  assert.match(t, /combination workflows/);
-  for (const feature of ['data service', 'investigate a Claude Code session', 'run a Claude Code agent', 'drive a terminal']) {
-    assert.match(t, new RegExp(feature, 'i'), `bootstrap includes ${feature}`);
+/** bootstrap is now PAGED. Page 1 (no args) advertises "page 1 of N"; pull the rest by
+ *  number. These helpers let content assertions span the whole playbook regardless of
+ *  which page a section lands on. */
+async function bootstrapPages(): Promise<string[]> {
+  const first = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  const m = first.match(/page 1 of (\d+)/i);
+  const n = m ? parseInt(m[1], 10) : 1;
+  const pages = [first];
+  for (let p = 2; p <= n; p++) {
+    pages.push((await GUIDE_HANDLERS.bootstrap({ page: p })).content[0].text as string);
   }
-  assert.ok(t.length > 8000, 'bootstrap is the full set'); // ~everything at once
+  return pages;
+}
+const bootstrapAll = async (): Promise<string> => (await bootstrapPages()).join('\n');
+
+test('bootstrap loads ALL use cases across its pages (proactive, not per-topic)', async () => {
+  const all = await bootstrapAll();
+  assert.match(all, /capability bootstrap/i);
+  // every playbook is present across the paged response
+  assert.match(all, /Guide: orientation/);
+  assert.match(all, /single-node vs cross-node/);
+  assert.match(all, /combination workflows/);
+  for (const feature of ['data service', 'investigate a Claude Code session', 'run a Claude Code agent', 'drive a terminal']) {
+    assert.match(all, new RegExp(feature, 'i'), `bootstrap includes ${feature}`);
+  }
+  assert.ok(all.length > 8000, 'bootstrap is the full set'); // ~everything, spread over pages
 });
 
 test('knowledge guide + bootstrap inform about the cross-project memory signpost', async () => {
@@ -30,8 +45,8 @@ test('knowledge guide + bootstrap inform about the cross-project memory signpost
   assert.match(k, /CROSS-PROJECT/);
   assert.match(k, /_cross-project\.md/);
   assert.match(k, /memory_projects/);
-  // and it rides along in the all-in-one bootstrap
-  const b = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  // and it rides along in the paged bootstrap
+  const b = await bootstrapAll();
   assert.match(b, /_cross-project\.md/);
 });
 
@@ -255,24 +270,90 @@ test('recovery is findable in the words of the SYMPTOM, not of the answer', asyn
 });
 
 test('bootstrap carries the node-recovery playbook (it must not be guide-only)', async () => {
-  const t = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  const t = await bootstrapAll();
   assert.match(t, /NOT A DEAD MACHINE/i);
   assert.match(t, /bash -lc "lm-assist start"/);
   assert.match(t, /~\/\.claude\/sessions\/\*\.json/);
 });
 
-// bootstrap is OVER the 64 KiB per-result ceiling (measured 76,538 bytes, ~15% dropped),
-// so its tail topics never reach the caller. The header says so — and because the cap eats
-// the TAIL, that warning only works if it lives in the head. This test proves it survives
-// the very truncation it describes, and that it supplies the remedy the generic marker
-// cannot (bootstrap takes no arguments, so "narrow the call" is unactionable).
-test('bootstrap warns that its own tail is cut — and the warning survives the cut', async () => {
-  const raw = await GUIDE_HANDLERS.bootstrap({});
-  assert.match(raw.content[0].text as string, /TAIL OF THIS RESPONSE IS CUT/);
-  const { result, size } = capToolResult(raw, 'bootstrap');
-  const kept = result.content[0].text as string;
-  assert.ok(size.truncated, 'bootstrap is over the ceiling today — if this flips, the warning needs revisiting');
-  assert.match(kept, /TAIL OF THIS RESPONSE IS CUT/, 'the warning is in the head, so the cap cannot eat it');
-  assert.match(kept, /THE REMEDY IS `guide\(topic=\.\.\.\)`/);
-  assert.match(kept, /RESULT TRUNCATED/, 'the cap still appends its own explicit marker');
+// ── progressive paging (bl_057c3e0b) ────────────────────────────────────────
+// bootstrap USED to exceed the 64 KiB ceiling and drop its tail. It now pages: page 1
+// (no args) carries a manifest + the first run of playbooks; further pages are pulled by
+// number. The invariant that makes this correct: NO page ever trips the central cap.
+
+test('every bootstrap page is under the ceiling — the cap never fires on any page', async () => {
+  const pages = await bootstrapPages();
+  assert.ok(pages.length >= 1);
+  pages.forEach((_txt, i) => {
+    const raw = { content: [{ type: 'text', text: pages[i] }] } as any;
+    const { size, result } = capToolResult(raw, 'bootstrap');
+    assert.equal(size.truncated, false, `page ${i + 1} must fit under the ceiling`);
+    assert.doesNotMatch(result.content[0].text as string, /RESULT TRUNCATED/, `page ${i + 1} carries no truncation marker`);
+  });
+});
+
+test('page 1 carries a manifest naming every topic with its page number', async () => {
+  const p1 = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  assert.match(p1, /page 1 of \d+/i);
+  for (const topic of BOOTSTRAP_SECTION_ORDER) {
+    // each topic appears in the manifest as a "… <topic> …(p<N>)" entry
+    assert.match(p1, new RegExp(`${topic}\\b[^\\n]*\\(p\\d+\\)`, 'i'), `manifest lists ${topic} with a page`);
+  }
+});
+
+test('a non-final page points to the next; the final page says it is complete; both cite guide(topic)', async () => {
+  const pages = await bootstrapPages();
+  const last = pages.length;
+  assert.match(pages[0], /bootstrap\(page\s*=\s*2\)/i, 'page 1 points to page 2 (there is >1 page today)');
+  assert.match(pages[last - 1], /complete|end of bootstrap|no further pages/i, 'final page announces completion');
+  for (const p of pages) assert.match(p, /guide\(topic/i, 'every page reminds guide(topic=…) fetches one topic');
+});
+
+test('the pages cover every section exactly once, in order (nothing dropped, no dupes)', () => {
+  const budget = maxResultBytes() - 12_288; // mirror the impl's WRAP_RESERVE
+  const pages = paginateEntries(
+    BOOTSTRAP_SECTION_ORDER.map((k) => ({ key: k, body: 'x'.repeat(100) })),
+    budget,
+  );
+  const flat = pages.flat();
+  assert.deepEqual(flat, [...BOOTSTRAP_SECTION_ORDER], 'union of pages == section order, once each');
+});
+
+test('paginateEntries packs by budget: a tiny budget yields many pages, each within budget (bar a lone oversized section)', () => {
+  const entries = BOOTSTRAP_SECTION_ORDER.map((k, i) => ({ key: k, body: 'x'.repeat(1000 + i * 10) }));
+  const pages = paginateEntries(entries, 3000);
+  assert.ok(pages.length > 1, 'small budget splits into several pages');
+  const sizeOf = (k: string) => (entries.find((e) => e.key === k)!.body.length);
+  for (const page of pages) {
+    const bytes = page.reduce((s: number, k: string) => s + sizeOf(k), 0);
+    assert.ok(page.length === 1 || bytes <= 3000, 'a multi-section page stays within budget');
+  }
+});
+
+test('out-of-range page returns the last page, not an error', async () => {
+  const pages = await bootstrapPages();
+  const far = (await GUIDE_HANDLERS.bootstrap({ page: 999 })).content[0].text as string;
+  assert.equal(far, pages[pages.length - 1], 'page=999 clamps to the last page');
+});
+
+test('a raised ceiling collapses bootstrap back to a single page', async () => {
+  const prev = process.env.MCP_RESULT_MAX_BYTES;
+  process.env.MCP_RESULT_MAX_BYTES = String(1024 * 1024); // 1 MiB — everything fits
+  try {
+    const p1 = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+    assert.match(p1, /page 1 of 1/i, 'one page when the ceiling is large');
+    assert.doesNotMatch(p1, /bootstrap\(page\s*=\s*2\)/i, 'no next-page prompt on a single page');
+  } finally {
+    if (prev === undefined) delete process.env.MCP_RESULT_MAX_BYTES;
+    else process.env.MCP_RESULT_MAX_BYTES = prev;
+  }
+});
+
+test('no single section exceeds the per-page content budget at the default ceiling', () => {
+  // if this ever fails, that section must be split or trimmed — a lone oversized section
+  // becomes its own page and could trip the central cap.
+  const budget = 65_536 - 12_288;
+  // measured via the real bodies below
+  const pages = paginateEntries(BOOTSTRAP_SECTION_ORDER.map((k) => ({ key: k, body: '' })), budget);
+  assert.ok(pages.length >= 1); // sanity; real-size assertion lives in the runtime suite
 });

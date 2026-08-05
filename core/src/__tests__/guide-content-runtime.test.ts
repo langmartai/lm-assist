@@ -15,7 +15,15 @@ import {
   type ContentOverlayProvider,
 } from '../mcp-server/registry/content-live';
 
-const bootstrapText = async () => ((await GUIDE_HANDLERS.bootstrap({})).content[0].text as string);
+// bootstrap is paged; concatenate ALL pages so a section-override assertion does not
+// depend on which page the overridden section happens to land on.
+const bootstrapText = async () => {
+  const first = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  const n = parseInt(first.match(/page 1 of (\d+)/i)?.[1] ?? '1', 10);
+  const pages = [first];
+  for (let p = 2; p <= n; p++) pages.push((await GUIDE_HANDLERS.bootstrap({ page: p })).content[0].text as string);
+  return pages.join('\n');
+};
 const guideText = async (args: Record<string, unknown>) => ((await GUIDE_HANDLERS.guide(args)).content[0].text as string);
 
 function fakeProvider(entries: Record<string, Partial<ContentState>>): ContentOverlayProvider {

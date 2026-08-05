@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fleetIdentity } from '../mcp-server/fleet-identity';
+import { GUIDE_HANDLERS } from '../mcp-server/tools/guide';
 
 // Tests run via `node --test` from the `core/` dir → process.cwd() is core/.
 const GUIDE_SRC = path.join(process.cwd(), 'src', 'mcp-server', 'tools', 'guide.ts');
@@ -16,9 +17,10 @@ test('guide.ts no longer hardcodes "langmart MCP connector"', () => {
   assert.doesNotMatch(src, /langmart MCP connector/);
 });
 
-test('handleBootstrap prepends fleetIdentity() to the response', () => {
-  const src = fs.readFileSync(GUIDE_SRC, 'utf8');
-  // The bootstrap assembly must put fleetIdentity() ahead of the (now overlay-aware)
-  // bootstrap body — buildBootstrap(lookup) replaced the old BOOTSTRAP constant.
-  assert.match(src, /ok\(fleetIdentity\(\)\s*\+\s*'\\n\\n'\s*\+\s*buildBootstrap\(/);
+test('bootstrap page 1 leads with fleetIdentity()', async () => {
+  // Behavioral: page 1 (the no-arg session-start call) must OPEN with the fleet/connector
+  // identity, ahead of the paged bootstrap body + manifest.
+  const p1 = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  assert.ok(p1.startsWith(fleetIdentity()), 'page 1 begins with the fleet identity block');
+  assert.match(p1.slice(0, 400), /FLEET \/ CONNECTOR IDENTITY/);
 });
