@@ -427,6 +427,14 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   gmail_create_label: 'write',
   gmail_move_to: 'write',
   gmail_login: 'admin',
+  // youtube CDP connector (reads are PUBLIC — channel videos, video info, transcript;
+  // login only brings the driver browser up / signs in for age-gated content)
+  youtube_status: 'read',
+  youtube_channel_videos: 'read',
+  youtube_video: 'read',
+  youtube_transcript: 'read',
+  youtube_selfcheck: 'read',
+  youtube_login: 'admin',
   // backup collector (reads query the store; run writes it; remove destroys data
   // and can rewrite a snapshot, so it is admin like the other destructive tools)
   backup_status: 'read',

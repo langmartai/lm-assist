@@ -138,7 +138,19 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 // = ~71,600 B, roughly 28% of the whole catalogue. Every conversation pays it up
 // front. Taking that on would fund ~66 tools of growth and is worth far more
 // than any amount of per-tool sanding.
-const CATALOG_BUDGET_BYTES = 284_000;
+//
+// MEASURED 2026-08-05, after the YouTube connector landed — a genuine new surface
+// (6 read tools + login/selfcheck), so the budget is raised deliberately, with
+// the arithmetic it is owed:
+//
+//   262 tools, catalogue          284,483 B  (was 279,051 B at 256 tools)
+//   youtube: 6 tools = ~5,432 B of that, of which its OWN prose is only 3,596 B
+//     — 599 B/tool, among the leanest on the surface (average ~1,095 B); the rest
+//     is the injected node-param paragraph it cannot avoid.
+//   budget 284,000 -> 289,000  ->  4,517 B headroom (~4 tools of slack), matching
+//     the ~5 KB / ~4-5-tool headroom the surface carried before youtube landed.
+//   the re-inlining regression this guard exists to catch (~90 KB) still trips it.
+const CATALOG_BUDGET_BYTES = 289_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};

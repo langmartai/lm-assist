@@ -35,7 +35,7 @@ export interface ToolCatalogEntry {
 export const CATEGORY_ORDER: string[] = [
   'core', 'session', 'mission', 'backlog', 'worker', 'agent', 'terminal', 'memory', 'data',
   'transfer', 'fleet', 'cluster', 'machine-access', 'ccr', 'claudeai', 'auth',
-  'github', 'whatsapp', 'linkedin', 'gmail', 'backup', 'elevated',
+  'github', 'whatsapp', 'linkedin', 'gmail', 'youtube', 'backup', 'elevated',
 ];
 
 const T = 'core/src/mcp-server/tools';
@@ -170,6 +170,12 @@ mod('gmail.ts', 'gmail', [
   'gmail_star', 'gmail_spam', 'gmail_apply_label', 'gmail_remove_label',
   'gmail_create_label', 'gmail_rename_label', 'gmail_delete_label', 'gmail_move_to',
   'gmail_schedule_send', 'gmail_settings', 'gmail_draft_send', 'gmail_draft_delete', 'gmail_schedule_cancel', 'gmail_bulk',
+]);
+
+// --- youtube ---
+mod('youtube.ts', 'youtube', [
+  'youtube_status', 'youtube_login', 'youtube_channel_videos', 'youtube_video',
+  'youtube_transcript', 'youtube_selfcheck',
 ]);
 
 // --- backup ---
