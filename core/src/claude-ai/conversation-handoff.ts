@@ -217,7 +217,7 @@ function renderPointerSection(p: HandoffPointers, extra: string[]): string[] {
   const rows: Array<[string, string[], string]> = [
     ['missions', p.missions, 'mission_list({id})'],
     ['backlog', p.backlog, 'backlog_get({id})'],
-    ['sessions', p.sessions, 'ccr_remote_list / mission_session_read'],
+    ['sessions', p.sessions, 'ccr_live_list / mission_session_read'],
     ['executions', p.executions, 'get_execution({id})'],
     ['nodes', p.nodes, 'list_nodes / node_status({node})'],
     ['knowledge', p.knowledge, 'detail({id})'],

@@ -110,7 +110,7 @@ blocks, i.e. what actually lands in a conversation's context. Token estimates us
 | `search_memory` | 4.2 KB | ~1k | CALLER_LIMIT_SANE_DEFAULT | SAFE |
 | `list_projects` | 4.0 KB | ~1k | **NOTHING** | SAFE |
 | `rule_sync_status` | 3.8 KB | ~1k | **NOTHING** | SAFE |
-| `ccr_remote_list` | 3.3 KB | ~1k | **NOTHING** | SAFE |
+| `ccr_bridge_registry` (was `ccr_remote_list`) | 3.3 KB | ~1k | **NOTHING** | SAFE |
 | `memory_sync_status` | 3.1 KB | ~1k | **NOTHING** | SAFE |
 | `scheduler_jobs` | 2.9 KB | ~1k | SMALL_BY_CONSTRUCTION | SAFE |
 | `rule_map` | 2.3 KB | ~1k | **NOTHING** | SAFE |

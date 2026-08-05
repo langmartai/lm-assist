@@ -26,6 +26,8 @@ const textResult = (text: string): McpToolResult => ({ content: [{ type: 'text',
 // ── tool → playbook mapping ────────────────────────────────────────────────
 
 test('playbookTopicForTool — maps a tool to its governing playbook', () => {
+  assert.equal(playbookTopicForTool('ccr_bridge_registry'), 'ccr');
+  // pre-rename compat alias still routes to the ccr playbook
   assert.equal(playbookTopicForTool('ccr_remote_list'), 'ccr');
   assert.equal(playbookTopicForTool('data_get'), 'data');
   assert.equal(playbookTopicForTool('list_recent_sessions'), 'sessions');
@@ -101,7 +103,7 @@ test('withOriginTag — an id-bearing result gets the naming rule; a plain one d
 test('withOriginTag — carries the playbook for the tool that just answered', () => {
   // The incident tool: its result now names the CCR playbook, so a session that never
   // bootstrapped can still find the cross-check flow.
-  assert.match(textOf(withOriginTag(textResult('no sessions'), 'ccr_remote_list')), /playbook: guide\("ccr"\)/);
+  assert.match(textOf(withOriginTag(textResult('no sessions'), 'ccr_bridge_registry')), /playbook: guide\("ccr"\)/);
   // Unmapped tool ⇒ no pointer, and nothing broken.
   const unmapped = textOf(withOriginTag(textResult('hello'), 'no_such_tool'));
   assert.equal(/playbook:/.test(unmapped), false);
