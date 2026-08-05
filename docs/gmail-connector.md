@@ -398,6 +398,128 @@ Measured on a live run: `succeeded: 2` of 3 while an independent listing showed 
 input and returns a short success list is indistinguishable from partial success.
 Every id beyond 25 comes back in `failed` as `BULK_CAP_EXCEEDED`.
 
+## Selfcheck now checks FEATURES, not just the DOM around them
+
+The original 11 checks were structural probes — landmarks, tokens, selectors, view
+distinctness. They answer "can we still address Gmail's UI?" and caught the
+wrong-thread and empty-body bugs. But they exercised **none of the 39 tools**, so
+every verb could break and the suite would stay green.
+
+Four feature checks now run alongside them:
+
+| check | covers | side effect |
+|---|---|---|
+| `feature.read_surface` | summary, aliases | none |
+| `feature.label_roundtrip` | create → rename → delete | none — self-cleaning |
+| `feature.draft_roundtrip` | draft, drafts, draft_delete | none — nothing is SENT |
+
+🔴 **Cleanup only ever touches its own artifacts.** Everything is named with a
+`lm-selfcheck` tag, and each teardown re-reads the live list and removes only
+entries carrying that tag — never "the newest draft", never "index 0". A health
+check that deletes real mail because a lookup drifted is far worse than one that
+leaves a stray label behind. Verified: 71 real labels and 40 real drafts untouched
+across runs, 0 leftovers.
+
+🔴 **"Could not run" is a SKIP, never a failure.** `BROWSER_BUSY`,
+`BROWSER_NOT_RUNNING`, `CDP_UNREACHABLE` and `PAGE_NOT_FOUND` mark a check skipped,
+and the whole feature block is gated on one liveness probe so a dead browser
+produces ONE actionable line instead of four confusing failures. Measured: the
+first version reported 11/15 with three failures on a completely healthy mailbox,
+because the feature checks doubled the browser work and the browser died mid-run.
+A suite that goes red because it fought itself teaches the reader to ignore red.
+
+🔴 **Every check gets a clean page.** Checks were inheriting whatever the previous
+one left open — a compose, a thread, a settings page — and the page degraded until
+it stopped answering CDP entirely. Measured: a full run went from 14/15 to 5 passed
+/ 9 skipped / 1 failed, with 10 GB RAM free and no OOM. A reset now runs before each
+check, and if the browser has died the suite relaunches it ONCE and carries on
+instead of skipping everything after the failure. Same starting conditions:
+5 passed / 9 skipped -> **14 passed / 0 skipped**.
+
+⚠️ There is deliberately NO star-toggle check. Three attempts failed three
+different ways on a healthy mailbox (`#label/starred` does not exist; the
+`is:starred` index lags the DOM; that search view would not render in time). The
+action is a row click and every verification route available is slower than it —
+a check that verifies on a weaker basis than the thing it tests goes red on a
+healthy mailbox, which is worse than no check.
+## Self-healing on every Gmail call
+
+`openSession()` — the choke point every Gmail tool goes through — now has a
+three-rung recovery ladder:
+
+1. open a session and prove the page ANSWERS (a wedged renderer accepts the
+   debugger socket and replies to nothing, so every op would hang)
+2. **recycle the tab** and retry
+3. **relaunch the browser** and retry
+
+Rung 3 is new. The old code threw `BROWSER_UNRESPONSIVE` saying *"the browser
+itself needs restarting"* — and then made the caller do it. On Linux the browser
+dies with every Core restart, so that was a routine, self-inflicted failure.
+
+Verified: Chrome killed outright, then an ordinary `gmail_list_threads` with no
+manual step → 3 threads returned in 28s, one `relaunched it automatically` logged.
+
+🔴 **Rate limited to one relaunch per 60s, process-wide.** A relaunch loop against
+a browser that cannot start would spawn Chrome as fast as calls arrive — far worse
+than a clear error. Verified: browser killed twice and three rapid calls fired, ONE
+relaunch total, no process storm.
+
+🔴 **Only when the profile already holds a session.** Relaunching a signed-OUT
+profile parks a browser on a Google login page nobody is watching, turning a clear
+"sign in" into a silent hang. That case still tells the truth.
+
+## Thread labels come from the Labels MENU, not from chips
+
+🔴 **Chip scraping does not work, in either place it was tried.** MEASURED
+2026-08-02 in a SINGLE page evaluation, so both readings describe the same rows at
+the same instant:
+
+    idx | subject        | extractor | DOM chips
+      6 | Security alert | []        | ["HY: Microsoft"]
+
+The thread-view chip path was empty for the same threads. So `labels: []` was
+indistinguishable from "this thread has no labels" — wrong in the worst way,
+because it reads as a fact.
+
+**The Labels toolbar menu is the UI's own answer.** Every label is a
+`role="menuitemcheckbox"` carrying `aria-checked`; the checked ones ARE the
+thread's labels. No index, cannot go stale, asks Gmail directly instead of
+inferring. `GET /gmail/thread-labels?threadId=` — one menu open per thread.
+
+🔴 **Read it with `textContent`, never `innerText`.** Gmail wraps the
+type-ahead-matched character in an inline element, and `innerText` is layout-aware:
+it inserts whitespace at that boundary, so `HY: Microsoft` came back as
+`HY: Micro oft` — the `s` silently replaced by a space. A label name that is subtly
+wrong is worse than one that is missing. Note the REVERSE hazard is also real: for
+attachment names `textContent` loses a needed newline. Per-surface choice, not a
+rule.
+
+There is also a bounded label INDEX (`POST /gmail/label-index/refresh`) that walks
+`#label/X` views to enrich many list rows at once without a menu open per row. It
+LAGS and is capped per label, and reports `builtAt` / `labelsWalked` / `perLabel` /
+failed labels with every answer so a partial index cannot present itself as
+complete. Prefer the menu for a single thread.
+
+## Prefer Gmail's OWN control over inferring state
+
+The recurring lesson of this connector: when you need a piece of state, find the
+native control that already states it, rather than deriving it from chips, classes
+or a second query. Three cases, all measured:
+
+| state | inferred (failed) | native control (works) |
+|---|---|---|
+| importance | no marker rendered on the row | the More menu offers only the INVERSE action |
+| thread labels | row/thread chips return `[]` | Labels menu — `menuitemcheckbox` + `aria-checked` |
+| starred | `#label/starred` (no such view); `is:starred` (index lags; view won't render) | the star control's own `aria-label`: `Starred` / `Not starred` |
+
+🔴 **A check must verify at least as fast as the action it performs.** The star
+check failed three times because a row CLICK was being verified by a SEARCH. The
+control's aria-label is in the same DOM pass, so the check now passes.
+
+⚠️ Not everything has one. **`unread` has NO native signal** — measured, the row
+exposes no `aria-label` for it — so reading `tr.classList.contains('zE')` there is
+correct rather than lazy. Checked, not assumed.
+
 ## Limits and caveats
 
 - **The thread list is virtualized.** A read returns the most-recent RENDERED threads

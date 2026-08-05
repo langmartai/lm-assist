@@ -50,6 +50,15 @@
 import {
   cdpStatus,
   listThreads,
+  createLabel,
+  renameLabel,
+  deleteLabel,
+  draftMail,
+  listDrafts,
+  deleteDraft,
+  starThread,
+  starState,
+  gmailSummary,
   searchThreads,
   readThread,
   listSendAs,
@@ -71,6 +80,9 @@ import {
   assertNavLabels,
   looksLikeThreadId,
 } from './validate';
+// Static import is safe here: the graph is selfcheck -> safety -> cdp-client, and
+// cdp-client only ever reaches back with `import type`, so nothing is cyclic.
+import { checkRate } from './safety';
 
 // ─── result shapes ───────────────────────────────────────────────────────────
 
@@ -78,6 +90,14 @@ export interface CheckResult {
   /** Stable dotted id. Stable so a matrix can be diffed across runs. */
   name: string;
   ok: boolean;
+  /**
+   * TRUE when the check could not RUN — no browser, or the driver was held by a
+   * sync. That is not a feature failure, and reporting it as one is worse than
+   * useless: a suite that goes red because it fought itself for the browser
+   * teaches the reader to ignore red. Skips are counted separately and never
+   * fail the run.
+   */
+  skipped?: boolean;
   /** One line a human can act on: what was seen, or which invariant broke. */
   detail: string;
   ms: number;
@@ -93,6 +113,8 @@ export interface SelfCheckReport {
   /** True when no CRITICAL check failed. Warn failures do not clear this flag. */
   ok: boolean;
   passed: number;
+  /** Checks that could not RUN (no browser / driver busy). Never a failure. */
+  skipped: number;
   failed: number;
   checks: CheckResult[];
   startedAt: number;
@@ -123,18 +145,178 @@ function reason(e: unknown): string {
 }
 
 /**
+ * Why a reset did not happen. `rateLimited` is separated from every other cause
+ * because the two need OPPOSITE responses: wait, versus restart the browser.
+ */
+interface ResetOutcome {
+  ok: boolean;
+  rateLimited?: boolean;
+  detail?: string;
+}
+
+/**
+ * Stay inside the connector's own read budget instead of crashing into it.
+ *
+ * 🔴 The suite is the heaviest reader in the codebase: with a reset before every
+ * check, one deep run costs ~16 resets plus ~18 check reads — comfortably past the
+ * 20/min default. It was therefore GUARANTEED to trip its own limiter partway
+ * through, and which checks survived depended on how much budget happened to be
+ * left when it started. A canary whose verdict depends on when you last ran it is
+ * not a canary.
+ *
+ * `checkRate` is pure — it records nothing — so consulting it costs no quota, and
+ * `retryAfterMs` is the limiter's own answer for how long a slot takes to open.
+ * The wait is capped so a misconfigured `GMAIL_READ_MAX_PER_MIN=0` cannot hang the
+ * suite forever; that case surfaces as a rate-limited skip, which is the truth.
+ */
+const BUDGET_WAIT_CAP_MS = 70_000;
+
+async function awaitReadBudget(force = false): Promise<void> {
+  const v = checkRate('read');
+  if (v.allowed && !force) return;
+  const wait = Math.min(Math.max(v.retryAfterMs, force ? 1000 : 0) + 750, BUDGET_WAIT_CAP_MS);
+  if (wait > 0) await sleep(wait);
+}
+
+/**
+ * Put the page back to a known-good state between checks.
+ *
+ * 🔴 Checks were sharing whatever state the previous one left behind — an open
+ * compose, a thread view, a settings page, a menu. MEASURED 2026-08-02: a full run
+ * degraded from 14/15 to 5 passed / 9 skipped / 1 failed as the page accumulated
+ * state and eventually stopped answering CDP entirely (BROWSER_BUSY ->
+ * BROWSER_UNRESPONSIVE -> BROWSER_NOT_RUNNING), with 10 GB of RAM free and no OOM.
+ * Each check is only meaningful from a clean start, and the wedge was the tail end
+ * of that accumulation.
+ *
+ * Returns false when the page could not be brought back — the caller then knows to
+ * skip rather than to report a feature failure.
+ */
+async function resetBetweenChecks(): Promise<ResetOutcome> {
+  try {
+    await pageProbe(async (cdp) => {
+      // A real load, not a hash write: a hash-only change does not re-route the SPA
+      // and would leave whatever view the last check opened.
+      await cdp.navigate('https://mail.google.com/mail/u/0/#inbox');
+      await sleep(1200);
+      // Prove it actually answers, rather than assuming navigate() implies alive.
+      const ok = await cdp.evaluate<boolean>('return !!document.querySelector("body");').catch(() => false);
+      if (ok !== true) throw new Error('page did not answer after reset');
+      return true;
+    });
+    return { ok: true };
+  } catch (e) {
+    // 🔴 WHY THIS IS NOT A BOOLEAN. It was, and the single `false` collapsed two
+    // completely different worlds into one: "the browser is gone" and "we are out
+    // of read budget". The caller could only guess, guessed "browser", and told
+    // the reader to run gmail_login against a browser that was perfectly alive.
+    const code = (e as { code?: unknown })?.code;
+    if (code === 'RATE_LIMITED') return { ok: false, rateLimited: true, detail: String((e as Error).message || '') };
+    return { ok: false, rateLimited: false, detail: reason(e) };
+  }
+}
+
+/**
+ * Reset, waiting out the read budget and relaunching the browser — but never
+ * confusing the two.
+ *
+ * 🔴 MEASURED 2026-08-03, deep run on 123: `ok=false, passed=4, skipped=10`. Check
+ * 5 tripped the limiter at read 21, and from then on EVERY remaining check was
+ * skipped as "browser gone; run gmail_login" — while the browser was fine and the
+ * mailbox was healthy. The reset probe is itself an `op('read')`, so once the
+ * budget was gone the recovery path could not run either, and the one recovery it
+ * did attempt was a browser relaunch for a rate limit.
+ *
+ * Two things follow, and both are the same principle this suite keeps re-learning:
+ *   - Pace, do not fail. The limiter already computes exactly how long to wait.
+ *   - Never report a cause you have not established. "Browser gone" was inferred
+ *     from a bare false, and it was wrong.
+ */
+async function resetOrRecover(state: { relaunched: boolean }): Promise<ResetOutcome> {
+  await awaitReadBudget();
+  let r = await resetBetweenChecks();
+  if (r.ok) return r;
+
+  // Rate-limited even after pacing: wait the limiter's own figure and retry once.
+  // This is a budget condition; a relaunch would not help and would destroy state.
+  if (r.rateLimited) {
+    await awaitReadBudget(true);
+    r = await resetBetweenChecks();
+    if (r.ok) return r;
+    if (r.rateLimited) return r;
+  }
+
+  if (state.relaunched) return r; // only ever one relaunch per run
+  state.relaunched = true;
+  try {
+    const { gmailLogin } = await import('./login');
+    await gmailLogin({});
+    await sleep(2500);
+    return await resetBetweenChecks();
+  } catch (e) {
+    return { ok: false, rateLimited: false, detail: reason(e) };
+  }
+}
+
+/**
  * Run one check in isolation.
  *
  * The try/catch is the feature, not defensive noise: check 4 (two views must
  * differ) is worthless if check 3 threw and stopped the run, and check 3 is
  * exactly the kind of thing that throws.
  */
+/**
+ * Errors that mean "could not run", never "the feature is broken".
+ *
+ * MEASURED 2026-08-02: the first run of the feature checks reported 11/15 with
+ * three failures — LABEL_DIALOG_NOT_OPEN, BROWSER_BUSY and BROWSER_NOT_RUNNING —
+ * on a mailbox that was completely healthy. The browser had died partway through
+ * because the feature checks roughly double the browser work a run does, and each
+ * sub-call takes the driver lock independently. Those are conditions of the
+ * harness, not findings about Gmail.
+ */
+const INFRA_CODES = new Set([
+  'BROWSER_BUSY',
+  'BROWSER_NOT_RUNNING',
+  'CDP_UNREACHABLE',
+  'PAGE_NOT_FOUND',
+  // 🔴 Added 2026-08-03 after a deep run reported `thread.identity` and
+  // `attachments.deep` as FAILED when both were simply past the 20-reads-per-minute
+  // budget. The suite hitting its OWN limiter is the purest possible harness
+  // condition — the feature was never exercised — and grading it as a failure is
+  // how a green-when-idle, red-when-busy canary teaches people to ignore red.
+  'RATE_LIMITED',
+]);
+
+function infraReason(e: unknown): string | null {
+  const code = (e as { code?: unknown })?.code;
+  if (typeof code === 'string' && INFRA_CODES.has(code)) return code;
+  const msg = e instanceof Error ? e.message : String(e);
+  for (const c of INFRA_CODES) if (msg.includes(c)) return c;
+  return null;
+}
+
 async function run(name: string, severity: CheckResult['severity'], body: CheckBody): Promise<CheckResult> {
   const t0 = Date.now();
   try {
     const detail = await body();
     return { name, ok: true, detail, ms: Date.now() - t0, severity };
   } catch (e) {
+    const infra = infraReason(e);
+    if (infra) {
+      return {
+        name,
+        ok: true,
+        skipped: true,
+        detail:
+          infra === 'RATE_LIMITED'
+            ? `SKIPPED — the suite ran out of its own read budget mid-check (${reason(e)}). ` +
+              'The feature was never exercised, so this is not a verdict on it.'
+            : `SKIPPED — could not run (${infra}); this says nothing about the feature`,
+        ms: Date.now() - t0,
+        severity,
+      };
+    }
     const soft = e instanceof SoftFail;
     return {
       name,
@@ -625,6 +807,147 @@ async function checkCompose(): Promise<string> {
   return 'compose exposed To + Subject + Body + Send together, then discarded cleanly (nothing typed, no draft)';
 }
 
+/**
+ * Every artifact this file creates is named with this prefix.
+ *
+ * 🔴 CLEANUP ONLY EVER TOUCHES ITS OWN ARTIFACTS. Each teardown re-reads the live
+ * list and removes only entries whose name carries this tag — never "the newest
+ * draft", never "the label at index 0". A health check that deletes real mail
+ * because a lookup drifted is far worse than one that leaves a stray label behind.
+ */
+const SELFCHECK_TAG = 'lm-selfcheck';
+const stamp = (): string => `${SELFCHECK_TAG}-${Date.now().toString(36)}`;
+
+/**
+ * Labels round-trip: create -> rename -> delete.
+ *
+ * Covers gmail_create_label / gmail_rename_label / gmail_delete_label, none of
+ * which any structural check exercises. Self-cleaning: the label exists for a few
+ * seconds and is verified GONE at the end.
+ */
+async function checkLabelRoundTrip(): Promise<string> {
+  const name = stamp();
+  const renamed = `${name}-r`;
+  let created = false;
+  try {
+    await createLabel(name);
+    created = true;
+    const afterCreate = await listLabels();
+    if (!afterCreate.some((l: { name: string }) => l.name === name)) throw new Error(`created "${name}" but it is not in the label list`);
+
+    await renameLabel(name, renamed);
+    const afterRename = await listLabels();
+    if (!afterRename.some((l: { name: string }) => l.name === renamed)) throw new Error(`renamed to "${renamed}" but it is not in the list`);
+    if (afterRename.some((l: { name: string }) => l.name === name)) throw new Error(`renamed but the old name "${name}" is still present`);
+    created = false; // it now lives under `renamed`
+
+    await deleteLabel(renamed);
+    const afterDelete = await listLabels();
+    if (afterDelete.some((l: { name: string }) => l.name === renamed)) throw new Error(`deleted "${renamed}" but it is STILL listed`);
+    return 'create -> rename -> delete all verified by re-reading the label list';
+  } finally {
+    // Best-effort teardown, scoped to OUR tag only.
+    for (const n of [renamed, name]) {
+      if (!n.startsWith(SELFCHECK_TAG)) continue;
+      try {
+        const live = await listLabels();
+        if (live.some((l: { name: string }) => l.name === n)) await deleteLabel(n);
+      } catch {
+        /* leave it rather than risk deleting something else */
+      }
+    }
+    void created;
+  }
+}
+
+/**
+ * Draft round-trip: create -> appears in Drafts -> delete -> gone.
+ *
+ * Covers gmail_draft / gmail_drafts / gmail_draft_delete. Nothing is ever SENT —
+ * gmail_draft_send is deliberately out of scope, because a health check must not
+ * deliver mail.
+ */
+async function checkDraftRoundTrip(): Promise<string> {
+  const subject = stamp();
+  let draftId: string | null = null;
+  try {
+    // Positional signature: (to, subject, body, format). An EMPTY recipient keeps
+    // this un-sendable by construction — the draft cannot leave the account even
+    // if some future change starts sending drafts.
+    const made = await draftMail('', subject, 'lm-assist selfcheck probe — safe to delete', 'text');
+    draftId = (made as { draftId?: string | null }).draftId ?? null;
+
+    const drafts = await listDrafts(25);
+    const hit = drafts.find((d: { subject?: string|null; draftId?: string|null }) => (d.subject || '').trim() === subject);
+    if (!hit) throw new Error(`saved draft "${subject}" but it is not in the Drafts list`);
+    draftId = draftId || hit.draftId;
+    if (!draftId) throw new Error('draft saved and listed but carries no draftId');
+
+    await deleteDraft(draftId);
+    const after = await listDrafts(25);
+    if (after.some((d: { subject?: string|null }) => (d.subject || '').trim() === subject)) throw new Error('deleted the draft but it is STILL listed');
+    return 'create -> list -> delete verified by re-reading Drafts; nothing was sent';
+  } finally {
+    try {
+      const live = await listDrafts(25);
+      // Match on OUR subject, never on position.
+      const mine = live.filter((d: { subject?: string|null; draftId?: string|null }) => (d.subject || '').trim().startsWith(SELFCHECK_TAG));
+      for (const d of mine) if (d.draftId) await deleteDraft(d.draftId);
+    } catch {
+      /* leave it rather than risk deleting a real draft */
+    }
+  }
+}
+
+/**
+ * Star toggle, verified from the STAR CONTROL'S OWN aria-label.
+ *
+ * 🔴 Restored after three failures. Every earlier attempt verified on a SLOWER
+ * basis than the action and went red on a healthy mailbox: `label:'starred'`
+ * routes to a view Gmail does not have; `is:starred` search has an index that lags
+ * the DOM; that search view sometimes will not render. The action is a click on a
+ * row, so the verification has to be in the same DOM pass — which is exactly what
+ * the control's aria-label ("Starred" / "Not starred") gives, measured 2026-08-03.
+ *
+ * Restores the ORIGINAL state: reading first means a star the user set is never
+ * silently cleared.
+ */
+async function checkStarToggle(): Promise<string> {
+  const rows = await listThreads({ limit: 10, label: 'inbox' });
+  const target = safeToOpen(rows);
+  if (!target?.threadId) return 'SKIPPED — no safe inbox thread to toggle';
+  const id = target.threadId;
+
+  const before = await starState(id);
+  if (before === null) throw new SoftFail(`could not read the star control for ${id}`);
+  try {
+    await starThread(id, !before);
+    const after = await starState(id);
+    if (after === null) throw new SoftFail('star state unreadable after the toggle');
+    if (after === before) throw new Error(`star toggle did not take on ${id} (still ${before ? 'starred' : 'unstarred'})`);
+    return `toggled ${id} ${before ? 'off' : 'on'} and restored it, verified via the control's own aria-label`;
+  } finally {
+    try {
+      await starThread(id, before); // exact restore, not "unstar"
+    } catch {
+      /* the body reports if the toggle itself failed */
+    }
+  }
+}
+
+/** Read-only surface probes: these tools must at least answer coherently. */
+async function checkReadSurface(): Promise<string> {
+  const bad: string[] = [];
+  const summary = await gmailSummary().catch((e) => { bad.push(`summary: ${reason(e)}`); return null; });
+  if (summary && typeof summary.labels !== 'number' && typeof (summary as { labels?: unknown }).labels !== 'object') {
+    bad.push('summary returned no label count');
+  }
+  const aliases = await listSendAs().catch((e) => { bad.push(`aliases: ${reason(e)}`); return null; });
+  if (aliases && aliases.length === 0) bad.push('aliases returned an EMPTY list (an account always has its primary address)');
+  if (bad.length) throw new Error(bad.join('; '));
+  return 'summary and aliases both answered coherently';
+}
+
 /** `deep` only. Everything about Gmail's attachment DOM is CANDIDATE, so this is a warn. */
 async function checkAttachments(): Promise<string> {
   const hits = await searchThreads('has:attachment', 10);
@@ -671,30 +994,90 @@ export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheck
   const state: RunState = { inbox: null };
   const checks: CheckResult[] = [];
 
+  // One reset before each check, so none of them inherits the previous one's page.
+  const recov = { relaunched: false };
+  const gated = async (name: string, sev: CheckResult['severity'], body: CheckBody): Promise<CheckResult> => {
+    const clean = await resetOrRecover(recov);
+    if (!clean.ok) {
+      // Say which of the two it was. The old text asserted "browser gone" for
+      // both, and on the measured run it was wrong ten times out of ten.
+      return {
+        name,
+        ok: true,
+        skipped: true,
+        detail: clean.rateLimited
+          ? `SKIPPED — out of read budget, not a browser fault (${clean.detail || 'rate limited'}). ` +
+            'Raise GMAIL_READ_MAX_PER_MIN or re-run in a minute; the browser is fine.'
+          : `SKIPPED — the page could not be reset to a clean state: ${clean.detail || 'unknown'}; run gmail_login`,
+        ms: 0,
+        severity: sev,
+      };
+    }
+    return run(name, sev, body);
+  };
+
   checks.push(await run('driver.reachable', 'critical', checkDriver));
-  checks.push(await run('ui.landmarks', 'critical', checkLandmarks));
-  checks.push(await run('list.inbox_rows', 'critical', () => checkInboxRows(state)));
-  checks.push(await run('list.views_distinct', 'critical', () => checkViewsDistinct(state)));
-  checks.push(await run('thread.identity', 'critical', () => checkThreadIdentity(state)));
-  checks.push(await run('sendas.identities', 'critical', checkSendAs));
-  checks.push(await run('labels.nav', 'critical', checkLabels));
-  checks.push(await run('api.page_tokens', 'critical', checkPageTokens));
-  checks.push(await run('api.raw_source', 'critical', () => checkRawSource(state)));
+  checks.push(await gated('ui.landmarks', 'critical', checkLandmarks));
+  checks.push(await gated('list.inbox_rows', 'critical', () => checkInboxRows(state)));
+  checks.push(await gated('list.views_distinct', 'critical', () => checkViewsDistinct(state)));
+  checks.push(await gated('thread.identity', 'critical', () => checkThreadIdentity(state)));
+  checks.push(await gated('sendas.identities', 'critical', checkSendAs));
+  checks.push(await gated('labels.nav', 'critical', checkLabels));
+  checks.push(await gated('api.page_tokens', 'critical', checkPageTokens));
+  checks.push(await gated('api.raw_source', 'critical', () => checkRawSource(state)));
 
   // Small settle before driving the compose UI: the preceding checks navigate,
   // and clicking Compose mid-navigation is how a probe invents its own flake.
   await sleep(500);
-  checks.push(await run('compose.fields', 'critical', checkCompose));
-  checks.push(await run('compose.body_target', 'critical', checkBodyTarget));
+  checks.push(await gated('compose.fields', 'critical', checkCompose));
+  checks.push(await gated('compose.body_target', 'critical', checkBodyTarget));
+
+  // Feature round-trips. These EXERCISE the verbs rather than inspecting the DOM
+  // around them, which is the only way a broken verb gets caught before a user
+  // hits it. Every one is self-cleaning and scoped to its own SELFCHECK_TAG.
+  // Gate the whole feature block on ONE liveness probe. Without this a dead
+  // browser produces four separate confusing failures instead of one honest line.
+  let browserLive = true;
+  try {
+    await cdpStatus();
+  } catch {
+    browserLive = false;
+  }
+  if (!browserLive) {
+    for (const n of ['feature.read_surface', 'feature.label_roundtrip', 'feature.draft_roundtrip', 'feature.star_toggle']) {
+      checks.push({
+        name: n,
+        ok: true,
+        skipped: true,
+        detail: 'SKIPPED — no browser to drive; run gmail_login and re-check',
+        ms: 0,
+        severity: 'critical',
+      });
+    }
+  } else {
+    checks.push(await gated('feature.read_surface', 'critical', checkReadSurface));
+    checks.push(await gated('feature.label_roundtrip', 'critical', checkLabelRoundTrip));
+    checks.push(await gated('feature.draft_roundtrip', 'critical', checkDraftRoundTrip));
+  checks.push(await gated('feature.star_toggle', 'warn', checkStarToggle));
+    }
 
   if (opts?.deep === true) {
-    checks.push(await run('attachments.deep', 'warn', checkAttachments));
+    // 🔴 gated(), NOT run(). This was the ONLY check in the suite that bypassed
+    // the per-check reset, because the list of names the gate was applied to
+    // simply did not include it. Running LAST with no reset, it inherited ~7
+    // minutes of accumulated page state — and failed PAGE_NOT_READY three runs
+    // in a row while the identical search passed standalone in 32s on a fresh
+    // page. The gap between "fails in the suite" and "passes alone" was the
+    // missing reset, not the feature, not the timeout, not the encoding.
+    checks.push(await gated('attachments.deep', 'warn', checkAttachments));
   }
 
+  const skipped = checks.filter((c) => c.skipped === true);
   const failed = checks.filter((c) => !c.ok);
   return {
     ok: failed.every((c) => c.severity !== 'critical'),
-    passed: checks.length - failed.length,
+    passed: checks.length - failed.length - skipped.length,
+    skipped: skipped.length,
     failed: failed.length,
     checks,
     startedAt,

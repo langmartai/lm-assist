@@ -1908,6 +1908,32 @@ export async function removeLabel(cdp: LabelCdp, threadId: string, label: string
  * a `#settings/labels` request came back reading `#search/in:inbox...`. Re-assert
  * until the hash sticks rather than acting on whichever view happened to win.
  */
+/**
+ * Poll until the Labels settings table has actually rendered a per-label row.
+ *
+ * A row is only counted when it carries a "Remove" control, because that is what
+ * makes it a LABEL row rather than one of the page's other tables — the same
+ * signal the action finder uses, so this waits for exactly what it will read.
+ */
+async function waitForLabelRows(cdp: LabelCdp, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const n = await cdp
+      .evaluate<number>(`
+        const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+        let n = 0;
+        for (const tr of [...document.querySelectorAll('tr')].filter(vis)) {
+          const acts = [...tr.querySelectorAll('span,a')].filter(vis).map((x) => String(x.innerText || '').trim());
+          if (acts.some((t) => /^remove$/i.test(t))) n++;
+        }
+        return n;`)
+      .catch(() => 0);
+    if (typeof n === 'number' && n > 0) return true;
+    await sleep(400);
+  }
+  return false;
+}
+
 async function openLabelSettings(cdp: LabelCdp): Promise<void> {
   for (let i = 0; i < 5; i++) {
     await cdp
@@ -1917,7 +1943,14 @@ async function openLabelSettings(cdp: LabelCdp): Promise<void> {
     await reloadPage(cdp);
     await sleep(i === 0 ? 4000 : 3000);
     const hash = await cdp.evaluate<string>(`return String(location.hash || '');`).catch(() => '');
-    if (typeof hash === 'string' && /settings\/labels/.test(hash)) return;
+    if (typeof hash !== 'string' || !/settings\/labels/.test(hash)) continue;
+    // 🔴 The hash is not the page. MEASURED 2026-08-03: one second after the
+    // reload the hash already read `#settings/labels` while the label table held
+    // ZERO rows; it filled in at ~2s. Returning on the hash alone let the caller
+    // scan an empty page and conclude the label did not exist. Wait for the thing
+    // that is actually going to be read.
+    const filled = await waitForLabelRows(cdp, 12000);
+    if (filled) return;
   }
   throw new GmError(
     'SETTINGS_NOT_REACHED',
@@ -1956,6 +1989,11 @@ function jsFindLabelAction(name: string, action: 'edit' | 'remove'): string {
     if (b.top < 0 || b.bottom > innerHeight) return { ok: false, miss: 'off-screen-after-scroll' };
     return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };
   }
+  // 🔴 EMPTY IS NOT ABSENT. Zero readable label rows means the settings table did
+  // not render, not that the account has no labels — and on an account with 71 of
+  // them the difference is the whole answer. Reporting it as 'no-such-label' is how
+  // "it has: (none read)" ended up in a LABEL_NOT_FOUND on a label that existed.
+  if (!seen.length) return { ok: false, miss: 'labels-unreadable' };
   return { ok: false, miss: 'no-such-label', seen: seen.slice(0, 25) };`;
 }
 
@@ -2034,6 +2072,15 @@ async function openLabelDialog(cdp: LabelCdp, name: string, action: 'edit' | 're
   await openLabelSettings(cdp);
   const pt = await cdp.evaluate<ActionPoint>(jsFindLabelAction(name, action));
   if (!pt?.ok || typeof pt.x !== 'number' || typeof pt.y !== 'number') {
+    if (pt?.miss === 'labels-unreadable') {
+      throw new GmError(
+        'LABELS_UNREADABLE',
+        'the Labels settings page rendered no label rows, so whether "' +
+          name +
+          '" exists is UNKNOWN — this is not a report that it is missing. ' +
+          'Usually the page was navigated away mid-read (the background sync drives the same tab); retry.',
+      );
+    }
     if (pt?.miss === 'no-such-label') {
       // Name what DOES exist — "not found" against an invisible list is unactionable,
       // and a nested label's real name is its full path ("Parent/Child").
@@ -2318,6 +2365,57 @@ export async function untrashThread(cdp: LabelCdp, threadId: string): Promise<Mo
       (toast ? '; toast="' + toast.slice(0, 80) + '"' : '; no toast matched') +
       ' - confirm with a listing of #inbox',
   };
+}
+
+/**
+ * A thread's labels, read from the Labels MENU.
+ *
+ * 🔴 This replaces chip-scraping, which does not work. MEASURED 2026-08-02 in a
+ * single page evaluation (so both readings describe the same rows at the same
+ * instant): a row whose DOM carried `["HY: Microsoft"]` came back from the row
+ * extractor as `[]`. The thread-view chip path was empty for the same threads.
+ * `labels: []` was therefore indistinguishable from "this thread has no labels" —
+ * wrong in the worst way, because it reads as a fact.
+ *
+ * The Labels menu is the UI's OWN answer: every label is a
+ * `role="menuitemcheckbox"` carrying `aria-checked`, and the checked ones are
+ * exactly this thread's labels. Measured 2026-08-03. It needs no index, cannot go
+ * stale, and asks Gmail the question directly instead of inferring it.
+ *
+ * Costs one menu open per thread, so it is a per-thread call — not something a
+ * list read does for every row.
+ */
+export async function readThreadLabelsViaMenu(cdp: LabelCdp, threadId: string): Promise<string[]> {
+  const id = String(threadId || '').trim();
+  if (!id) throw new GmError('INVALID_THREAD', 'threadId is required');
+  if (!(await selectRowForThread(cdp, id, ['#inbox', '#all']))) {
+    throw new GmError(
+      'ROW_NOT_SELECTABLE',
+      `could not check the row for thread ${id} in #inbox or #all — the Labels menu only exists on the list toolbar with a row selected`,
+    );
+  }
+  const opened = await trustedClickControl(cdp, '^labels?$');
+  if (!opened.ok) {
+    throw new GmError('LABELS_MENU_NOT_OPEN', `the Labels control did not open: ${opened.why || 'unknown'}`);
+  }
+  await sleep(900);
+  const names = await cdp.evaluate<string[]>(`
+    const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+    const menu = [...document.querySelectorAll('div[role="menu"]')].filter(vis).pop();
+    if (!menu) return [];
+    return [...menu.querySelectorAll('div[role="menuitemcheckbox"]')]
+      .filter(vis)
+      .filter((e) => e.getAttribute('aria-checked') === 'true')
+      // 🔴 textContent, NOT innerText. MEASURED 2026-08-03: Gmail wraps the
+      // type-ahead-matched character in an inline element, and innerText is
+      // LAYOUT-AWARE — it inserts whitespace at that boundary, so "HY: Microsoft"
+      // came back as "HY: Micro oft", the s replaced by a space. textContent
+      // concatenates text nodes verbatim. (The reverse hazard is real too: for
+      // attachment names textContent LOSES a needed newline. Per-surface choice.)
+      .map((e) => String(e.textContent || '').replace(/\\s+/g, ' ').trim())
+      .filter(Boolean);`);
+  await closeMenu(cdp);
+  return Array.isArray(names) ? [...new Set(names)] : [];
 }
 
 export async function moveToLabel(cdp: LabelCdp, threadId: string, label: string): Promise<MoveResult> {

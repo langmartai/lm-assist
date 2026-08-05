@@ -93,6 +93,14 @@ import * as Actions from './actions';
 import { extractPreFromOriginalPage, parseRfc822 } from './mime';
 import { startSync, syncProgress, type SyncProgress } from './sync';
 import {
+  buildLabelIndex,
+  enrichRowsWithLabels,
+  labelsForThread,
+  readLabelIndex,
+  writeLabelIndex,
+  type LabelIndex,
+} from './label-index';
+import {
   FILTERS_MAX,
   JS_SIGNATURE,
   JS_VACATION,
@@ -183,6 +191,18 @@ const SELECTORS = {
   /** "Expand all" in a collapsed thread. */
   expandAll: SELECTORS_EXT.expandAll,
 } as const;
+
+/**
+ * How long a SEARCH may take to render before it counts as broken.
+ *
+ * Deliberately NOT the shared 15s used for view switches. Moving to #inbox or
+ * #label/X re-renders data the page already holds; a search is a round trip to
+ * Google across the whole mailbox, so it is the one navigation where "slow" is
+ * normal rather than a symptom. MEASURED 2026-08-03: `has:attachment` on a
+ * 71-label account took 32s and the 15s default called it PAGE_NOT_READY — a
+ * search that was still running, reported as a broken feature.
+ */
+export const SEARCH_READY_TIMEOUT_MS = 45_000;
 
 /**
  * The MOBILE_UI guard's landmarks. At least ONE must be present or we are not
@@ -462,6 +482,44 @@ async function openLiveSession(base: string): Promise<Cdp | null> {
   return null;
 }
 
+/**
+ * Last rung of the recovery ladder: restart the browser itself.
+ *
+ * openSession already retried and recycled the TAB. When that fails the old code
+ * threw BROWSER_UNRESPONSIVE saying "the browser itself needs restarting" — and
+ * then made the caller do it. Every Gmail tool call died on a condition the
+ * connector could fix in a couple of seconds.
+ *
+ * 🔴 RATE LIMITED, and deliberately not clever. A relaunch loop against a browser
+ * that cannot start would spawn Chrome processes as fast as calls arrive, which is
+ * far worse than a clear error. One relaunch per cooldown, process-wide.
+ *
+ * 🔴 Only when the profile already holds a session. Relaunching a signed-OUT
+ * profile just parks a browser on a Google login page that nobody is looking at,
+ * turning a clear "sign in" into a silent hang. That case must keep telling the
+ * truth.
+ */
+const RELAUNCH_COOLDOWN_MS = 60_000;
+let lastRelaunchAt = 0;
+
+async function relaunchBrowser(): Promise<boolean> {
+  const since = Date.now() - lastRelaunchAt;
+  if (since < RELAUNCH_COOLDOWN_MS) return false;
+  if (!gmailProfileHasCredential()) return false;
+  lastRelaunchAt = Date.now();
+  try {
+    // Lazy import: login.ts pulls in the browser launcher, and a static import
+    // here would make cdp-client -> login -> cdp-client circular.
+    const { gmailLogin } = await import('./login');
+    const r = (await gmailLogin({})) as { ok?: boolean };
+    if (r?.ok !== true) return false;
+    console.log('[gmail] browser was unreachable — relaunched it automatically');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function openSession(): Promise<{ cdp: Cdp; close(): void }> {
   const base = resolveCdpBase();
 
@@ -470,8 +528,24 @@ async function openSession(): Promise<{ cdp: Cdp; close(): void }> {
   const first = await openLiveSession(base);
   if (first) return { cdp: first, close: () => first.close() };
 
-  await recycleGmailTab(base);
-  const cdp = await openLiveSession(base);
+  // Rung 2: recycle the tab. This THROWS BROWSER_NOT_RUNNING when nothing is
+  // listening at all — which is a relaunchable condition, not a dead end, so it
+  // must not escape before rung 3 has had a turn.
+  let recycleErr: unknown = null;
+  try {
+    await recycleGmailTab(base);
+  } catch (e) {
+    recycleErr = e;
+  }
+  let cdp = recycleErr ? null : await openLiveSession(base);
+
+  // Rung 3: restart the browser.
+  if (!cdp && (await relaunchBrowser())) {
+    await sleep(2500);
+    cdp = await openLiveSession(base);
+  }
+  if (!cdp && recycleErr && !(recycleErr instanceof GmError)) throw recycleErr;
+  if (!cdp && recycleErr) throw recycleErr;
   if (!cdp) {
     throw new GmError(
       'BROWSER_UNRESPONSIVE',
@@ -684,6 +758,72 @@ async function gotoHash(cdp: Cdp, hash: string, readySel: string, timeoutMs = 15
   const ready = await waitFor(cdp, `!!document.querySelector(${sel})`, timeoutMs);
   if (!ready) throw new GmError('PAGE_NOT_READY', `timed out waiting for ${hash} to render (${readySel})`);
   await sleep(600);
+  await assertLanded(cdp, hash, readySel, timeoutMs);
+}
+
+/**
+ * Prove the page is showing what was ASKED FOR before anyone reads it.
+ *
+ * 🔴 A ready selector answers "did something render", never "did the RIGHT thing
+ * render". MEASURED 2026-08-03 on 123: a request for `#search/has%3Aattachment`
+ * came back with `location.hash === '#inbox'`, 50 rows and `ready === true`, so
+ * searchThreads('has:attachment') would have returned FIFTY INBOX THREADS as
+ * attachment results — a wrong answer wearing a right answer's clothes, which is
+ * the exact failure this module already suffered on 2026-07-31 with `#drafts`.
+ *
+ * The cause is that the driver tab has more than one writer: the arrival watcher's
+ * background sync navigates it (`#search/newer_than:1d/p2`) WITHOUT the driver
+ * lock. Directly observed: after setting the hash, a writer that is not this call
+ * moved the page SEVEN times in thirty seconds. Locking that writer is a separate,
+ * larger change; refusing to hand back its results as ours is this one, and it is
+ * the half that turns silent corruption into a plain error.
+ *
+ * `JS_VIEW_MATCHES` already existed for precisely this — written for the `#drafts`
+ * incident, wired into compose.ts, and never called from the module that owns
+ * navigation. It compares the view SEGMENT, so it cannot tell two searches apart;
+ * the query is therefore compared here as well.
+ *
+ * ONE retry, because the two causes look different over time: a rival writer is
+ * transient and a genuine hash normalisation is permanent, so retrying separates
+ * them without a catalogue of special cases.
+ */
+function sameQuery(want: string, got: string): boolean {
+  const norm = (h: string): string =>
+    decodeURIComponent(String(h || '').trim())
+      .replace(/^#/, '')
+      .replace(/\+/g, ' ')
+      .replace(/\/p\d+$/i, '') // `/p2` is pagination WITHIN the same view
+      .replace(/\/+$/, '')
+      .toLowerCase();
+  const w = norm(want);
+  const g = norm(got);
+  return g === w || g.startsWith(`${w}/`);
+}
+
+async function assertLanded(cdp: Cdp, hash: string, readySel: string, timeoutMs: number): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const view = await cdp.evaluate<boolean>(`${JS_VIEW_MATCHES(hash)}`).catch(() => null);
+    const got = await cdp.evaluate<string>('return String(location.hash || "");').catch(() => '');
+    // A non-search hash is fully described by its view segment; a search is not,
+    // so `#search/a` must not be satisfied by `#search/b`.
+    const isSearch = /^#search\//i.test(hash);
+    const landed = view === true && (!isSearch || sameQuery(hash, got));
+    if (landed) return;
+    if (attempt === 1) {
+      throw new GmError(
+        'VIEW_NOT_APPLIED',
+        `asked for ${hash} but the page is showing ${got || 'an unknown view'}. ` +
+          'Another writer is driving this browser (the background sync navigates the shared tab), ' +
+          'so these rows are NOT the requested view and are deliberately not returned.',
+      );
+    }
+    await cdp.evaluate(`location.hash = ${JSON.stringify(hash)}; return true;`).catch(() => undefined);
+    await sleep(300);
+    await cdp.evaluate('location.reload(); return true;').catch(() => undefined);
+    await sleep(3200);
+    await waitFor(cdp, `!!document.querySelector(${JSON.stringify(readySel)})`, timeoutMs);
+    await sleep(600);
+  }
 }
 
 /** Scroll the thread list until at least `want` rows have rendered (or it stops growing). */
@@ -1214,7 +1354,10 @@ export async function listThreads(opts: { limit?: number; label?: string } = {})
   return op('read', async (cdp) => {
     await gotoHash(cdp, hash, SELECTORS.listReady);
     await ensureRows(cdp, limit);
-    return (await cdp.evaluate<GmailThread[]>(JS_THREAD_ROWS(limit))) || [];
+    const rows = (await cdp.evaluate<GmailThread[]>(JS_THREAD_ROWS(limit))) || [];
+    // Fill `labels` from the index for any row whose chip did not render. A
+    // non-empty scrape is left alone — that is first-hand and fresher.
+    return enrichRowsWithLabels(rows).rows;
   });
 }
 
@@ -1228,7 +1371,13 @@ export async function searchThreads(query: string, limit = 25): Promise<GmailThr
   if (!q) throw new GmError('INVALID_QUERY', 'query is required');
   const n = Math.max(1, Math.min(limit, 100));
   return op('read', async (cdp) => {
-    await gotoHash(cdp, `#search/${encodeURIComponent(q)}`, SELECTORS.listReady);
+    // 🔴 Search needs a LONGER budget than a view switch, and the difference is not
+    // cosmetic. Switching to #inbox or #label/X re-renders data the page already
+    // has; a search is a round trip to Google over the whole mailbox. MEASURED
+    // 2026-08-03 on a 71-label account: `has:attachment` took 32s end to end and
+    // the shared 15s default reported PAGE_NOT_READY for a search that was simply
+    // still running — a timeout being read as a broken feature.
+    await gotoHash(cdp, `#search/${encodeURIComponent(q)}`, SELECTORS.listReady, SEARCH_READY_TIMEOUT_MS);
     await ensureRows(cdp, n);
     return (await cdp.evaluate<GmailThread[]>(JS_THREAD_ROWS(n))) || [];
   });
@@ -1903,6 +2052,17 @@ export async function syncWindow(
       days,
       label: /^inbox$/i.test(label) ? undefined : label,
       includeBodies: opts.includeBodies !== false,
+      // 🔴 THE POINT OF THIS ARGUMENT. Above, `op('read', async () => undefined)`
+      // takes the driver lock, does nothing and releases it — it is a LOGIN PROBE
+      // that reads like a guard, and for a long time nothing guarded the walk at
+      // all. The sync then navigated the shared tab for minutes while interactive
+      // reads navigated it too, and whoever read second got the other's page.
+      //
+      // It cannot simply be hoisted to wrap the whole job: a multi-minute lock
+      // turns every concurrent read into BROWSER_BUSY. So the walk takes the SAME
+      // lock every other browser touch takes, once per page and once per thread
+      // body, and yields it in between. A reader now waits one step, not one job.
+      exclusive: <T>(fn: (cdp: Cdp) => Promise<T>) => withCdp(fn),
     });
   } catch (e) {
     throw toGmError(e);
@@ -2306,6 +2466,47 @@ export async function scheduleSend(
 ): Promise<Compose.ScheduleResult> {
   return op('mutate', (cdp) => Compose.scheduleSend(cdp as unknown as Compose.ComposeCtx, input, when));
 }
+
+/**
+ * Rebuild the thread -> labels index by walking labels.
+ *
+ * Uses the PROVEN direction: `#label/<name>` listing, which returns exactly the
+ * right threads. See label-index.ts for why the chip scrape cannot be trusted.
+ *
+ * Expensive by nature — one list per label — so it is an explicit operation, not
+ * something a read silently triggers.
+ */
+/**
+ * A thread's labels, asked of the Labels MENU rather than inferred.
+ *
+ * Supersedes both the chip scrape (returns nothing) and the label INDEX below
+ * (lags, bounded per label, minutes to build). One menu open, always current.
+ */
+/** Is this thread starred? Read from the star control's own aria-label. */
+export async function starState(threadId: string): Promise<boolean | null> {
+  const id = requireThreadId(threadId);
+  return op('read', (cdp) => Actions.readStarState(cdp, id));
+}
+
+export async function threadLabelsLive(threadId: string): Promise<string[]> {
+  const id = requireThreadId(threadId);
+  return op('read', (cdp) => Labels.readThreadLabelsViaMenu(cdp, id));
+}
+
+export async function refreshLabelIndex(opts: { perLabel?: number; maxLabels?: number } = {}): Promise<LabelIndex> {
+  const labels = await listLabels();
+  const names = labels.map((l) => l.name).filter((n): n is string => !!n);
+  const ix = await buildLabelIndex(names, async (label, limit) => listThreads({ limit, label }), opts);
+  writeLabelIndex(ix);
+  return ix;
+}
+
+/** Labels for one thread, from the index. `known:false` means NO index exists. */
+export function threadLabelsFromIndex(threadId: string): ReturnType<typeof labelsForThread> {
+  return labelsForThread(requireThreadId(threadId));
+}
+
+export { readLabelIndex };
 
 /** Rename a user label (Settings -> Labels -> edit). */
 export async function renameLabel(from: string, to: string): Promise<Labels.LabelOpResult> {

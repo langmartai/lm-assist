@@ -86,6 +86,9 @@ import {
   cancelScheduledSend,
   bulkAction,
   readGmailSettings,
+  refreshLabelIndex,
+  threadLabelsLive,
+  readLabelIndex,
   deleteLabel,
   syncWindow,
   searchThreads,
@@ -456,6 +459,52 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
         } catch (e) {
           return fail(e);
         }
+      },
+    },
+
+    // GET /gmail/thread-labels?threadId= — the Labels MENU's own answer.
+    {
+      method: 'GET',
+      pattern: /^\/gmail\/thread-labels$/,
+      handler: async (req: ParsedRequest) => {
+        const threadId = str(req.query?.threadId).trim();
+        if (!threadId) return { success: false, error: '`threadId` query param is required' };
+        try {
+          const labels = await threadLabelsLive(threadId);
+          return { success: true, data: { threadId, labels, source: 'labels-menu' } };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/label-index/refresh { perLabel?, maxLabels? }
+    // GET  /gmail/label-index — what the index holds and how stale it is.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/label-index\/refresh$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        try {
+          const ix = await refreshLabelIndex({
+            perLabel: b.perLabel === undefined ? undefined : Number(b.perLabel),
+            maxLabels: b.maxLabels === undefined ? undefined : Number(b.maxLabels),
+          });
+          return { success: true, data: ix.meta };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/gmail\/label-index$/,
+      handler: async () => {
+        const ix = readLabelIndex();
+        // null means NO index — deliberately not an empty one, so a caller cannot
+        // read "nothing indexed" as "nothing labelled".
+        if (!ix) return { success: true, data: { built: false, meta: null } };
+        return { success: true, data: { built: true, meta: ix.meta, ageMs: Date.now() - ix.meta.builtAt } };
       },
     },
 

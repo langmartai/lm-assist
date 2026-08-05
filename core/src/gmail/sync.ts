@@ -101,6 +101,23 @@ export interface SyncCdpSession {
  */
 export type CdpFactory = () => Promise<SyncCdpSession>;
 
+/**
+ * Run one short piece of browser work with EXCLUSIVE use of the driver tab.
+ *
+ * 🔴 WHY A SYNC NEEDS THIS. The driver browser has one tab and more than one
+ * writer. A sync walk navigates it for minutes; every interactive read navigates
+ * it too. DIRECTLY OBSERVED 2026-08-03: a caller set a search hash and a sync
+ * moved the page out from under it SEVEN times in thirty seconds, so the caller
+ * read the sync's page and returned it as its own answer.
+ *
+ * The obvious fix — hold the driver lock for the whole job — is worse than the
+ * bug: a multi-minute lock makes every read fail BROWSER_BUSY. So the unit of
+ * exclusion is ONE PAGE (or one thread body), not one job. The walk yields the
+ * tab between steps, a reader waits at most one step, and neither ever sees the
+ * other's view.
+ */
+export type CdpExclusive = <T>(fn: (cdp: SyncCdp) => Promise<T>) => Promise<T>;
+
 // ─── public types ────────────────────────────────────────────────────────────
 
 export interface SyncOptions {
@@ -115,6 +132,8 @@ export interface SyncOptions {
   maxPages?: number;
   /** Also open each new thread and cache its message bodies (expensive; budgeted). */
   includeBodies?: boolean;
+  /** Serialise each page/body against other browser users. See CdpExclusive. */
+  exclusive?: CdpExclusive;
 }
 
 export interface SyncProgress {
@@ -178,6 +197,11 @@ export interface PaginateOptions {
   shouldStop?: () => string | null;
   /** Accumulated-row ceiling (default 5000). */
   maxRows?: number;
+  /**
+   * Take the driver lock around EACH page fetch. Omitted = the legacy behaviour,
+   * where the caller's `cdp` is used directly and the walk owns the tab outright.
+   */
+  exclusive?: CdpExclusive;
 }
 
 export interface PaginateResult {
@@ -790,6 +814,10 @@ export async function paginate(cdp: SyncCdp, query: string, opts: PaginateOption
   const delay = typeof o.delayMs === 'number' ? clampInt(o.delayMs, 0, 60_000, pageDelayMs()) : pageDelayMs();
   const fromMs = typeof o.fromMs === 'number' && Number.isFinite(o.fromMs) ? o.fromMs : null;
 
+  // No `exclusive` => behave exactly as before, so every existing caller and test
+  // keeps its semantics; the lock is opt-in, not a silent change of contract.
+  const step: CdpExclusive = o.exclusive ?? (<T,>(fn: (c: SyncCdp) => Promise<T>) => fn(cdp));
+
   const rows: PageRow[] = [];
   const seen = new Set<string>();
   let prevSig = '';
@@ -811,7 +839,7 @@ export async function paginate(cdp: SyncCdp, query: string, opts: PaginateOption
     let res: PageResult | null = null;
     for (let attempt = 0; attempt < 2 && !res; attempt++) {
       try {
-        res = await fetchPage(cdp, query, page, limit);
+        res = await step((c) => fetchPage(c, query, page, limit));
       } catch (e) {
         error = errMessage(e);
         // One retry: a navigation that lost its execution context is transient,
@@ -1235,6 +1263,7 @@ async function runJob(slot: JobSlot, cdpFactory: CdpFactory): Promise<void> {
     const now = Date.now();
     const oldestWanted = requestedOldestMs(slot.opts, now);
     const walk = await paginate(session.cdp, slot.query, {
+      exclusive: slot.opts.exclusive,
       maxPages: slot.opts.maxPages,
       fromMs: oldestWanted,
       shouldStop: () => stopProbe(slot),
@@ -1249,7 +1278,7 @@ async function runJob(slot: JobSlot, cdpFactory: CdpFactory): Promise<void> {
     // thread replaces the list view, and a pager that has to re-enter its own
     // page between every detail read is exactly the stale-container trap.
     if (slot.opts.includeBodies && !isTerminal(stopReason)) {
-      const bodyStop = await fetchBodies(slot, session.cdp);
+      const bodyStop = await fetchBodies(slot, session.cdp, slot.opts.exclusive);
       if (bodyStop) stopReason = bodyStop;
     }
 
@@ -1348,9 +1377,12 @@ function seenIds(slot: JobSlot): Set<string> {
  * before every thread. Threads whose bodies are already cached are skipped —
  * that is the entire point of the store.
  */
-async function fetchBodies(slot: JobSlot, cdp: SyncCdp): Promise<string | null> {
+async function fetchBodies(slot: JobSlot, cdp: SyncCdp, exclusive?: CdpExclusive): Promise<string | null> {
   const p = slot.progress;
   const delay = pageDelayMs();
+  // One THREAD per critical section, not one message: opening a thread and
+  // reading it must be atomic or the read lands on whatever replaced it.
+  const step: CdpExclusive = exclusive ?? (<T,>(fn: (c: SyncCdp) => Promise<T>) => fn(cdp));
   let done = 0;
   for (const threadId of slot.bodyQueue) {
     const stop = stopProbe(slot);
@@ -1359,17 +1391,21 @@ async function fetchBodies(slot: JobSlot, cdp: SyncCdp): Promise<string | null> 
     if (done > 0 && delay > 0) await sleep(delay);
     done++;
     try {
-      await gotoHash(cdp, `#all/${encodeURIComponent(threadId)}`, SEL.threadReady, THREAD_READY_TIMEOUT_MS);
-      // Long threads render collapsed; expand so the bodies are in the DOM.
-      await ev(
-        cdp,
-        `try {
-           const b = document.querySelector(${JSON.stringify(SEL.expandAll)});
-           if (b) { b.click(); await new Promise(r=>setTimeout(r,900)); }
-         } catch (e) {}
-         return true;`,
-      ).catch(() => undefined);
-      const d = await ev<{ subject?: unknown; messages?: unknown }>(cdp, JS_THREAD_DETAIL);
+      // Navigate, expand and read WITHOUT yielding: releasing the tab between the
+      // open and the read is exactly how a body gets attributed to the wrong thread.
+      const d = await step(async (c) => {
+        await gotoHash(c, `#all/${encodeURIComponent(threadId)}`, SEL.threadReady, THREAD_READY_TIMEOUT_MS);
+        // Long threads render collapsed; expand so the bodies are in the DOM.
+        await ev(
+          c,
+          `try {
+             const b = document.querySelector(${JSON.stringify(SEL.expandAll)});
+             if (b) { b.click(); await new Promise(r=>setTimeout(r,900)); }
+           } catch (e) {}
+           return true;`,
+        ).catch(() => undefined);
+        return ev<{ subject?: unknown; messages?: unknown }>(c, JS_THREAD_DETAIL);
+      });
       const messages = Array.isArray(d?.messages) ? (d.messages as Array<Record<string, unknown>>) : [];
       if (!messages.length) continue;
       const subject =
