@@ -5,7 +5,7 @@ import { homedir } from 'os';
 import path from 'path';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { serverAuthHeader } from '@/lib/server-auth';
-import { deriveIssuer } from '@/lib/oidc-issuer';
+import { deriveIssuer, requestOrigin } from '@/lib/oidc-issuer';
 
 const COOKIE_NAME = 'lm_oidc';
 const CLIENT_ID = 'lm-assist-local';
@@ -20,8 +20,8 @@ function jwksFor(issuer: string) {
 }
 
 function fail(req: NextRequest, error: string): NextResponse {
-  const u = req.nextUrl.clone(); u.pathname = '/lan-blocked'; u.search = `error=${error}`; u.hash = '';
-  const res = NextResponse.redirect(u, 302);
+  // requestOrigin, not nextUrl — nextUrl carries the standalone bind address (0.0.0.0).
+  const res = NextResponse.redirect(`${requestOrigin(req)}/lan-blocked?error=${error}`, 302);
   res.cookies.delete({ name: COOKIE_NAME, path: '/' });
   return res;
 }
@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
     // 1. code + PKCE verifier -> id_token. PUBLIC client: no client_secret exists.
     const tr = await fetch(`${issuer}/v1/auth/oidc/token`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grant_type: 'authorization_code', code, code_verifier: ck.verifier, client_id: CLIENT_ID, redirect_uri: `${req.nextUrl.origin}/api/auth/oidc-callback` }),
+      body: JSON.stringify({ grant_type: 'authorization_code', code, code_verifier: ck.verifier, client_id: CLIENT_ID, redirect_uri: `${requestOrigin(req)}/api/auth/oidc-callback` }),
     });
     const tok = await tr.json().catch(() => ({}));
     if (!tr.ok || !tok.id_token) return fail(req, 'oidc');
@@ -75,7 +75,8 @@ export async function GET(req: NextRequest) {
     // 5. Fragment handoff — the token must never appear in a query string / server log.
     // Cookie is HttpOnly but not authenticated input — re-validate with oidc-start's safeReturnTo guard.
     const safeReturnTo = ck.returnTo && /^\/(?![/\\])[^\x00-\x1f\x7f]*$/.test(ck.returnTo) ? ck.returnTo : '/';
-    const u = req.nextUrl.clone(); u.pathname = '/lan-blocked'; u.search = '';
+    // requestOrigin, not nextUrl — nextUrl carries the standalone bind address (0.0.0.0).
+    const u = new URL('/lan-blocked', requestOrigin(req));
     u.hash = `granted=${cfg.lanAccessToken}&returnTo=${encodeURIComponent(safeReturnTo)}`;
     const res = NextResponse.redirect(u, 302);
     res.cookies.delete({ name: COOKIE_NAME, path: '/' });
