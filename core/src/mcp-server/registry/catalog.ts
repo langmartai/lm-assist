@@ -35,7 +35,7 @@ export interface ToolCatalogEntry {
 export const CATEGORY_ORDER: string[] = [
   'core', 'session', 'mission', 'backlog', 'worker', 'agent', 'terminal', 'memory', 'data',
   'transfer', 'fleet', 'cluster', 'machine-access', 'ccr', 'claudeai', 'auth',
-  'github', 'whatsapp', 'linkedin', 'gmail', 'backup', 'elevated',
+  'github', 'whatsapp', 'linkedin', 'gmail', 'backup', 'elevated', 'vm',
 ];
 
 const T = 'core/src/mcp-server/tools';
@@ -183,6 +183,8 @@ mod('whatsapp.ts', 'whatsapp', [
 ]);
 // --- windows elevated worker ---
 mod('elevated.ts', 'elevated', ['elevated_status', 'elevated_exec', 'elevated_grant', 'elevated_revoke']);
+// --- vm management (Hyper-V / KVM) ---
+mod('vm.ts', 'vm', ['vm_status', 'vm_create', 'vm_power', 'vm_snapshot', 'vm_delete']);
 
 let _catalog: Map<string, ToolCatalogEntry> | null = null;
 

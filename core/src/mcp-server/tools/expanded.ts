@@ -75,6 +75,7 @@ import { LINKEDIN_TOOL_DEFS, LINKEDIN_HANDLERS } from './linkedin';
 import { GMAIL_TOOL_DEFS, GMAIL_HANDLERS } from './gmail';
 import { BACKUP_TOOL_DEFS, BACKUP_HANDLERS } from './backup';
 import { ELEVATED_TOOL_DEFS, ELEVATED_HANDLERS } from './elevated';
+import { VM_TOOL_DEFS, VM_HANDLERS } from './vm';
 import { coworkCreateTaskDef, handleCoworkCreateTask } from './cowork';
 
 // ─── Tool definitions ────────────────────────────────────────────
@@ -1195,6 +1196,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...GITHUB_TOOL_DEFS,
   // elevated worker (Windows-only: status read; exec/grant/revoke admin)
   ...ELEVATED_TOOL_DEFS,
+  // vm management (Hyper-V / KVM: status+list read; create/start/stop/snapshot write; delete admin)
+  ...VM_TOOL_DEFS,
   // ccr — Claude Code remote support
   ccSessionsToolDef,
   ccrPreflightToolDef,
@@ -2418,6 +2421,8 @@ export const EXPANDED_HANDLERS: Record<
   ...GITHUB_HANDLERS,
   // elevated worker (Windows-only) — each wraps an /elevated/* loopback route
   ...ELEVATED_HANDLERS,
+  // vm management — each wraps a /vm/* loopback route
+  ...VM_HANDLERS,
   // ccr — Claude Code remote support
   cc_sessions: (a) => handleCcSessions(a),
   ccr_preflight: handleCcrPreflight,

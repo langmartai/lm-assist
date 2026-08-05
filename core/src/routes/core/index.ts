@@ -76,6 +76,7 @@ import { createLinkedinRoutes } from './linkedin.routes';
 import { createGmailRoutes } from './gmail.routes';
 import { createBackupRoutes } from './backup.routes';
 import { createElevatedRoutes } from './elevated.routes';
+import { createVmRoutes } from './vm.routes';
 import { createCoworkRoutes } from './cowork.routes';
 import { createMachineAccessRoutes } from './machine-access.routes';
 import { createVoiceRoutes } from './voice.routes';
@@ -154,6 +155,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createGmailRoutes(ctx),
     ...createBackupRoutes(ctx),
     ...createElevatedRoutes(ctx),
+    ...createVmRoutes(ctx),
     ...createCoworkRoutes(ctx),
     ...createMachineAccessRoutes(ctx),
     ...createVoiceRoutes(ctx),
