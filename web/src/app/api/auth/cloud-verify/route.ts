@@ -1,6 +1,6 @@
 /** @deprecated Replaced by the OIDC LAN login (oidc-start/oidc-callback). Kept one release for rollback; remove after the fleet is on the OIDC flow. */
 import { NextRequest, NextResponse } from 'next/server';
-import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { homedir } from 'os';
 import path from 'path';
@@ -26,7 +26,9 @@ function readConfig(): AssistConfig {
 
 function writeConfig(config: AssistConfig): void {
   mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n');
+  // 0600: holds the lanAccessToken (LAN credential) — owner-only; chmod repairs pre-existing loose files.
+  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+  try { chmodSync(CONFIG_FILE, 0o600); } catch { /* ignore */ }
 }
 
 /**

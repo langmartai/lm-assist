@@ -65,11 +65,12 @@ export async function GET(req: NextRequest) {
       cfg.lanAuthEnabled = true;
       cfg.lanAccessToken = randomBytes(32).toString('hex');
       mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-      // 0600: the file holds the LAN credential — owner-only. mode applies only on
-      // create, so chmod too to repair a pre-existing world-readable file.
+      // 0600: the file holds the LAN credential — owner-only.
       writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
-      chmodSync(CONFIG_FILE, 0o600);
     }
+    // Repair perms on EVERY grant, not only on create — a pre-existing file from the
+    // old default-mode writers can be 0664 while already holding a token.
+    try { chmodSync(CONFIG_FILE, 0o600); } catch { /* file vanished between read and chmod — grant still valid */ }
 
     // 5. Fragment handoff — the token must never appear in a query string / server log.
     // Cookie is HttpOnly but not authenticated input — re-validate with oidc-start's safeReturnTo guard.
@@ -80,7 +81,9 @@ export async function GET(req: NextRequest) {
     res.cookies.delete({ name: COOKIE_NAME, path: '/' });
     return res;
   } catch (e) {
-    console.error('[oidc-callback]', e);
+    // Message only — jose claim-validation errors carry the DECODED ID-TOKEN CLAIMS
+    // as an enumerable .payload, which console.error(e) would print into the log.
+    console.error('[oidc-callback]', e instanceof Error ? `${e.name}: ${e.message}` : String(e));
     return fail(req, 'oidc');
   }
 }
