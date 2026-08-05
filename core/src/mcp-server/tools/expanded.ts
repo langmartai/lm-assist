@@ -293,17 +293,24 @@ export const windowsTerminalRestartToolDef = {
 export const windowsTerminalSendToolDef = {
   name: 'windows_terminal_send',
   description:
-    'Type text into a Windows Claude Code session (focus its tab + paste). Set `submit` to also press ' +
-    'Enter. Pass `sessionId` from windows_terminal_list. WRITE — drives the session.',
+    'Type text and/or press SPECIAL KEYS in a Windows Claude Code session — the Windows counterpart of ' +
+    'terminal_send. Order per call: `text` is pasted, then `keys` are pressed, then `submit` presses ' +
+    'Enter. `keys` (e.g. ["Escape"] to dismiss a dialog, ["Down","Down","Enter"] to pick a menu item) ' +
+    'go through the focus-free console-input path, so they drive a background window without stealing ' +
+    'foreground — this is the only way to reach a menu/dialog here (before, only text+Enter was possible). ' +
+    'Allowed keys: Enter, Escape, Up, Down, Left, Right, Tab, Space (Ctrl-C is windows_terminal_state\'s ' +
+    'interrupt sibling, not here). Pass `sessionId` from windows_terminal_list. Either text or keys is ' +
+    'required. WRITE — drives the session.',
   annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
     properties: {
       sessionId: { type: 'string', description: 'Session id from windows_terminal_list.' },
-      text: { type: 'string', description: 'Text to type.' },
-      submit: { type: 'boolean', description: 'Press Enter after typing (default false).' },
+      text: { type: 'string', description: 'Text to type (optional if keys given).' },
+      keys: { type: 'array', items: { type: 'string' }, description: 'Named keys pressed after text: Enter, Escape, Up, Down, Left, Right, Tab, Space.' },
+      submit: { type: 'boolean', description: 'Press Enter after text+keys (default false).' },
     },
-    required: ['sessionId', 'text'],
+    required: ['sessionId'],
   },
 };
 
@@ -1607,11 +1614,17 @@ async function handleWindowsTerminalCreate(a: Record<string, unknown>): Promise<
 }
 async function handleWindowsTerminalSend(a: Record<string, unknown>): Promise<McpToolResult> {
   const sid = winSid(a);
-  const text = String(a.text || '');
+  const text = typeof a.text === 'string' && a.text.length > 0 ? a.text : null;
+  const keys = Array.isArray(a.keys) ? (a.keys as unknown[]).map((k) => String(k)) : null;
   if (!sid) return err('sessionId is required.');
-  if (!text) return err('text is required.');
+  if (text === null && !(keys && keys.length > 0)) {
+    return err('nothing to send: pass text, keys (e.g. ["Escape"]), or both.');
+  }
+  const body: Record<string, unknown> = { submit: a.submit === true };
+  if (text !== null) body.text = text;
+  if (keys && keys.length > 0) body.keys = keys;
   try {
-    return renderRaw(await workerPostRaw(`/terminal/cc-sessions/${enc(sid)}/prompt`, { text, submit: a.submit === true }));
+    return renderRaw(await workerPostRaw(`/terminal/cc-sessions/${enc(sid)}/prompt`, body));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }

@@ -26,6 +26,7 @@ import type {
   CcLaunchOpts,
   CcAutoHandleOut,
 } from './backend';
+import { CC_NAV_KEYS } from './backend';
 
 const IS_LINUX = !IS_WINDOWS;
 const genName = (p: string) => `${p}-${Date.now().toString(36)}`;
@@ -138,9 +139,26 @@ export const tmuxCcController: CcController = {
     };
   },
 
-  async prompt(sessionId: string, text: string, _opts?: { submit?: boolean }): Promise<Record<string, unknown>> {
-    await cc.prompt(tmuxFor(sessionId), { text, allowNewlines: true });
-    return { ok: true, sessionId };
+  async prompt(sessionId: string, text: string, opts?: { submit?: boolean; keys?: string[] }): Promise<Record<string, unknown>> {
+    const name = tmuxFor(sessionId);
+    const keyNames = (opts?.keys ?? []).map((k) => CC_NAV_KEYS[k].tmux);
+    if (keyNames.length === 0) {
+      // Unchanged pure-text path — cc.prompt asserts idle and does the
+      // settle→Enter→verify submit every existing caller relies on.
+      await cc.prompt(name, { text, allowNewlines: true });
+      return { ok: true, sessionId };
+    }
+    // Keys involved (e.g. Escape to dismiss a dialog): send text + keys + Enter
+    // in one hardened send-keys call. No idle assertion — the whole point of
+    // keys is to drive a NON-idle dialog/menu.
+    await tmux.sendKeys(name, {
+      text: text || null,
+      keyNames,
+      literal: false,
+      enter: opts?.submit === true,
+      paneQualifier: null,
+    });
+    return { ok: true, sessionId, keys: opts?.keys };
   },
 
   async screen(sessionId: string): Promise<CcScreen> {

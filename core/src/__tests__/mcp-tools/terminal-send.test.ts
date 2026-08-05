@@ -73,3 +73,40 @@ test('terminal_send requires name', async () => {
   assert.ok(res.isError);
   assert.equal(lastUrl, '');
 });
+
+// ── windows_terminal_send — the Windows counterpart, now with keys ─────────
+
+test('windows_terminal_send posts text + keys + submit to the cc-sessions prompt route', async () => {
+  stubFetch({ success: true, data: { ok: true } });
+  const res = await EXPANDED_HANDLERS.windows_terminal_send({ sessionId: 'abc', text: 'pick', keys: ['Down', 'Enter'], submit: false });
+  assert.ok(!res.isError, JSON.stringify(res.content));
+  assert.match(lastUrl, /\/terminal\/cc-sessions\/abc\/prompt$/);
+  assert.deepEqual(lastBody, { submit: false, text: 'pick', keys: ['Down', 'Enter'] });
+});
+
+test('windows_terminal_send: keys alone is allowed (the Escape gap this closes)', async () => {
+  stubFetch({ success: true, data: { ok: true } });
+  const res = await EXPANDED_HANDLERS.windows_terminal_send({ sessionId: 'abc', keys: ['Escape'] });
+  assert.ok(!res.isError, JSON.stringify(res.content));
+  assert.deepEqual(lastBody, { submit: false, keys: ['Escape'] });
+});
+
+test('windows_terminal_send: text alone still works (no regression)', async () => {
+  stubFetch({ success: true, data: { ok: true } });
+  await EXPANDED_HANDLERS.windows_terminal_send({ sessionId: 'abc', text: 'hello', submit: true });
+  assert.deepEqual(lastBody, { submit: true, text: 'hello' });
+});
+
+test('windows_terminal_send refuses when neither text nor keys is given', async () => {
+  stubFetch({ success: true, data: {} });
+  const res = await EXPANDED_HANDLERS.windows_terminal_send({ sessionId: 'abc' });
+  assert.ok(res.isError, 'empty send must be an error');
+  assert.equal(lastUrl, '', 'no request was made');
+});
+
+test('windows_terminal_send still requires sessionId', async () => {
+  stubFetch({ success: true, data: {} });
+  const res = await EXPANDED_HANDLERS.windows_terminal_send({ keys: ['Escape'] });
+  assert.ok(res.isError);
+  assert.equal(lastUrl, '');
+});
