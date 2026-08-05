@@ -295,7 +295,7 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
     'ccr_cloud_restart', 'ccr_cloud_start', 'ccr_cloud_stop', 'ccr_cloud_drive',
     'ccr_cloud_answer', 'open_port_forward', 'close_port_forward', 'transfer_send_file',
     'transfer_queue', 'transfer_cancel', 'elevated_exec', 'elevated_grant', 'elevated_revoke',
-    'terminal_prompt', 'terminal_slash', 'terminal_interrupt', 'terminal_open_tab',
+    'terminal_prompt', 'terminal_slash', 'terminal_send', 'terminal_interrupt', 'terminal_open_tab',
     'windows_terminal_launch', 'windows_terminal_create', 'windows_terminal_send',
     'windows_terminal_auto_handle', 'windows_terminal_close', 'github_mutate',
     'refresh_connector_tools', 'set_connector_tool_access', 'set_connector_auto_approve',

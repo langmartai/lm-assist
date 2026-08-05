@@ -26,7 +26,7 @@
  */
 
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
-import { getCcController, getTerminalBackend } from '../../terminal/backend';
+import { getCcController, getTerminalBackend, assertNavKeys } from '../../terminal/backend';
 
 interface Envelope {
   success: boolean;
@@ -163,9 +163,19 @@ export function createTerminalStdRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/terminal\/cc-sessions\/(?<id>[^/]+)\/prompt$/,
       handler: async (req: ParsedRequest): Promise<Envelope> => {
-        const b = (req.body ?? {}) as { text?: string; submit?: boolean };
-        if (typeof b.text !== 'string' || !b.text) return fail('INVALID_BODY', 'body.text (non-empty string) is required');
-        return wrap(() => getCcController().prompt(req.params.id, b.text!, { submit: b.submit }));
+        const b = (req.body ?? {}) as { text?: string; submit?: boolean; keys?: unknown };
+        const hasText = typeof b.text === 'string' && b.text.length > 0;
+        const hasKeys = b.keys !== undefined && b.keys !== null;
+        if (!hasText && !hasKeys) {
+          return fail('INVALID_BODY', 'body.text (non-empty string) or body.keys (key-name array, e.g. ["Escape"]) is required');
+        }
+        if (b.text !== undefined && typeof b.text !== 'string') return fail('INVALID_BODY', 'body.text must be a string');
+        let keys: string[] | undefined;
+        if (hasKeys) {
+          try { keys = assertNavKeys(b.keys); }
+          catch (e) { return fail('INVALID_BODY', e instanceof Error ? e.message : String(e)); }
+        }
+        return wrap(() => getCcController().prompt(req.params.id, hasText ? b.text! : '', { submit: b.submit, keys }));
       },
     },
     {

@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { spawn } from '../utils/exec';
 import { execFileSync } from '../utils/exec';
 import { TerminalError, type TerminalErrorCode } from './errors';
+import { sendKeys as tmuxSendKeys } from './tmux';
 import { sessionVerdict } from './cc-sessions';
 import type { ConnectStrategy } from './cc-sessions';
 import { anthropicOAuthPost, getOrganizationUuid } from '../utils/claude-oauth';
@@ -708,10 +709,12 @@ async function driveViaCloud(cse: string, text: string): Promise<{ eventId?: str
 }
 
 /** Type a turn into the local tmux pane (literal text + Enter) — the same-host fallback. */
-function driveViaTmux(tmux: string, text: string): void {
-  // Matches the bridge's send-keys {literal:true, enter:true}: literal text, then Enter.
-  execFileSync('tmux', ['send-keys', '-t', tmux, '-l', text], { encoding: 'utf-8', timeout: 5000 });
-  execFileSync('tmux', ['send-keys', '-t', tmux, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
+async function driveViaTmux(tmux: string, text: string): Promise<void> {
+  // Same shape as the bridge's send-keys {literal:true, enter:true}, but through
+  // the hardened path: trailing-`;`/leading-`-` survive, multiline lands as ONE
+  // paste instead of submitting per line, and the per-session lock keeps a
+  // concurrent cc.prompt from interleaving with the Enter.
+  await tmuxSendKeys(tmux, { keys: text, literal: true, enter: true, paneQualifier: null });
 }
 
 /**
@@ -763,12 +766,12 @@ export async function drive(opts: {
     } catch (e) {
       if (!tmux) throw e;
       // cloud failed but we are same-host — fall back to tmux send-keys
-      driveViaTmux(tmux, text);
+      await driveViaTmux(tmux, text);
       return { ...base, path: 'tmux', delivered: true, fellBack: true, detail: `cloud failed (${(e as Error).message}); delivered via tmux` };
     }
   }
 
   // planned === 'tmux'
-  driveViaTmux(tmux!, text);
+  await driveViaTmux(tmux!, text);
   return { ...base, path: 'tmux', delivered: true };
 }

@@ -130,6 +130,25 @@ export interface TabRecord {
 }
 
 /**
+ * Named-key allowlist for the `keyNames` / REST keys-ARRAY form.
+ *
+ * Every entry is a key name tmux itself resolves (verified against tmux 3.2a —
+ * an unrecognized name is silently sent as LITERAL TEXT, so nothing may be in
+ * this set on faith). Deliberately EXCLUDED: C-c (SIGINT — that is the
+ * admin-gated interrupt path's job), C-d (EOF: exits the pane's shell) and
+ * C-z (suspends the foreground app, wedging the pane).
+ */
+export const NAMED_KEYS: ReadonlySet<string> = new Set([
+  'Enter', 'Escape', 'Tab', 'BTab', 'Space', 'BSpace', 'Delete', 'Insert',
+  'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'PageUp', 'PageDown',
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`),
+  'M-Enter', // CC composer: insert a newline without submitting
+  ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(97 + i))
+    .filter((c) => c !== 'c' && c !== 'd' && c !== 'z')
+    .map((c) => `C-${c}`),
+]);
+
+/**
  * Validated send-keys input.
  *
  * paneQualifier is a pane-within-session selector like "0.1" — NOT a session
@@ -137,7 +156,14 @@ export interface TabRecord {
  * override it. (See validate.ts for the regex.)
  */
 export interface SendKeysInput {
-  keys: string;
+  /** Legacy single string: literal text when `literal`, else one tmux key
+   *  name (an unrecognized name falls back to literal text — tmux behavior). */
+  keys?: string | null;
+  /** Literal text, delivered byte-exactly. Multiline becomes ONE paste
+   *  (bracketed when the app opted in) instead of line-by-line submits. */
+  text?: string | null;
+  /** Named keys from NAMED_KEYS, pressed after `text`. Never literal. */
+  keyNames?: string[];
   literal: boolean;
   enter: boolean;
   paneQualifier: string | null;
@@ -205,7 +231,8 @@ export interface CCLaunchInput {
 
 export interface CCPromptInput {
   text: string;
-  /** Reject if multi-line; CC's Enter submits, splitting the prompt. */
+  /** Reject if multi-line unless set. When allowed, multiline text is
+   *  delivered as ONE bracketed paste (inserted, not submitted per line). */
   allowNewlines: boolean;
 }
 

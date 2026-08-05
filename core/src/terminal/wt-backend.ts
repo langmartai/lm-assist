@@ -40,6 +40,7 @@ import type {
   CcLaunchOpts,
   CcAutoHandleOut,
 } from './backend';
+import { CC_NAV_KEYS } from './backend';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -190,9 +191,29 @@ export const wtCcController: CcController = {
     };
   },
 
-  async prompt(sessionId: string, text: string, opts?: { submit?: boolean }): Promise<Record<string, unknown>> {
+  async prompt(sessionId: string, text: string, opts?: { submit?: boolean; keys?: string[] }): Promise<Record<string, unknown>> {
     const pid = pidForSession(sessionId);
     if (!pid) throw new Error(`no live session ${sessionId} on this host`);
+
+    // Keys path (Escape / arrows / Tab — the dialog+menu gap). Additive: the
+    // text-only path below is unchanged. Order: text (pasted, unsubmitted) →
+    // keys → Enter if submit. All via the focus-free WriteConsoleInput token
+    // path, so it drives a background window without stealing foreground.
+    const wtKeys = (opts?.keys ?? []).map((k) => CC_NAV_KEYS[k].wt);
+    if (wtKeys.length > 0) {
+      if (text) {
+        const rt = await focusAndSend({ pid, rid: getTabRid(sessionId), text, submit: false });
+        if (!rt.ok) throw new Error(rt.error || 'text paste failed');
+      }
+      const rk = await focusAndSend({ pid, rid: getTabRid(sessionId), keys: wtKeys.join(' ') });
+      if (!rk.ok) throw new Error(rk.error || 'key send failed');
+      if (opts?.submit) {
+        const re = await focusAndSend({ pid, keys: 'ENTER' });
+        if (!re.ok) throw new Error(re.error || 'submit failed');
+      }
+      return { ok: true, sessionId, keys: opts?.keys, submitted: opts?.submit === true };
+    }
+
     const wantSubmit = opts?.submit !== false;
     // Paste the text only. The Enter that used to ride along here was a
     // `SendKeys("{ENTER}")` fired 150ms after a clipboard paste, and it did not

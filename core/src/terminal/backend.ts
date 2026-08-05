@@ -18,6 +18,47 @@
 import { IS_WINDOWS } from '../utils/process-utils';
 import type { Verdict } from './cc-sessions';
 
+/**
+ * Cross-platform navigation/dialog keys accepted in the cc-sessions prompt
+ * `keys` array. RESTRICTED on purpose to the set BOTH backends deliver
+ * identically:
+ *   - `tmux` — a tmux send-keys key name (types.ts NAMED_KEYS).
+ *   - `wt`   — a WriteConsoleInput token (windows-terminal.ts SendConsoleKeys).
+ * These are the keys that drive a CC menu/dialog. Deliberately NOT here:
+ *   - Ctrl-C — that is the interrupt endpoint's job on both platforms.
+ *   - F-keys / PageUp / Home / End — the Windows console-input token set has no
+ *     word for them, and an unknown token there is silently TYPED as literal
+ *     text (measured: `S-Enter` became the string "S-Enter"). A key we cannot
+ *     honor on BOTH platforms does not belong in a cross-platform vocabulary.
+ */
+export const CC_NAV_KEYS: Readonly<Record<string, { tmux: string; wt: string }>> = {
+  Enter: { tmux: 'Enter', wt: 'ENTER' },
+  Escape: { tmux: 'Escape', wt: 'ESC' },
+  Up: { tmux: 'Up', wt: 'UP' },
+  Down: { tmux: 'Down', wt: 'DOWN' },
+  Left: { tmux: 'Left', wt: 'LEFT' },
+  Right: { tmux: 'Right', wt: 'RIGHT' },
+  Tab: { tmux: 'Tab', wt: 'TAB' },
+  Space: { tmux: 'Space', wt: 'SPACE' },
+};
+
+/** Validate + split a caller `keys` array against CC_NAV_KEYS. Throws on any
+ *  unknown key (naming a bad key must fail loudly, never be typed as text). */
+export function assertNavKeys(keys: unknown): string[] {
+  if (!Array.isArray(keys)) throw new Error('keys must be an array of key names');
+  if (keys.length === 0) throw new Error('keys array must not be empty');
+  if (keys.length > 32) throw new Error('keys array exceeds 32 keys per call');
+  return keys.map((k, i) => {
+    if (typeof k !== 'string' || !(k in CC_NAV_KEYS)) {
+      throw new Error(
+        `keys[${i}] ${JSON.stringify(k)} is not a navigation key; allowed: ${Object.keys(CC_NAV_KEYS).join(', ')} ` +
+        `(Ctrl-C is the interrupt endpoint; type text via \`text\`)`,
+      );
+    }
+    return k;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Generic terminal backend
 // ---------------------------------------------------------------------------
@@ -143,8 +184,11 @@ export interface CcController {
   verdict(sessionId: string): Verdict;
   /** launch a new Claude session; returns the launch result (incl. new sessionId). */
   launch(opts: CcLaunchOpts): Promise<Record<string, unknown>>;
-  /** send a prompt (text + submit) to a session. */
-  prompt(sessionId: string, text: string, opts?: { submit?: boolean }): Promise<Record<string, unknown>>;
+  /** send a prompt to a session: `text` (typed/pasted), then any `keys`
+   *  (navigation/dialog keys from CC_NAV_KEYS), then Enter if `submit`. Any
+   *  subset may be empty — keys-only is how you press Escape / arrows without
+   *  typing (there is no other cross-platform way to reach a menu or dialog). */
+  prompt(sessionId: string, text: string, opts?: { submit?: boolean; keys?: string[] }): Promise<Record<string, unknown>>;
   /** read + (where supported) classify the session's screen. */
   screen(sessionId: string): Promise<CcScreen>;
   /** detect screen state and advance the actionable ones (trust / numbered answer). */

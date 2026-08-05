@@ -21,6 +21,7 @@ import { planDetachedTmuxSpawn, type DetachProbe } from './detach-plan';
 import { readTmuxServerPid } from './tmux-server-guard';
 import { TerminalError } from './errors';
 import { withSessionLock } from './mutex';
+import { NAMED_KEYS } from './types';
 import type { TmuxSessionState, TmuxWindowState, SendKeysInput, WaitForInput, CaptureInput, CreateWindowInput } from './types';
 
 const TMUX = 'tmux';
@@ -32,9 +33,12 @@ function assertPosix(): void {
   if (!IS_POSIX) throw new TerminalError('PLATFORM_UNSUPPORTED', 'tmux control requires a POSIX host');
 }
 
-function tmuxCmd(args: string[], timeoutMs = DEFAULT_TIMEOUT_MS): { stdout: string; stderr: string } {
+function tmuxCmd(args: string[], timeoutMs = DEFAULT_TIMEOUT_MS, extra: { input?: string } = {}): { stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync(TMUX, args, { encoding: 'utf-8', timeout: timeoutMs });
+    const stdout = execFileSync(TMUX, args, {
+      encoding: 'utf-8', timeout: timeoutMs,
+      ...(extra.input !== undefined ? { input: extra.input } : {}),
+    });
     const text = typeof stdout === 'string' ? stdout : (stdout as Buffer).toString('utf-8');
     return { stdout: text, stderr: '' };
   } catch (e: unknown) {
@@ -257,21 +261,87 @@ export async function kill(name: string): Promise<{ killed: boolean }> {
   return await withSessionLock(name, async () => killUnlocked(name));
 }
 
+/**
+ * The ONE position tmux's argv parser treats specially: an argument's TRAILING
+ * unescaped `;` ends the command ("echo done;" delivers "echo done"; ";"
+ * delivers nothing; with further args in the same call, parsing fails outright
+ * and NOTHING is delivered). Inserting a backslash before the final `;`
+ * delivers the original text exactly — measured on tmux 3.2a for `;`, `\;`
+ * and `;;` tails.
+ */
+function escapeTrailingSemicolon(s: string): string {
+  return s.endsWith(';') ? `${s.slice(0, -1)}\\;` : s;
+}
+
+let pasteSeq = 0;
+
+/**
+ * Literal text delivery. Single-line text goes through `send-keys -l` (typed
+ * keystrokes — CC dialogs only react to those). Text containing a line break
+ * is delivered as ONE tmux paste instead: send-keys hands the app raw \n/\r
+ * bytes, which a shell and CC's composer treat as Enter — submitting at the
+ * first line break. `paste-buffer -p` brackets the paste only when the app
+ * opted into bracketed-paste mode, so CC inserts the newlines while a plain
+ * pane still gets plain bytes (with the \n→\r translation a real terminal
+ * paste performs).
+ */
+function sendLiteralText(target: string, text: string): void {
+  if (!/[\r\n]/.test(text)) {
+    // `--` ends option parsing — without it, text starting with `-` errors out.
+    tmuxCmd(['send-keys', '-t', target, '-l', '--', escapeTrailingSemicolon(text)]);
+    return;
+  }
+  // Unique buffer name: concurrent sends to OTHER sessions run outside this
+  // session's lock, and the automatic buffer stack would swap payloads.
+  const buf = `lm-send-${process.pid}-${++pasteSeq}`;
+  // CRLF collapses to LF first — paste-buffer translates every \n to \r, and
+  // an untouched \r\n would land as a DOUBLE line break.
+  tmuxCmd(['load-buffer', '-b', buf, '-'], DEFAULT_TIMEOUT_MS, { input: text.replace(/\r\n/g, '\n') });
+  try {
+    tmuxCmd(['paste-buffer', '-d', '-p', '-b', buf, '-t', target]);
+  } catch (e) {
+    try {
+      execFileSync(TMUX, ['delete-buffer', '-b', buf], { timeout: DEFAULT_TIMEOUT_MS, stdio: 'ignore' });
+    } catch { /* buffer already gone */ }
+    throw e;
+  }
+}
+
 export function sendKeysUnlocked(name: string, opts: SendKeysInput): void {
   assertPosix();
+  const text = opts.text ?? null;
+  const legacy = opts.keys ?? null;
+  const keyNames = opts.keyNames ?? [];
+  // Refuse a bad key BEFORE anything is typed, so a partial sequence cannot land.
+  for (const k of keyNames) {
+    if (!NAMED_KEYS.has(k)) {
+      throw new TerminalError('INVALID_INPUT',
+        `key '${k}' is not in the named-key allowlist (C-c/C-d/C-z are deliberately excluded — interrupt goes through the interrupt endpoint)`,
+        { key: k });
+    }
+  }
+  if (text === null && legacy === null && keyNames.length === 0 && !opts.enter) {
+    throw new TerminalError('INVALID_INPUT', 'nothing to send: provide text, keys or enter');
+  }
   if (!exists(name)) throw new TerminalError('SESSION_NOT_FOUND', `tmux session not found: ${name}`);
   const target = targetFor(name, opts.paneQualifier);
-  const args = ['send-keys', '-t', target];
-  if (opts.literal) args.push('-l');
-  args.push(opts.keys);
-  if (opts.enter && !opts.literal) {
-    args.push('Enter');
-    tmuxCmd(args);
-  } else {
-    tmuxCmd(args);
-    if (opts.enter) {
-      tmuxCmd(['send-keys', '-t', target, 'Enter']);
+  if (text !== null) sendLiteralText(target, text);
+  if (legacy !== null) {
+    if (opts.literal) {
+      sendLiteralText(target, legacy);
+    } else {
+      // One argument: a key name, or literal-text fallback for anything else.
+      tmuxCmd(['send-keys', '-t', target, '--', escapeTrailingSemicolon(legacy)]);
     }
+  }
+  if (keyNames.length > 0) {
+    tmuxCmd(['send-keys', '-t', target, '--', ...keyNames]);
+  }
+  // Enter is ALWAYS its own call: appended to the text argv, a trailing-`;`
+  // text turned 'Enter' into a tmux COMMAND ("unknown command: Enter") and
+  // the whole send delivered nothing.
+  if (opts.enter) {
+    tmuxCmd(['send-keys', '-t', target, 'Enter']);
   }
 }
 
@@ -339,7 +409,9 @@ export async function createWindow(name: string, opts: CreateWindowInput): Promi
       return { index: fresh[fresh.length - 1] };
     }
     if (opts.command) {
-      tmuxCmd(['send-keys', '-t', `${name}:${newIndex}`, opts.command, 'Enter']);
+      // Through the hardened path — a command ending in `;` or starting with
+      // `-` corrupted or errored on the raw argv form.
+      sendKeysUnlocked(name, { keys: opts.command, literal: false, enter: true, paneQualifier: String(newIndex) });
     }
     return { index: newIndex };
   });
