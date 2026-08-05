@@ -587,25 +587,29 @@ export const ccrPreflightToolDef = {
     required: ['session_id'],
   },
 };
-export const ccrRemoteListToolDef = {
-  name: 'ccr_remote_list',
+export const ccrBridgeRegistryToolDef = {
+  name: 'ccr_bridge_registry',
   description:
-    'List the CCR bridge REGISTRATIONS on ONE node (load/mirror/connect bridges started via ccr_*). ' +
-    'This is NOT the answer to "what sessions are running" — use cc_sessions (this host) or ' +
-    'session_footprints (cross-fleet) for that. Each entry is cross-checked against live session/tmux ' +
-    'state: `alive` = the SESSION is live, `bridgeAlive` = the relay helper process is up (a live session ' +
-    'with a dead bridge just needs reconnecting), and `unverified` marks an entry nothing could be ' +
-    'checked against — never read it as proof the session is gone. The result also reports which ' +
-    'node/cluster it searched; an empty list means empty ON THAT NODE only.',
+    'DIAGNOSTIC: inspect the local bridge REGISTRY on ONE node — bookkeeping rows for bridges lm-assist ' +
+    'itself spawned via ccr_load/ccr_mirror/ccr_connect. To LIST CCR sessions use ccr_live_list (the ' +
+    'account-wide source of truth); to answer "what sessions are running" use cc_sessions (this host) or ' +
+    'session_footprints (cross-fleet). This registry exists so ccr_drive/ccr_restart/ccr_remote_stop can ' +
+    'find and manage their bridge processes — it cannot see natively /remote-control\'d sessions and its ' +
+    'rows go stale. Each entry is cross-checked against live session/tmux state: `alive` = the SESSION is ' +
+    'live, `bridgeAlive` = the relay helper process is up (a live session with a dead bridge just needs ' +
+    'reconnecting), and `unverified` marks an entry nothing could be checked against — never read it as ' +
+    'proof the session is gone. The result also reports which node/cluster it searched; an empty list ' +
+    'means empty ON THAT NODE only. (Formerly named ccr_remote_list.)',
   inputSchema: { type: 'object' as const, properties: {} },
 };
 export const ccrLiveListToolDef = {
   name: 'ccr_live_list',
   description:
-    'The SOURCE OF TRUTH for what remote-control / cloud Claude Code sessions exist right now — read ' +
-    'from the ACCOUNT (claude.ai `GET /v1/sessions`), not from any local registry. Use this to answer ' +
-    '"what is connected to claude.ai/code". Contrast with ccr_remote_list, which lists only the bridges ' +
-    'lm-assist itself spawned ON ONE NODE and therefore CANNOT see a session connected by a native ' +
+    'THE tool for LISTING CCR sessions — the SOURCE OF TRUTH for what remote-control / cloud Claude Code ' +
+    'sessions exist right now, read from the ACCOUNT (claude.ai `GET /v1/sessions`), not from any local ' +
+    'registry. Use this to answer "list ccr" / "what is connected to claude.ai/code". Contrast with ' +
+    'ccr_bridge_registry (a diagnostic), which lists only the bridges lm-assist itself spawned ON ONE ' +
+    'NODE and therefore CANNOT see a session connected by a native ' +
     '`/remote-control` inject; this tool can, and is account-wide rather than node-scoped. ' +
     'Each row carries `kind` (local-remote-control = a Claude Code process on a real machine, driven ' +
     'from the web | cloud = a container Anthropic runs) and `via` (native-inject | lm-assist-bridge). ' +
@@ -687,7 +691,7 @@ export const ccrDriveToolDef = {
 };
 export const ccrRemoteStopToolDef = {
   name: 'ccr_remote_stop',
-  description: 'Stop a running CCR remote by id (from ccr_remote_list or a ccr_* result).',
+  description: 'Stop a running CCR remote by id (from ccr_bridge_registry or a ccr_* result).',
   inputSchema: {
     type: 'object' as const,
     properties: { id: { type: 'string', description: 'CCR remote id, e.g. ccr-xxxxxxxx.' } },
@@ -1163,7 +1167,7 @@ export const EXPANDED_TOOL_DEFS = [
   // ccr — Claude Code remote support
   ccSessionsToolDef,
   ccrPreflightToolDef,
-  ccrRemoteListToolDef,
+  ccrBridgeRegistryToolDef,
   ccrLiveListToolDef,
   ccrLoadToolDef,
   ccrMirrorToolDef,
@@ -2359,6 +2363,9 @@ export const EXPANDED_HANDLERS: Record<
   // ccr — Claude Code remote support
   cc_sessions: (a) => handleCcSessions(a),
   ccr_preflight: handleCcrPreflight,
+  ccr_bridge_registry: () => handleCcrRemoteList(),
+  // compat alias: pre-rename name, still accepted (NOT advertised) so a connector
+  // holding a cached tools/list keeps working until it refreshes
   ccr_remote_list: () => handleCcrRemoteList(),
   ccr_live_list: (a: Record<string, unknown>) => handleCcrLiveList(a),
   ccr_load: handleCcrLoad,

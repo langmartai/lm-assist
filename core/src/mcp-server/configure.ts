@@ -217,7 +217,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // ccr — Claude Code remote support
   cc_sessions: 'read',
   ccr_preflight: 'read',
-  ccr_remote_list: 'read',
+  ccr_bridge_registry: 'read',
+  ccr_remote_list: 'read', // compat alias for ccr_bridge_registry (pre-rename name, not advertised)
   ccr_live_list: 'read',
   ccr_load: 'write',
   ccr_mirror: 'write',

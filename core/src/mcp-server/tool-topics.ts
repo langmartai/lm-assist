@@ -15,7 +15,7 @@ export const TOPIC_TOOLS: Record<string, string[]> = {
   data: ['data_catalog', 'data_request_access', 'data_get', 'data_query', 'data_search', 'data_put', 'data_delete', 'data_create_dataset', 'data_drop_dataset', 'data_keys', 'data_revoke_key', 'data_sync', 'data_sync_status', 'data_admin'],
   agents: ['agent_execute', 'agent_resume', 'agent_abort', 'get_execution', 'list_executions', 'browser_task'],
   terminals: ['terminal_open_tab', 'terminal_list', 'terminal_capture', 'terminal_prompt', 'terminal_slash', 'terminal_interrupt', 'send_session_message', 'get_message_status', 'cc_sessions', 'windows_terminal_create', 'windows_terminal_list', 'windows_terminal_send', 'windows_terminal_restart', 'windows_terminal_capture', 'windows_terminal_state', 'windows_terminal_launch', 'windows_terminal_close', 'windows_terminal_auto_handle'],
-  ccr: ['ccr_preflight', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_remote_list', 'ccr_live_list', 'ccr_remote_stop', 'cc_sessions'],
+  ccr: ['ccr_preflight', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_bridge_registry', 'ccr_remote_list', 'ccr_live_list', 'ccr_remote_stop', 'cc_sessions'],
   // node_profile/node_select join the NODES playbook: choosing WHERE work runs is a
   // cross-node concern, and a tool maps to exactly ONE topic.
   nodes: ['list_nodes', 'open_port_forward', 'close_port_forward', 'list_port_forwards', 'port_forward_stats', 'node_profile', 'node_select'],

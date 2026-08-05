@@ -154,7 +154,7 @@ export function classifyKind(s: RawSession): SessionKind {
  * HOW the session got connected, from `tags` — free provenance that
  * distinguishes the two connect paths:
  *   `remote-control-auto` → a native `/remote-control` inject (the blind spot
- *      `ccr_remote_list` cannot see, because lm-assist did not spawn it)
+ *      `ccr_bridge_registry` cannot see, because lm-assist did not spawn it)
  *   `remote-control-repl` → a bridge lm-assist started itself
  */
 export function classifyVia(s: RawSession): ConnectVia {
