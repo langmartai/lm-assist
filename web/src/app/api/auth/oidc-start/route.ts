@@ -4,7 +4,11 @@ import { deriveIssuer } from '@/lib/oidc-issuer';
 
 const COOKIE_NAME = 'lm_oidc';
 const b64url = (b: Buffer) => b.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
-const safeReturnTo = (raw: string | null) => (raw && /^\/(?![/\\])/.test(raw) ? raw : '/');
+// Same-origin relative path only. Also reject control chars (\t \r \n …): WHATWG
+// URL parsing strips them pre-parse, so "/\t/evil.com" would collapse to
+// "//evil.com" (protocol-relative host) in any later new URL()-based consumer.
+const safeReturnTo = (raw: string | null) =>
+  (raw && /^\/(?![/\\])[^\x00-\x1f\x7f]*$/.test(raw) ? raw : '/');
 
 export async function GET(req: NextRequest) {
   const issuer = await deriveIssuer();
