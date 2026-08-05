@@ -991,6 +991,32 @@ async function checkAttachments(): Promise<string> {
  */
 export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheckReport> {
   const startedAt = Date.now();
+
+  // 🔴 Pause the background drivers for the duration of the suite.
+  //
+  // MEASURED 2026-08-05, final fleet verification: with the arrival watcher live,
+  // 117 lost feature.read_surface to BROWSER_BUSY and 123 lost sendas.identities
+  // the same way — the canary was queueing behind the very machinery it measures,
+  // and reporting lock congestion as if it said something about Gmail. A canary
+  // must observe the system, not compete with it.
+  //
+  // Resume is unconditional and safe: both start functions re-read their env
+  // gates (GMAIL_HEARTBEAT_MIN / GMAIL_KEEPALIVE_MIN), so an instance that runs
+  // with the drivers disabled stays disabled after the suite ends.
+  const arrival = await import('./arrival');
+  const keepalive = await import('./keepalive');
+  const wasWatching = arrival.arrivalState().watching === true;
+  arrival.stopGmailArrivalWatch();
+  keepalive.stopGmailKeepAlive();
+  try {
+    return await runSelfCheckInner(opts, startedAt);
+  } finally {
+    if (wasWatching) arrival.startGmailArrivalWatch();
+    keepalive.startGmailKeepAlive();
+  }
+}
+
+async function runSelfCheckInner(opts: { deep?: boolean } | undefined, startedAt: number): Promise<SelfCheckReport> {
   const state: RunState = { inbox: null };
   const checks: CheckResult[] = [];
 
