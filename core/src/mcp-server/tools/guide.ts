@@ -296,6 +296,36 @@ Windows-specific (when the generic route isn't enough): \`windows_terminal_*\` (
 CROSS-NODE: pass \`node=B\` to open/capture/drive a terminal on host B, or to send_session_message into a session on host B.
 GOTCHA: driving a WINDOWS session/terminal needs that host's Core in interactive Session 1; "pending/no driver" = nothing delivered.`,
 
+  desktop: `# Guide: control a node's DESKTOP (GUI) — read the screen + drive mouse/keyboard
+WHAT: full desktop control on any node that has a real graphical session — SEE what is on screen, READ it (screenshot, zoom to read small text), and ACT (move/click the mouse, type, press keys, manage windows). This is the GUI counterpart to guide("terminals"): terminals drive a SHELL, desktop_* drive the actual windowed desktop (a browser, an editor, a settings dialog, anything on screen). ONE platform-agnostic tool set works the SAME on Linux (X11) and Windows — coordinates are physical desktop pixels everywhere.
+
+THE FIVE TOOLS
+• \`desktop_status\` — CALL FIRST. platform (linux-x11 | windows | …), whether the desktop is driveable (ready), display size, active window, cursor, and warnings. If ready:false the reason says what to fix (no display / Wayland / Windows session-0).
+• \`desktop_windows\` — every open window: id, title, app, pid, geometry, state (active/minimized/maximized/normal). Take a window id from here to target the other tools.
+• \`desktop_screenshot\` — SEE the screen. No args = full-screen overview (downscaled to fit). To READ small text or inspect detail, pass \`region:[x1,y1,x2,y2]\` to ZOOM that rectangle at NATIVE resolution — overview first, then zoom the part you care about (that is how you "scroll"/read a display too large to send whole). Returns a real image PLUS a text line stating the exact image→desktop pixel mapping, so the coordinates you read off the image map correctly to where you click. Optional \`window\` (capture one window), \`max_px\`, \`format\`.
+• \`desktop_window\` — manage one window: activate | close | minimize | maximize | restore | move | resize (move needs x,y; resize needs width,height). Re-queries after and reports VERIFIED vs UNVERIFIED — a window manager that constrains the request (e.g. a terminal's min size) shows UNVERIFIED honestly, it is not a silent success. \`close\` is a polite window close, never a process kill.
+• \`desktop_input\` — pointer + keyboard, in Anthropic's computer-use vocabulary: left_click / right_click / middle_click / double_click / triple_click / left_click_drag / mouse_move / scroll / type / key / hold_key / cursor_position. Clicks/move/scroll take \`coordinate:[x,y]\` (desktop pixels — get them from a desktop_screenshot). \`type\` takes text; \`key\`/\`hold_key\` take an xdotool-style combo ("ctrl+s","Return","Page_Down","alt+Tab", "super"=Win/Cmd); a click may hold a modifier via \`text\` ("shift"). type/key go to the FOCUSED window — pass \`window\` to activate it first, or click there. \`screenshot_after_ms\` returns a fresh screenshot after the action so you can VERIFY it landed without a second call.
+
+THE READ→ACT LOOP: desktop_status (ready?) → desktop_screenshot (see) → find your target's pixel from the image (zoom a region if the text is small) → desktop_input (click/type) with screenshot_after_ms → confirm from the returned image. Never click blind: screenshot, locate, act, verify.
+
+CROSS-NODE — this is REMOTE desktop control: pass \`node=<host>\` (after list_nodes) to read/drive ANOTHER machine's desktop. A Linux node reports platform:linux-x11, a Windows node platform:windows, SAME tools + SAME response shapes — so "screenshot my Windows box and click the button" is desktop_screenshot(node=WINDOWS) then desktop_input(node=WINDOWS, action:left_click, coordinate:[…]). Omit node for the default host.
+
+PLATFORM NOTES + SAFETY
+• Linux needs an X11 session; a Wayland session is refused LOUDLY (DESKTOP_UNSUPPORTED) rather than returning black frames. Windows needs that host's Core in the interactive session (Session 1) — else WINDOWS_SESSION0.
+• Coordinates are PHYSICAL desktop pixels, top-left origin (a Windows multi-monitor virtual screen can have NEGATIVE origins). The screenshot result's mapping line is authoritative — trust it over guessing, and on a high-DPI/scaled display do NOT assume logical pixels.
+• 🔴 The desktop is SHARED with the human operator and with any browser-connector (Gmail/LinkedIn drive a real Chrome on the SAME display) — desktop_status.warnings names them. Synthesized input steals focus and moves the real cursor, so it can interrupt the operator or a connector (one-writer rule). Prefer a quiet moment; input is serialized per node but NOT coordinated with the CDP connectors.
+• Reads are \`read\`-scoped; window/input are \`write\`-scoped (approval-gated on claude.ai). No destructive verbs — no process kill, no logoff.
+
+FLOW
+\`\`\`mermaid
+flowchart LR
+  S["desktop_status (ready? which platform?)"] --> W["desktop_windows / desktop_screenshot (SEE)"]
+  W -->|"small text?"| Z["desktop_screenshot region=[…] (ZOOM native-res)"]
+  W & Z --> A["desktop_input click/type/scroll (+screenshot_after_ms)"]
+  A --> V["verify from the returned image"]
+  S -.->|"another machine"| N["same tools + node=<host> (Linux or Windows)"]
+\`\`\``,
+
   ccr: `# Guide: CCR — view or DRIVE a Claude Code session from claude.ai/code
 WHAT: bridge a Claude Code session on a node to the claude.ai/code web UI so you can watch it or drive it remotely. Three modes — each spawns a detached bridge and returns a https://claude.ai/code/session_… web URL:
 • ccr_load(session_id | jsonl) — READ-ONLY replay: load a session's transcript into a fresh claude.ai/code session (disconnected). Works on ANY session (live or finished). No side effects on the session — the safe default for "just show me".
@@ -724,6 +754,7 @@ const BLURB: Record<string, string> = {
   knowledge: 'search the knowledge base + cross-project/cross-host memory; read + WRITE memory files (hash-guarded); give feedback',
   agents: 'run / resume / monitor a Claude Code agent remotely (incl. browser control)',
   terminals: 'drive a terminal or inject a prompt into a running session (Linux/mac/Windows)',
+  desktop: 'control a node\'s DESKTOP GUI — read the screen (screenshot + native-res zoom) and drive mouse/keyboard/windows; ONE tool set for Linux (X11) + Windows, cross-node so you can remote-control another machine\'s desktop',
   ccr: 'CCR — view/drive a Claude Code session from claude.ai/code (load=replay, mirror=live view, connect=two-way; safety-gated) + how to find and resume what a REBOOT killed (the ~/.claude/sessions registry survives it; resume keeps both the name and the web URL)',
   nodes: 'list hosts, target a specific machine, port-forward — why a DISPLAY NAME is not an identity (hostIds are the only targetable set; names repeat and carry `(dev)` suffixes), and how to RECOVER a node that vanished from list_nodes (its lm-assist is stopped, the host is usually alive and one ssh away)',
   'claude-ai': "read/operate the user's claude.ai web account + manage this connector's tools",
@@ -803,7 +834,7 @@ function buildIndex(lookup?: ContentLookup | null): string {
 
 /** Bootstrap section order — `mission-controller` is DELIBERATELY absent (the controller
  *  contract loads via guide only, not into every bootstrapped session). */
-export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speaking', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
+export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speaking', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'desktop', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
 
 /** The bootstrap preamble — content doc `bootstrap.header`. */
 export const BOOTSTRAP_HEADER_DEFAULT = [
@@ -1048,7 +1079,7 @@ export const GUIDE_TOOL_DEFS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        topic: { type: 'string' as const, description: 'A use-case (cross-node|workflows|sessions|knowledge|data|agents|terminals|ccr|nodes|claude-ai|account|github|files|roles), a tool name, or "index". Omit for the index.' },
+        topic: { type: 'string' as const, description: 'A use-case (cross-node|workflows|sessions|knowledge|data|agents|terminals|desktop|ccr|nodes|claude-ai|account|github|files|roles), a tool name, or "index". Omit for the index.' },
       },
       required: [] as string[],
     },
