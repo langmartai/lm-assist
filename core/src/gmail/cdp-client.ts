@@ -715,18 +715,56 @@ function isRecordHash(hash: string): boolean {
  * every view switch a full page load and drove the arrival listener to 148
  * reinstalls). Verify, and reload only when the cheap path demonstrably failed.
  */
+/**
+ * The identity a view ANSWERS TO, derived from its hash.
+ *
+ * 🔴 For `#label/<name>` the identity is the NAME, not the word "label".
+ * MEASURED 2026-08-05 on 117: deriving it from segment 1 made the landed-guard
+ * refuse a page that was exactly where it was asked to go — the error read
+ * `asked for #label/sent but the page is showing #label/sent` — because the
+ * Sent view titles itself "Sent Mail" (not "label") and its nav anchor is
+ * `#sent` (not `#label/sent`). Every `#label/<system-view>` navigation failed
+ * the guard; checks with an `in:` fallback quietly routed around it (their pass
+ * detail flipped to `#search/in:sent`), which is why 123's green run never
+ * surfaced it. Exported for the unit tests.
+ */
+export function viewIdentity(hash: string): string {
+  const segs = String(hash || '').replace(/^#/, '').split('/');
+  if (segs[0].toLowerCase() === 'label' && segs.length > 1) {
+    // A nested label's name is its full remaining path ("Parent/Child"); Gmail
+    // encodes spaces as `+` in these hashes.
+    let name = segs.slice(1).join('/');
+    try {
+      name = decodeURIComponent(name);
+    } catch {
+      /* a malformed escape keeps the raw text — still comparable */
+    }
+    return name.replace(/\+/g, ' ').toLowerCase();
+  }
+  return segs[0].toLowerCase();
+}
+
 const JS_VIEW_MATCHES = (hash: string): string => {
-  const label = hash.replace(/^#/, '').split('/')[0].toLowerCase();
+  const label = viewIdentity(hash);
   return `const vis = (e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && e.offsetParent !== null; };
      const want = ${JSON.stringify(label)};
      const active = [...document.querySelectorAll('a[href*="#"]')].filter(vis).some((a) => {
-       const h = String(a.getAttribute('href') || '').split('#')[1] || '';
-       if (h.split('/')[0].toLowerCase() !== want) return false;
+       let h = String(a.getAttribute('href') || '').split('#')[1] || '';
+       try { h = decodeURIComponent(h); } catch (e) {}
+       h = h.replace(/\\+/g, ' ').toLowerCase();
+       // A view answers to its own hash ("sent"), or to the label route of the
+       // same name ("label/sent", "label/Parent/Child").
+       if (h !== want && h !== 'label/' + want && h.split('/')[0] !== want) return false;
        const row = a.closest('.aim') || a.parentElement;
        return !!row && /(^|\\s)ain(\\s|$)/.test(String(row.className || ''));
      });
      const title = String(document.title || '').toLowerCase();
-     const titled = title.indexOf(want) === 0 || title.indexOf(want + ' ') >= 0 || title.indexOf(want + '(') >= 0;
+     // The QUOTED form is how Gmail titles a label-routed view: #label/sent
+     // renders as a label search titled '"sent" - <account> - …'. MEASURED
+     // 2026-08-05 — without this alternation the guard refused a fully rendered
+     // view because the identity was there, one quote character to the right.
+     const titled = title.indexOf(want) === 0 || title.indexOf(want + ' ') >= 0 || title.indexOf(want + '(') >= 0 ||
+       title.indexOf('"' + want + '"') >= 0;
      return active || titled;`;
 };
 
@@ -800,21 +838,47 @@ function sameQuery(want: string, got: string): boolean {
   return g === w || g.startsWith(`${w}/`);
 }
 
+/**
+ * How long a landed-but-not-yet-identified view gets to adopt its identity.
+ *
+ * 🔴 The identity signals LAG the navigation. MEASURED 2026-08-05 on 117 (an
+ * account with a 2,643-unread inbox): seconds after a hash change, document.title
+ * still read "Inbox (2,643)" and the target's nav row had not yet gained `ain` —
+ * an instant sample therefore judged a CORRECT landing as foreign, and the error
+ * it produced was self-refuting: "asked for #label/sent but the page is showing
+ * #label/sent". On a fast box (123) the instant sample happens to pass, which is
+ * exactly the kind of works-on-the-dev-machine bug this file keeps re-learning.
+ * The guard must WAIT for identity the way every other readiness check waits for
+ * its selector.
+ */
+const VIEW_IDENTITY_WAIT_MS = 7_000;
+
 async function assertLanded(cdp: Cdp, hash: string, readySel: string, timeoutMs: number): Promise<void> {
+  // A non-search hash is fully described by its view identity; a search is not,
+  // so `#search/a` must not be satisfied by `#search/b`.
+  const isSearch = /^#search\//i.test(hash);
+  let got = '';
+  let title = '';
   for (let attempt = 0; attempt < 2; attempt++) {
-    const view = await cdp.evaluate<boolean>(`${JS_VIEW_MATCHES(hash)}`).catch(() => null);
-    const got = await cdp.evaluate<string>('return String(location.hash || "");').catch(() => '');
-    // A non-search hash is fully described by its view segment; a search is not,
-    // so `#search/a` must not be satisfied by `#search/b`.
-    const isSearch = /^#search\//i.test(hash);
-    const landed = view === true && (!isSearch || sameQuery(hash, got));
-    if (landed) return;
+    const deadline = Date.now() + VIEW_IDENTITY_WAIT_MS;
+    for (;;) {
+      const view = await cdp.evaluate<boolean>(`${JS_VIEW_MATCHES(hash)}`).catch(() => null);
+      got = (await cdp.evaluate<string>('return String(location.hash || "");').catch(() => '')) || '';
+      if (view === true && (!isSearch || sameQuery(hash, got))) return;
+      if (Date.now() >= deadline) break;
+      await sleep(450);
+    }
     if (attempt === 1) {
+      title = (await cdp.evaluate<string>('return String(document.title || "");').catch(() => '')) || '';
+      const hashMatches = got.trim() === hash.trim();
       throw new GmError(
         'VIEW_NOT_APPLIED',
-        `asked for ${hash} but the page is showing ${got || 'an unknown view'}. ` +
-          'Another writer is driving this browser (the background sync navigates the shared tab), ' +
-          'so these rows are NOT the requested view and are deliberately not returned.',
+        hashMatches
+          ? `the page reached ${hash} but never adopted its identity (title stayed ${JSON.stringify(title.slice(0, 60))}) — ` +
+            'the view did not actually render, so its rows are deliberately not returned.'
+          : `asked for ${hash} but the page is showing ${got || 'an unknown view'} (title ${JSON.stringify(title.slice(0, 60))}). ` +
+            'Another writer is driving this browser (the background sync navigates the shared tab), ' +
+            'so these rows are NOT the requested view and are deliberately not returned.',
       );
     }
     await cdp.evaluate(`location.hash = ${JSON.stringify(hash)}; return true;`).catch(() => undefined);
