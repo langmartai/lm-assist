@@ -174,6 +174,62 @@ public static class DeskNative {
     }
     return new int[] { InjectSeq(seq), seq.Count };
   }
+  // ── deterministic text path: WM_CHAR to the focused control ──
+  [StructLayout(LayoutKind.Sequential)] public struct GUITHREADINFO {
+    public int cbSize; public uint flags;
+    public IntPtr hwndActive; public IntPtr hwndFocus; public IntPtr hwndCapture;
+    public IntPtr hwndMenuOwner; public IntPtr hwndMoveSize; public IntPtr hwndCaret;
+    public RECT rcCaret;
+  }
+  [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint idThread, ref GUITHREADINFO info);
+  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, IntPtr wp, IntPtr lp, uint flags, uint timeout, out IntPtr result);
+
+  /// Type text DETERMINISTICALLY: WM_CHAR via SendMessageTimeout to the focused
+  /// control. Each message carries its own character and SendMessage to another
+  /// thread BLOCKS until that thread has processed it — strict per-char
+  /// serialization, immune to the VK_PACKET latest-char race that survives even
+  /// atomic-pair pacing ("via /mcp" arrived as "iia mmcp" through the paced
+  /// SendInput path — measured cross-node by the 117 session, 2026-08-06).
+  /// Newlines map to WM_CHAR '\r' (what Enter produces in edit controls).
+  /// Returns [consumedIndex, textLength, focusFound(0|1)]; consumedIndex < length
+  /// means the target hung/timed out — the caller resumes from that index on the
+  /// SendInput fallback (backing up a dangling high surrogate).
+  public static int[] TypeViaMessages(string text) {
+    IntPtr fg = GetForegroundWindow();
+    if (fg == IntPtr.Zero) return new int[] { 0, text.Length, 0 };
+    uint pid; uint tid = GetWindowThreadProcessId(fg, out pid);
+    GUITHREADINFO gi = new GUITHREADINFO();
+    gi.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO));
+    IntPtr target = fg;
+    if (GetGUIThreadInfo(tid, ref gi) && gi.hwndFocus != IntPtr.Zero) target = gi.hwndFocus;
+    int i = 0;
+    while (i < text.Length) {
+      char c = text[i];
+      int adv = 1;
+      bool newline = false;
+      if (c == '\r') { newline = true; if (i + 1 < text.Length && text[i + 1] == '\n') adv = 2; }
+      else if (c == '\n') { newline = true; }
+      IntPtr res;
+      IntPtr ok;
+      if (newline) {
+        // RichEditD2D (Win11 Notepad) inserts NOTHING for WM_CHAR '\r' (measured:
+        // 8 typed lines arrived as one). Enter must arrive as the key pair —
+        // still via SendMessage so ordering with the WM_CHARs stays strict.
+        ok = SendMessageTimeout(target, 0x0100 /*WM_KEYDOWN*/, (IntPtr)0x0D, (IntPtr)0x001C0001, 0x0002, 2000, out res);
+        if (ok != IntPtr.Zero) SendMessageTimeout(target, 0x0101 /*WM_KEYUP*/, (IntPtr)0x0D, (IntPtr)unchecked((int)0xC01C0001), 0x0002, 2000, out res);
+      } else {
+        ok = SendMessageTimeout(target, 0x0102 /*WM_CHAR*/, (IntPtr)c, (IntPtr)1, 0x0002 /*SMTO_ABORTIFHUNG*/, 2000, out res);
+      }
+      if (ok == IntPtr.Zero) {
+        // timed out / hung: don't strand half a surrogate pair on the fallback
+        if (i > 0 && char.IsLowSurrogate(text[i]) ) i--;
+        break;
+      }
+      i += adv;
+    }
+    return new int[] { i, text.Length, 1 };
+  }
+
   /// Type text via UNICODE events, ONE CHARACTER PER SendInput CALL, paced.
   /// Why not batches: KEYEVENTF_UNICODE queues VK_PACKET events whose char is
   /// resolved when the APP translates the message — inject faster than the app
@@ -424,9 +480,18 @@ function Cmd-Wheel($args_) {
 
 function Cmd-TypeText($args_) {
   $text = [string]$args_.text
-  $r = [DeskNative]::TypeChunk($text)
-  if ($r[0] -ne $r[1]) { throw "SendInput injected only $($r[0]) of $($r[1]) key events (input queue congested)" }
-  return @{ typed = $text.Length; events = $r[0] }
+  # Deterministic path first: WM_CHAR via SendMessageTimeout (see TypeViaMessages
+  # — the paced-SendInput path still corrupted chars under app pump lag).
+  $r = [DeskNative]::TypeViaMessages($text)
+  if ($r[2] -eq 1 -and $r[0] -ge $r[1]) {
+    return @{ typed = $text.Length; path = 'wmchar' }
+  }
+  # Fallback: true keyboard injection from where the message path stopped
+  # (no focus window resolvable, or the target hung mid-string).
+  $rest = $text.Substring([Math]::Max(0, $r[0]))
+  $r2 = [DeskNative]::TypeChunk($rest)
+  if ($r2[0] -ne $r2[1]) { throw "SendInput injected only $($r2[0]) of $($r2[1]) key events (wmchar consumed $($r[0])/$($r[1]); input queue congested)" }
+  return @{ typed = $text.Length; path = "wmchar+$($rest.Length)sendinput" }
 }
 
 function Cmd-KeySeq($args_) {
