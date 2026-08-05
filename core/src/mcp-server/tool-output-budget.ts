@@ -83,7 +83,10 @@ export type Verdict =
   /** The generic per-result ceiling is a sufficient fix. */
   | 'NEEDS-CAP'
   /** A byte cap alone leaves it useless — needs a compact projection + paging. */
-  | 'NEEDS-SUMMARY';
+  | 'NEEDS-SUMMARY'
+  /** Deliberately large but self-pages: each page stays under the ceiling and a `page`
+   *  argument reaches the rest, so no page is ever truncated. */
+  | 'PAGED';
 
 export interface ToolBudget {
   /** Measured result text bytes on the audit fleet, or 0 for never-invoked tools. */
@@ -137,13 +140,14 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
     note: 'WAS 65,829 B (truncated). Now 23,013 B via the actor projection + paging. Revs only ' +
       'accumulate, so this one keeps climbing by construction — narrow with sinceRev/sinceTs.',
   },
-  bootstrap: { measuredBytes: 62255, budgetBytes: 78000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Deliberately large — loads every use case in one call; 55,572 B set the floor for the ' +
-    'enforced ceiling. Does NOT scale with fleet data: the bulk is STATIC prose (GUIDES sections), ' +
-    'plus optional admin-curated content-registry overrides and a clusterBlock that grows with ' +
-    'CLUSTER count (2-3), not nodes/sessions/missions. The 101KB->54KB swing since the incident was ' +
-    'override prose in the registry, not data growth. Fix is trimming prose, not capping a list. ' +
-    'Re-measured 62,255 B on 2026-07-26 after the mission-lifecycle + node-identity lessons landed ' +
-    '(+6.6 KB of prose across missions/nodes/account) — prose is exactly what moves this number.' },
+  bootstrap: { measuredBytes: 51388, budgetBytes: 65536, bound: 'PAGINATED', verdict: 'PAGED', note: 'Deliberately large — loads every use-case playbook. As of 2026-08-05 (bl_057c3e0b) it ' +
+    'SELF-PAGES: the no-arg call returns page 1 (a manifest + the first run of playbooks) and a ' +
+    '`page` argument reaches the rest. Each page is packed from whole sections to stay under the ' +
+    'result ceiling (page-1 measured 51,388 B against the 65,536 default), so NO page is ever ' +
+    'truncated — the pagination adapts to MCP_RESULT_MAX_BYTES (a raised ceiling collapses it back ' +
+    'to one page). The bulk is STATIC prose (GUIDES sections) + admin content-registry overrides + ' +
+    'a clusterBlock that grows with CLUSTER count (2-3), not nodes/sessions/missions; prose is what ' +
+    'moves the number, and paging is what keeps any single result safe.' },
   data_keys: {
     measuredBytes: 61574, budgetBytes: 78000, bound: 'PAGINATED', verdict: 'NEEDS-CAP',
     note: 'PRE-PAGING 61,574 B and climbing — it was 55,967 B at the audit and reached 94% of the ' +
