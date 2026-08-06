@@ -34,7 +34,7 @@ import {
   WindowInfo,
 } from './types';
 import { DESKTOP_TMP_DIR } from './config';
-import { autoDetectLang, ensureBase, ensureLang, LM_TESSDATA } from './ocr-lang';
+import { autoDetectLang, ensureBase, ensureLang, isValidLangCode, LM_TESSDATA } from './ocr-lang';
 import { X11Backend } from './x11-backend';
 import { Win32Backend } from './win32-backend';
 import {
@@ -473,6 +473,10 @@ async function resolveOcrLang(reqRaw: string | undefined, pngPath: string): Prom
   // Explicit code(s), e.g. "chi_sim" or "jpn+eng".
   await ensureBase();
   const parts = req.split('+').map((s) => s.trim()).filter(Boolean);
+  // Reject anything that isn't a clean tesseract code BEFORE it reaches the
+  // filesystem path in ensureLang (defense-in-depth against path traversal).
+  const bad = parts.find((p) => !isValidLangCode(p));
+  if (bad) throw new DesktopError('BAD_ARGS', `invalid language code "${bad}" — use codes like "eng", "chi_sim", "jpn" (or "auto")`);
   const installed: string[] = [];
   for (const l of parts) {
     if (l === 'eng') continue;

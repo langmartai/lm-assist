@@ -77,11 +77,23 @@ function systemTessdataDir(): string | null {
 
 const ensured = new Set<string>(); // in-memory cache of langs verified this process
 
+/** A safe tesseract language code — the ONLY shape allowed near path.join.
+ *  tesseract codes are lowercase ascii + digits + underscore (chi_sim, eng, osd).
+ *  This rejects any traversal / separators BEFORE `${lang}.traineddata` is built. */
+export const LANG_CODE_RE = /^[a-z0-9_]{1,32}$/;
+export function isValidLangCode(l: string): boolean {
+  return typeof l === 'string' && LANG_CODE_RE.test(l);
+}
+
 export interface EnsureResult { lang: string; available: boolean; source: 'present' | 'copied' | 'downloaded' | 'missing' }
 
 /** Ensure `<lang>.traineddata` is in LM_TESSDATA. Copy from system if present,
  *  else download from tessdata_fast when auto-install is on. Cached. */
 export async function ensureLang(lang: string): Promise<EnsureResult> {
+  // 🔴 Validate BEFORE any path.join — `lang` is caller-supplied and both the
+  // copy-from-system and the dest path derive from it; a value like "../../x"
+  // would otherwise read/write outside the tessdata dir.
+  if (!isValidLangCode(lang)) return { lang, available: false, source: 'missing' };
   fs.mkdirSync(LM_TESSDATA, { recursive: true });
   const dest = path.join(LM_TESSDATA, `${lang}.traineddata`);
   if (ensured.has(lang) || fs.existsSync(dest)) { ensured.add(lang); return { lang, available: true, source: 'present' }; }

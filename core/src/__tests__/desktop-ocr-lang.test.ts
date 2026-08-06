@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseOsdScript, localeLang, SCRIPT_TO_LANG, LOCALE_TO_LANG, KNOWN_LANGS } from '../desktop/ocr-lang';
+import { parseOsdScript, localeLang, isValidLangCode, ensureLang, SCRIPT_TO_LANG, LOCALE_TO_LANG, KNOWN_LANGS } from '../desktop/ocr-lang';
 
 /**
  * OCR language auto-detection maps + parsers (pure). The download/copy paths
@@ -36,4 +36,15 @@ test('localeLang maps $LANG to a tesseract code, prefix-fallback', (t) => {
 
 test('KNOWN_LANGS (auto-install allowlist) includes the detected langs + base', () => {
   for (const l of ['chi_sim', 'jpn', 'kor', 'rus', 'eng', 'osd']) assert.ok(KNOWN_LANGS.has(l), `${l} should be installable`);
+});
+
+test('isValidLangCode accepts real codes and rejects path traversal', () => {
+  for (const ok of ['eng', 'chi_sim', 'chi_tra', 'jpn', 'osd']) assert.ok(isValidLangCode(ok), ok);
+  for (const bad of ['../eng', '../../etc/passwd', 'a/b', 'a\\b', 'a b', 'a.b', '', 'ABC', 'x'.repeat(33)]) assert.ok(!isValidLangCode(bad), bad);
+});
+
+test('ensureLang refuses a traversal code without touching the filesystem', async () => {
+  const r = await ensureLang('../../../etc/shadow');
+  assert.strictEqual(r.available, false);
+  assert.strictEqual(r.source, 'missing');
 });
