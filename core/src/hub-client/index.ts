@@ -36,6 +36,8 @@ export interface HubClientOptions {
   assistWebPort?: number;
   /** Vibe Coder web (Vite) port - enables /vibe/* route */
   vibeCoderPort?: number;
+  /** Pluggable-UI host port - enables the /ui-*\/* route (see below) */
+  uiWebPort?: number;
   /** Auto-reconnect on disconnect */
   autoReconnect?: boolean;
   /** Reconnect delay in ms (doubles on each retry, max 30s) */
@@ -99,7 +101,7 @@ export class HubClient extends EventEmitter {
   private tcpListenerStarted = false;
   private sessionCacheSync: SessionCacheSync | null = null;
   private config: HubConfig;
-  private options: Required<Pick<HubClientOptions, 'hubUrl' | 'apiKey' | 'localApiPort' | 'autoReconnect' | 'reconnectDelay' | 'maxReconnectAttempts'>> & Pick<HubClientOptions, 'adminWebPort' | 'assistWebPort' | 'vibeCoderPort'>;
+  private options: Required<Pick<HubClientOptions, 'hubUrl' | 'apiKey' | 'localApiPort' | 'autoReconnect' | 'reconnectDelay' | 'maxReconnectAttempts'>> & Pick<HubClientOptions, 'adminWebPort' | 'assistWebPort' | 'vibeCoderPort' | 'uiWebPort'>;
   private status: HubClientStatus = {
     connected: false,
     authenticated: false,
@@ -130,6 +132,7 @@ export class HubClient extends EventEmitter {
       apiKey: options.apiKey || this.config.apiKey || '',
       localApiPort: options.localApiPort || (__dirname.includes('node_modules') ? 3100 : 3200),
       adminWebPort: options.adminWebPort || (process.env.ADMIN_WEB_PORT ? parseInt(process.env.ADMIN_WEB_PORT, 10) : undefined),
+      uiWebPort: options.uiWebPort || (process.env.UI_WEB_PORT ? parseInt(process.env.UI_WEB_PORT, 10) : undefined),
       assistWebPort: options.assistWebPort || (process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : undefined) || (__dirname.includes('node_modules') ? (savedPorts.assistWebPort || 3848) : 3948),
       vibeCoderPort: options.vibeCoderPort || (process.env.VIBE_CODER_PORT ? parseInt(process.env.VIBE_CODER_PORT, 10) : undefined),
       autoReconnect: options.autoReconnect ?? true,
@@ -218,6 +221,25 @@ export class HubClient extends EventEmitter {
           port: this.options.vibeCoderPort,
           stripPrefix: true,
           description: 'Vibe Coder (Vite)',
+        });
+      }
+      // Pluggable UIs (AUIS): the UI gateway relays each file request here as
+      // /ui-<uiId>/<path>. One route serves every UI on this host — the '/ui-' prefix is a
+      // prefix match, so 'ui-my-app' and 'ui-other' both land on uiWebPort.
+      //
+      // stripPrefix is FALSE on purpose: the '/ui-<uiId>' segment is how the local server
+      // knows WHICH UI is being asked for. Stripping it would make several UIs on one port
+      // indistinguishable.
+      //
+      // Nothing here grants access. The gateway has already authenticated the viewer,
+      // checked the UI's grant and minted a short-lived view token; this route only lets it
+      // fetch static files that already live on this machine.
+      if (this.options.uiWebPort) {
+        serviceRoutes.push({
+          pathPrefix: '/ui-',
+          port: this.options.uiWebPort,
+          stripPrefix: false,
+          description: 'Pluggable UI host (lmui)',
         });
       }
 
