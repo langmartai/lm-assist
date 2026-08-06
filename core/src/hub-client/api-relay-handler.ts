@@ -24,6 +24,15 @@ export interface ServiceRoute {
   stripPrefix: boolean;
   /** Human-readable description for logging */
   description: string;
+  /**
+   * Match pathPrefix as a raw string prefix rather than a path SEGMENT.
+   * Default (false) requires a segment boundary: '/admin' matches '/admin' or '/admin/x'
+   * but not '/administer'. The pluggable-UI route needs the opposite — a single '/ui-'
+   * route must serve '/ui-<uiId>/...' where the uiId is glued to the prefix, so there is
+   * no boundary between prefix and the rest. Without this, '/ui-hostdemo/index.html' fell
+   * through to the default local port and 404'd.
+   */
+  rawPrefix?: boolean;
 }
 
 export interface ApiRelayHandlerOptions {
@@ -148,7 +157,10 @@ export class ApiRelayHandler {
     const sorted = [...this.serviceRoutes].sort((a, b) => b.pathPrefix.length - a.pathPrefix.length);
 
     for (const route of sorted) {
-      if (normalizedPath === route.pathPrefix || normalizedPath.startsWith(route.pathPrefix + '/')) {
+      const matches = route.rawPrefix
+        ? normalizedPath.startsWith(route.pathPrefix)
+        : normalizedPath === route.pathPrefix || normalizedPath.startsWith(route.pathPrefix + '/');
+      if (matches) {
         let resolvedPath = requestPath;
         if (route.stripPrefix) {
           // Strip the prefix, keep the rest (including query string)

@@ -132,7 +132,7 @@ export class HubClient extends EventEmitter {
       apiKey: options.apiKey || this.config.apiKey || '',
       localApiPort: options.localApiPort || (__dirname.includes('node_modules') ? 3100 : 3200),
       adminWebPort: options.adminWebPort || (process.env.ADMIN_WEB_PORT ? parseInt(process.env.ADMIN_WEB_PORT, 10) : undefined),
-      uiWebPort: options.uiWebPort || (process.env.UI_WEB_PORT ? parseInt(process.env.UI_WEB_PORT, 10) : undefined),
+      uiWebPort: options.uiWebPort || (process.env.UI_WEB_PORT ? parseInt(process.env.UI_WEB_PORT, 10) : undefined) || savedPorts.uiWebPort,
       assistWebPort: options.assistWebPort || (process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : undefined) || (__dirname.includes('node_modules') ? (savedPorts.assistWebPort || 3848) : 3948),
       vibeCoderPort: options.vibeCoderPort || (process.env.VIBE_CODER_PORT ? parseInt(process.env.VIBE_CODER_PORT, 10) : undefined),
       autoReconnect: options.autoReconnect ?? true,
@@ -239,6 +239,7 @@ export class HubClient extends EventEmitter {
           pathPrefix: '/ui-',
           port: this.options.uiWebPort,
           stripPrefix: false,
+          rawPrefix: true, // '/ui-<uiId>' has no segment boundary after the prefix
           description: 'Pluggable UI host (lmui)',
         });
       }

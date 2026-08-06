@@ -237,11 +237,15 @@ export function saveHubConnectionConfig(updates: HubConnectionConfig): void {
  * Load persisted service ports from ~/.lm-assist/hub.json
  * Used by hub-client to discover assist web port without env vars
  */
-export function loadServicePorts(): { assistWebPort?: number; apiPort?: number } {
+export function loadServicePorts(): { assistWebPort?: number; apiPort?: number; uiWebPort?: number } {
   const config = loadHubConnectionConfig();
   return {
     assistWebPort: config.assistWebPort,
     apiPort: config.apiPort,
+    // Pluggable-UI host port. Persisted here rather than passed as an env var so the /ui-*
+    // route survives a restart — a route that only exists when someone remembers to export
+    // UI_WEB_PORT is a route that silently disappears.
+    uiWebPort: (config as any).uiWebPort,
   };
 }
 
