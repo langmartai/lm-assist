@@ -85,4 +85,10 @@ export function registerCoreStatusProviders(): void {
     const { getBus } = require('../bus') as typeof import('../bus');
     return getBus().statusReport();
   });
+
+  // Host resources — the machine's own disks + NICs (distinct from `fabric`, the
+  // lm-assist mesh). Cross-platform, no subprocess.
+  const { storageReport, networkReport } = require('./host-resources') as typeof import('./host-resources');
+  registerStatusProvider('storage', () => storageReport());
+  registerStatusProvider('network', () => networkReport());
 }

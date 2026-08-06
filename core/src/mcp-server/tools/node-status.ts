@@ -14,18 +14,25 @@ export const NODE_STATUS_TOOL_DEFS = [
     name: 'node_status',
     description:
       'General status of an lm-assist node — every subsystem in one call: services (uptime), hub ' +
-      'connection, fabric/network peer links (state, direct vs relay vs legacy, RTT), and any other ' +
-      'registered provider. Pass section="network" (alias of "fabric") for the full peer-link table, ' +
+      'connection, STORAGE (disk volumes: total/used/free per mount), NETWORK (the host\'s own NICs + ' +
+      'IPs), the fabric MESH peer-links, and any other registered provider. Pass section="storage" for ' +
+      'disks, section="network" for the host IPs/interfaces, section="fabric" (aka "peers") for the mesh, ' +
       'or another section name for its detail. Pass node=<host> to read another node. Read-only.',
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        section: { type: 'string', description: 'Optional subsystem: "network"/"fabric", "hub", "services", … Omit for the all-subsystem summary.' },
+        section: { type: 'string', description: 'Optional subsystem: "storage"/"disk", "network"/"nics" (host IPs), "fabric"/"peers" (mesh), "hub", "services", … Omit for the all-subsystem summary.' },
       },
     },
   },
 ];
+
+/** Section aliases → provider name. "network" now means the HOST's NICs (was an
+ *  alias for "fabric"); the mesh is reached via "fabric"/"peers"/"mesh". */
+const SECTION_ALIAS: Record<string, string> = {
+  peers: 'fabric', mesh: 'fabric', disk: 'storage', disks: 'storage', nic: 'network', nics: 'network', interfaces: 'network',
+};
 
 interface SectionReport { verdict: string; summary: string; detail?: unknown }
 
@@ -42,7 +49,7 @@ export function formatStatusSections(sections: Record<string, SectionReport>, se
 export const NODE_STATUS_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   node_status: async (args) => {
     const raw = typeof args.section === 'string' ? args.section.trim().toLowerCase() : '';
-    const section = raw === 'network' ? 'fabric' : raw || undefined;
+    const section = raw ? (SECTION_ALIAS[raw] ?? raw) : undefined;
     try {
       const res = await workerGet<{ sections?: Record<string, SectionReport> }>(
         `/status/full${section ? `?section=${encodeURIComponent(section)}` : ''}`,
