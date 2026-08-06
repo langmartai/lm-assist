@@ -578,6 +578,38 @@ function Cmd-Window($args_) {
   return @{ action = $action; hwnd = [long]$hwnd }
 }
 
+function Cmd-Clipboard($args_) {
+  $mode = [string]$args_.mode
+  if ($mode -eq 'set') {
+    $text = [string]$args_.text
+    # Set-Clipboard/Get-Clipboard run the clipboard ops on their own STA thread,
+    # so they work from this (MTA) helper without declaring -STA at spawn.
+    Set-Clipboard -Value $text
+    return @{ bytes = [System.Text.Encoding]::UTF8.GetByteCount($text) }
+  }
+  # get (default): -Raw returns the full multi-line string ($null when empty/non-text).
+  $t = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+  if ($null -eq $t) { $t = '' }
+  return @{ text = [string]$t }
+}
+
+function Cmd-Processes($args_) {
+  $q = [string]$args_.query
+  $limit = [int]$args_.limit
+  if ($limit -le 0) { $limit = 50 }
+  # Heaviest first (match the X11 backend's rss-desc ordering) so a capped list
+  # keeps the biggest processes. WorkingSet64 = resident memory. cpu/user are
+  # omitted on Windows: Get-Process reports total CPU *seconds* (not the % the
+  # contract means) and the owner needs admin — both are optional in ProcessInfo.
+  $procs = Get-Process | Sort-Object -Property WorkingSet64 -Descending
+  if ($q) { $procs = @($procs | Where-Object { $_.ProcessName -like "*$q*" }) }
+  $rows = @()
+  foreach ($p in ($procs | Select-Object -First $limit)) {
+    $rows += @{ pid = [int]$p.Id; name = [string]$p.ProcessName; memMiB = [math]::Round($p.WorkingSet64 / 1MB, 1) }
+  }
+  return @{ processes = @($rows) }
+}
+
 # ── main loop: one JSON line in, one JSON line out ───────────────────────────
 
 # Startup hello so the backend can verify liveness + session without a request.
@@ -606,6 +638,8 @@ while ($true) {
       'keyseq'    { Cmd-KeySeq $a }
       'getcursor' { Cmd-GetCursor $a }
       'window'    { Cmd-Window $a }
+      'clipboard' { Cmd-Clipboard $a }
+      'processes' { Cmd-Processes $a }
       default     { throw "BAD_ARGS: unknown cmd '$($req.cmd)'" }
     }
     $resp = @{ id = $reqId; ok = $true; data = $data } | ConvertTo-Json -Compress -Depth 8

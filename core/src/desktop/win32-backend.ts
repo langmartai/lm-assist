@@ -40,6 +40,10 @@ import {
   WindowInfo,
   WindowState,
   CaptureRequest,
+  ClipboardRequest,
+  ClipboardResult,
+  ProcessInfo,
+  ProcessQuery,
 } from './types';
 import {
   DESKTOP_TMP_DIR,
@@ -571,6 +575,26 @@ export class Win32Backend implements DesktopBackend {
       note = 'action ran but re-query failed — outcome UNVERIFIED.';
     }
     return { window: String(hwnd), action: req.action, verified, resulting, note };
+  }
+
+  async clipboard(req: ClipboardRequest): Promise<ClipboardResult> {
+    await this.requireInteractive();
+    if (req.mode === 'set') {
+      const d = await this.helper.request<{ bytes?: number }>('clipboard', { mode: 'set', text: req.text ?? '' }, INPUT_TIMEOUT_MS);
+      return { bytes: d.bytes };
+    }
+    const d = await this.helper.request<{ text?: string }>('clipboard', { mode: 'get' }, INPUT_TIMEOUT_MS);
+    return { text: d.text ?? '' };
+  }
+
+  async processes(req: ProcessQuery): Promise<ProcessInfo[]> {
+    await this.requireInteractive();
+    // PowerShell 5.1's ConvertTo-Json collapses a single-element array to an
+    // object — coerce so a one-row list is still an array.
+    const d = await this.helper.request<{ processes?: ProcessInfo[] | ProcessInfo }>('processes', { query: req.query ?? '', limit: Math.max(1, req.limit) }, STATUS_TIMEOUT_MS);
+    const raw = d?.processes;
+    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    return list.slice(0, Math.max(1, req.limit));
   }
 }
 
