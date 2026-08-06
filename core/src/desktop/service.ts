@@ -446,7 +446,11 @@ function tesseractBin(): string {
 
 function runTesseract(pngPath: string, lang: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(tesseractBin(), [pngPath, 'stdout', '-l', lang, '--psm', '11', '--tessdata-dir', LM_TESSDATA, 'tsv'], { timeout: OCR_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, encoding: 'utf-8' }, (error, stdout) => {
+    // TSV via the PARAMETER (-c tessedit_create_tsv=1), NOT the `tsv` config file:
+    // with --tessdata-dir pointing at our user dir, tesseract can't find the `tsv`
+    // config (it lives in the system tessdata's configs/), which on Windows fails
+    // with "Can't open tsv" and emits no TSV (0 lines). The -c param needs no file.
+    execFile(tesseractBin(), [pngPath, 'stdout', '-l', lang, '--psm', '11', '--tessdata-dir', LM_TESSDATA, '-c', 'tessedit_create_tsv=1'], { timeout: OCR_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, encoding: 'utf-8' }, (error, stdout) => {
       if (error && !stdout) {
         const code = (error as { code?: string }).code;
         if (code === 'ENOENT') return reject(new DesktopError('TOOL_MISSING', 'tesseract is required for text targeting (Linux: sudo apt-get install tesseract-ocr; Windows: choco install tesseract, then restart Core)'));
