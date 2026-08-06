@@ -34,6 +34,7 @@ import {
   WindowInfo,
 } from './types';
 import { DESKTOP_TMP_DIR } from './config';
+import { autoDetectLang, ensureBase, ensureLang, LM_TESSDATA } from './ocr-lang';
 import { X11Backend } from './x11-backend';
 import { Win32Backend } from './win32-backend';
 import {
@@ -443,9 +444,9 @@ function tesseractBin(): string {
   return 'tesseract';
 }
 
-function runTesseract(pngPath: string): Promise<string> {
+function runTesseract(pngPath: string, lang: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(tesseractBin(), [pngPath, 'stdout', '--psm', '11', 'tsv'], { timeout: OCR_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, encoding: 'utf-8' }, (error, stdout) => {
+    execFile(tesseractBin(), [pngPath, 'stdout', '-l', lang, '--psm', '11', '--tessdata-dir', LM_TESSDATA, 'tsv'], { timeout: OCR_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, encoding: 'utf-8' }, (error, stdout) => {
       if (error && !stdout) {
         const code = (error as { code?: string }).code;
         if (code === 'ENOENT') return reject(new DesktopError('TOOL_MISSING', 'tesseract is required for text targeting (Linux: sudo apt-get install tesseract-ocr; Windows: choco install tesseract, then restart Core)'));
@@ -456,11 +457,40 @@ function runTesseract(pngPath: string): Promise<string> {
   });
 }
 
+/** Resolve the requested `lang` arg into (a) the tesseract -l string and (b) a
+ *  note, ensuring every needed pack is present (auto-detect + auto-install). */
+async function resolveOcrLang(reqRaw: string | undefined, pngPath: string): Promise<{ lang: string; note: string }> {
+  const req = (reqRaw ?? 'auto').trim() || 'auto';
+  if (req === 'auto') {
+    const d = await autoDetectLang(tesseractBin(), pngPath);
+    const lang = d.lang === 'eng' ? 'eng' : `${d.lang}+eng`;
+    let note = `lang=${lang} (auto, via ${d.via})`;
+    if (d.install?.source === 'downloaded') note += ` — installed ${d.install.lang}.traineddata`;
+    else if (d.install && !d.install.available) note += ` — ${d.install.lang} pack unavailable, using eng`;
+    return { lang, note };
+  }
+  if (req === 'eng' || req === 'off') { await ensureBase(); return { lang: 'eng', note: 'lang=eng' }; }
+  // Explicit code(s), e.g. "chi_sim" or "jpn+eng".
+  await ensureBase();
+  const parts = req.split('+').map((s) => s.trim()).filter(Boolean);
+  const installed: string[] = [];
+  for (const l of parts) {
+    if (l === 'eng') continue;
+    const r = await ensureLang(l);
+    if (r.source === 'downloaded') installed.push(l);
+    if (!r.available) return { lang: 'eng', note: `lang ${l} unavailable (auto-install off or unknown) — using eng` };
+  }
+  const lang = parts.includes('eng') ? parts.join('+') : `${parts.join('+')}+eng`;
+  return { lang, note: `lang=${lang}${installed.length ? ` — installed ${installed.join(', ')}` : ''}` };
+}
+
 export interface FindTextArgs {
   query?: string;
   region?: [number, number, number, number];
   window?: string;
   min_confidence?: number;
+  /** 'auto' (default: OSD/locale detect + auto-install), 'eng', or a tesseract code like 'chi_sim'. */
+  lang?: string;
 }
 
 export interface FindTextResult {
@@ -469,6 +499,8 @@ export interface FindTextResult {
   total: number;
   truncated: boolean;
   matches: OcrMatch[];
+  /** The tesseract -l string actually used + how it was chosen / installed. */
+  lang: string;
 }
 
 /** OCR the screen/region/window and return recognized text lines in desktop px. */
@@ -485,7 +517,8 @@ export async function desktopFindText(args: FindTextArgs): Promise<FindTextResul
   const outPath = path.join(DESKTOP_TMP_DIR, `ocr-${process.pid}-${Date.now()}.png`);
   try {
     fs.writeFileSync(outPath, raw.png);
-    const tsv = await runTesseract(outPath);
+    const resolved = await resolveOcrLang(args.lang, outPath);
+    const tsv = await runTesseract(outPath, resolved.lang);
     const lines = parseTsvLines(tsv, minConf);
     let matches: OcrMatch[] = lines.map((l) => ({
       text: l.text,
@@ -498,7 +531,7 @@ export async function desktopFindText(args: FindTextArgs): Promise<FindTextResul
       matches = matches.filter((m) => m.text.toLowerCase().includes(q));
     }
     const total = matches.length;
-    return { screen: raw.screen, capture: raw.capture, total, truncated: total > MAX_TEXT_MATCHES, matches: matches.slice(0, MAX_TEXT_MATCHES) };
+    return { screen: raw.screen, capture: raw.capture, total, truncated: total > MAX_TEXT_MATCHES, matches: matches.slice(0, MAX_TEXT_MATCHES), lang: resolved.note };
   } finally {
     try { fs.unlinkSync(outPath); } catch { /* best-effort */ }
   }
@@ -512,18 +545,19 @@ export interface ClickTextArgs {
   double?: boolean;
   window?: string;
   screenshot_after_ms?: number;
+  lang?: string;
 }
 
 /** Find `text` on screen (fresh OCR) and click its center — atomic, no stale coords. */
 export async function desktopClickText(args: ClickTextArgs): Promise<{ clicked: { text: string; center: [number, number] }; candidates: number; index: number; screenshot?: ScreenshotResult }> {
   if (!args.text || typeof args.text !== 'string' || !args.text.trim()) throw new DesktopError('BAD_ARGS', 'text is required (the on-screen label to click)');
   const exact = args.match === 'exact';
-  const found = await desktopFindText({ query: exact ? undefined : args.text, window: args.window });
+  const found = await desktopFindText({ query: exact ? undefined : args.text, window: args.window, lang: args.lang });
   const want = args.text.trim().toLowerCase();
   const candidates = exact ? found.matches.filter((m) => m.text.trim().toLowerCase() === want) : found.matches;
   if (!candidates.length) {
     // Near-misses: what text WAS recognized (unfiltered), so the caller can adjust.
-    const all = await desktopFindText({ window: args.window });
+    const all = await desktopFindText({ window: args.window, lang: args.lang });
     const near = all.matches.slice(0, 8).map((m) => `"${m.text}"`).join(', ');
     throw new DesktopError('BAD_ARGS', `no on-screen text ${exact ? 'exactly matched' : 'contained'} "${args.text}". Recognized nearby: ${near || '(nothing legible)'}`);
   }

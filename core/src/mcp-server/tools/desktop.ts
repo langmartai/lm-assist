@@ -186,6 +186,7 @@ export const desktopFindTextToolDef = {
       region: { type: 'array' as const, items: { type: 'number' as const }, description: 'OCR only this rectangle [x1,y1,x2,y2] (desktop px). Default: whole screen.' },
       window: { type: 'string' as const, description: 'OCR this window id (from desktop_windows) instead of the screen.' },
       min_confidence: { type: 'number' as const, description: 'Drop text below this OCR confidence 0-100 (default 50).' },
+      lang: { type: 'string' as const, description: 'Default "auto": detect the script (Chinese/Japanese/Cyrillic/…) and auto-install the language pack. Or force a tesseract code like "chi_sim", "jpn", or "eng".' },
     },
   },
 };
@@ -206,6 +207,7 @@ export const desktopClickTextToolDef = {
       double: { type: 'boolean' as const, description: 'Double-click instead of single (left only).' },
       window: { type: 'string' as const, description: 'Scope OCR to this window id and activate it first.' },
       screenshot_after_ms: { type: 'number' as const, description: 'After clicking, wait this many ms and return a screenshot (0-10000).' },
+      lang: { type: 'string' as const, description: 'OCR language: "auto" (default, detect + auto-install) or a code like "chi_sim". Needed to click non-English labels.' },
     },
     required: ['text'],
   },
@@ -406,15 +408,15 @@ async function handleWaitFor(args: Record<string, unknown>): Promise<McpToolResu
 }
 
 interface OcrMatchRow { text: string; confidence: number; bounds: { x: number; y: number; width: number; height: number }; center: [number, number] }
-interface FindTextData { screen: { width: number; height: number }; capture: { x: number; y: number; width: number; height: number }; total: number; truncated: boolean; matches: OcrMatchRow[] }
+interface FindTextData { screen: { width: number; height: number }; capture: { x: number; y: number; width: number; height: number }; total: number; truncated: boolean; matches: OcrMatchRow[]; lang: string }
 async function handleFindText(args: Record<string, unknown>): Promise<McpToolResult> {
   try {
     const resp = await workerPostRaw('/desktop/find-text', {
-      query: args.query, region: args.region, window: args.window, min_confidence: args.min_confidence,
+      query: args.query, region: args.region, window: args.window, min_confidence: args.min_confidence, lang: args.lang,
     });
     if (resp.success === false) return err(`desktop_find_text failed: ${String(resp.error || 'unknown')}${resp.code ? ` (${String(resp.code)})` : ''}`);
     const d = (resp.data || {}) as FindTextData;
-    const lines = [`${d.total} text line(s)${d.truncated ? ' (capped)' : ''}${args.query ? ` matching "${String(args.query)}"` : ''} — center is where to click:`];
+    const lines = [`${d.total} text line(s)${d.truncated ? ' (capped)' : ''}${args.query ? ` matching "${String(args.query)}"` : ''} [${d.lang}] — center is where to click:`];
     for (const m of d.matches) lines.push(`  [${String(m.confidence).padStart(3)}%] (${m.center[0]},${m.center[1]})  "${m.text}"`);
     return textResult(lines.join('\n'));
   } catch (e) {
@@ -426,7 +428,7 @@ interface ClickTextData { clicked: { text: string; center: [number, number] }; c
 async function handleClickText(args: Record<string, unknown>): Promise<McpToolResult> {
   try {
     const resp = await workerPostRaw('/desktop/click-text', {
-      text: args.text, index: args.index, match: args.match, button: args.button, double: args.double, window: args.window, screenshot_after_ms: args.screenshot_after_ms,
+      text: args.text, index: args.index, match: args.match, button: args.button, double: args.double, window: args.window, screenshot_after_ms: args.screenshot_after_ms, lang: args.lang,
     });
     if (resp.success === false) return err(`desktop_click_text failed: ${String(resp.error || 'unknown')}${resp.code ? ` (${String(resp.code)})` : ''}`);
     const d = (resp.data || {}) as ClickTextData;

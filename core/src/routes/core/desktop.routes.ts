@@ -198,6 +198,7 @@ export function createDesktopRoutes(_ctx: RouteContext): RouteHandler[] {
             region: region4,
             window: typeof b.window === 'string' ? b.window : undefined,
             min_confidence: num(b.min_confidence),
+            lang: typeof b.lang === 'string' ? b.lang : undefined,
           }) };
         } catch (e) {
           return fail(e);
@@ -218,6 +219,7 @@ export function createDesktopRoutes(_ctx: RouteContext): RouteHandler[] {
             double: typeof b.double === 'boolean' ? b.double : undefined,
             window: typeof b.window === 'string' ? b.window : undefined,
             screenshot_after_ms: num(b.screenshot_after_ms),
+            lang: typeof b.lang === 'string' ? b.lang : undefined,
           }) };
         } catch (e) {
           return fail(e);

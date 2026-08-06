@@ -57,7 +57,7 @@ test('all ten tools are registered, scoped, and flow into the expanded surface',
 });
 
 test('desktop_find_text lists recognized lines with their click centers', async () => {
-  stubFetch({ success: true, data: { screen: { width: 3840, height: 2160 }, capture: { x: 0, y: 0, width: 3840, height: 2160 }, total: 2, truncated: false, matches: [
+  stubFetch({ success: true, data: { screen: { width: 3840, height: 2160 }, capture: { x: 0, y: 0, width: 3840, height: 2160 }, total: 2, truncated: false, lang: 'lang=eng (auto, via osd)', matches: [
     { text: 'Compose', confidence: 95, bounds: { x: 40, y: 170, width: 90, height: 20 }, center: [85, 180] },
     { text: 'Inbox', confidence: 92, bounds: { x: 40, y: 220, width: 60, height: 18 }, center: [70, 229] },
   ] } });
@@ -65,6 +65,7 @@ test('desktop_find_text lists recognized lines with their click centers', async 
   assert.match(lastUrl, /\/desktop\/find-text$/);
   assert.deepStrictEqual(lastBody, { query: 'compose' });
   assert.match(r.content[0].text as string, /\(85,180\)\s+"Compose"/);
+  assert.match(r.content[0].text as string, /lang=eng/);
 });
 
 test('desktop_click_text reports what it clicked, and can return a verify image', async () => {
