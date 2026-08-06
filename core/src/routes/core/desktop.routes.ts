@@ -26,6 +26,8 @@ import {
   desktopClipboard,
   desktopProcess,
   desktopWaitFor,
+  desktopFindText,
+  desktopClickText,
   type ScreenshotArgs,
   type InputArgs,
   type WindowArgs,
@@ -177,6 +179,45 @@ export function createDesktopRoutes(_ctx: RouteContext): RouteHandler[] {
             app: typeof b.app === 'string' ? b.app : undefined,
             state: typeof b.state === 'string' ? b.state : undefined,
             timeout_ms: num(b.timeout_ms),
+          }) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/desktop\/find-text$/,
+      handler: async (req) => {
+        try {
+          const b = (req.body ?? {}) as Record<string, unknown>;
+          const region4 = Array.isArray(b.region) && b.region.length === 4 && b.region.every((n) => Number.isFinite(Number(n)))
+            ? (b.region.map((n) => Math.round(Number(n))) as [number, number, number, number]) : undefined;
+          return { success: true, data: await desktopFindText({
+            query: typeof b.query === 'string' ? b.query : undefined,
+            region: region4,
+            window: typeof b.window === 'string' ? b.window : undefined,
+            min_confidence: num(b.min_confidence),
+          }) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/desktop\/click-text$/,
+      handler: async (req) => {
+        try {
+          const b = (req.body ?? {}) as Record<string, unknown>;
+          return { success: true, data: await desktopClickText({
+            text: typeof b.text === 'string' ? b.text : String(b.text ?? ''),
+            index: num(b.index),
+            match: typeof b.match === 'string' ? b.match : undefined,
+            button: typeof b.button === 'string' ? b.button : undefined,
+            double: typeof b.double === 'boolean' ? b.double : undefined,
+            window: typeof b.window === 'string' ? b.window : undefined,
+            screenshot_after_ms: num(b.screenshot_after_ms),
           }) };
         } catch (e) {
           return fail(e);

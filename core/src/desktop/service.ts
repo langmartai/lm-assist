@@ -14,6 +14,9 @@
  */
 
 import sharp from 'sharp';
+import { execFile } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   DesktopBackend,
   DesktopError,
@@ -22,6 +25,7 @@ import {
   DisplayInfo,
   InputRequest,
   InputResult,
+  OcrMatch,
   ProcessInfo,
   Rect,
   ScrollDirection,
@@ -29,6 +33,7 @@ import {
   WindowActionResult,
   WindowInfo,
 } from './types';
+import { DESKTOP_TMP_DIR } from './config';
 import { X11Backend } from './x11-backend';
 import { Win32Backend } from './win32-backend';
 import {
@@ -378,6 +383,164 @@ export async function desktopWaitFor(args: WaitForArgs): Promise<{ found: boolea
     if (Date.now() - started >= timeout) return { found: false, waitedMs: Date.now() - started, window: null };
     await new Promise((r) => setTimeout(r, 400));
   }
+}
+
+// ─── OCR-anchored text targeting (find_text / click_text) ──────────────────────
+
+export const MAX_TEXT_MATCHES = 60;
+const OCR_TIMEOUT_MS = 20_000;
+
+/** One line parsed from tesseract tsv, in IMAGE pixels (pre coordinate-mapping). */
+interface TsvLine { text: string; conf: number; left: number; top: number; width: number; height: number }
+
+/**
+ * Parse `tesseract … tsv` output into text LINES (a label/menu item is a line,
+ * not one word). Pure + exported for tests. tsv columns:
+ *   level page block par line word left top width height conf text
+ * Words (level 5) are grouped by (block,par,line); the line box is the union of
+ * its word boxes and its confidence the mean of theirs. Words below minConf drop.
+ */
+export function parseTsvLines(tsv: string, minConf: number): TsvLine[] {
+  const groups = new Map<string, { texts: string[]; confs: number[]; l: number; t: number; r: number; b: number }>();
+  const order: string[] = [];
+  for (const raw of tsv.split('\n')) {
+    const c = raw.split('\t');
+    if (c.length < 12 || c[0] === 'level' || c[0] !== '5') continue; // level 5 = word
+    const conf = parseFloat(c[10]);
+    const text = c[11];
+    if (!text || !text.trim() || !Number.isFinite(conf) || conf < minConf) continue;
+    const left = parseInt(c[6], 10), top = parseInt(c[7], 10), w = parseInt(c[8], 10), h = parseInt(c[9], 10);
+    if (![left, top, w, h].every(Number.isFinite)) continue;
+    const key = `${c[2]}.${c[3]}.${c[4]}`; // block.par.line
+    let g = groups.get(key);
+    if (!g) { g = { texts: [], confs: [], l: left, t: top, r: left + w, b: top + h }; groups.set(key, g); order.push(key); }
+    g.texts.push(text);
+    g.confs.push(conf);
+    g.l = Math.min(g.l, left); g.t = Math.min(g.t, top); g.r = Math.max(g.r, left + w); g.b = Math.max(g.b, top + h);
+  }
+  return order.map((k) => {
+    const g = groups.get(k)!;
+    return {
+      text: g.texts.join(' '),
+      conf: Math.round(g.confs.reduce((a, b) => a + b, 0) / g.confs.length),
+      left: g.l, top: g.t, width: g.r - g.l, height: g.b - g.t,
+    };
+  });
+}
+
+/** Resolve the tesseract binary: PATH first, then the standard Windows install
+ *  dir (choco/UB-Mannheim land it there, but the running Core may predate the
+ *  PATH update). */
+function tesseractBin(): string {
+  if (process.platform === 'win32') {
+    for (const p of ['C:\\Program Files\\Tesseract-OCR\\tesseract.exe', 'C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe']) {
+      try { if (fs.existsSync(p)) return p; } catch { /* skip */ }
+    }
+  }
+  return 'tesseract';
+}
+
+function runTesseract(pngPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(tesseractBin(), [pngPath, 'stdout', '--psm', '11', 'tsv'], { timeout: OCR_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, encoding: 'utf-8' }, (error, stdout) => {
+      if (error && !stdout) {
+        const code = (error as { code?: string }).code;
+        if (code === 'ENOENT') return reject(new DesktopError('TOOL_MISSING', 'tesseract is required for text targeting (Linux: sudo apt-get install tesseract-ocr; Windows: choco install tesseract, then restart Core)'));
+        return reject(new DesktopError('CAPTURE_FAILED', `tesseract failed: ${error.message}`));
+      }
+      resolve(stdout || '');
+    });
+  });
+}
+
+export interface FindTextArgs {
+  query?: string;
+  region?: [number, number, number, number];
+  window?: string;
+  min_confidence?: number;
+}
+
+export interface FindTextResult {
+  screen: { width: number; height: number };
+  capture: Rect;
+  total: number;
+  truncated: boolean;
+  matches: OcrMatch[];
+}
+
+/** OCR the screen/region/window and return recognized text lines in desktop px. */
+export async function desktopFindText(args: FindTextArgs): Promise<FindTextResult> {
+  let region: { x1: number; y1: number; x2: number; y2: number } | undefined;
+  if (args.region) {
+    const [x1, y1, x2, y2] = args.region;
+    if (![x1, y1, x2, y2].every(Number.isInteger) || x2 <= x1 || y2 <= y1) throw new DesktopError('BAD_ARGS', 'region must be four ints [x1,y1,x2,y2] with x1<x2,y1<y2');
+    region = { x1, y1, x2, y2 };
+  }
+  const minConf = clamp(args.min_confidence ?? 50, 0, 100);
+  const raw = await backend().capture({ region, window: args.window, cursor: false });
+  fs.mkdirSync(DESKTOP_TMP_DIR, { recursive: true });
+  const outPath = path.join(DESKTOP_TMP_DIR, `ocr-${process.pid}-${Date.now()}.png`);
+  try {
+    fs.writeFileSync(outPath, raw.png);
+    const tsv = await runTesseract(outPath);
+    const lines = parseTsvLines(tsv, minConf);
+    let matches: OcrMatch[] = lines.map((l) => ({
+      text: l.text,
+      confidence: l.conf,
+      bounds: { x: raw.capture.x + l.left, y: raw.capture.y + l.top, width: l.width, height: l.height },
+      center: [raw.capture.x + l.left + Math.round(l.width / 2), raw.capture.y + l.top + Math.round(l.height / 2)],
+    }));
+    if (args.query && args.query.trim()) {
+      const q = args.query.trim().toLowerCase();
+      matches = matches.filter((m) => m.text.toLowerCase().includes(q));
+    }
+    const total = matches.length;
+    return { screen: raw.screen, capture: raw.capture, total, truncated: total > MAX_TEXT_MATCHES, matches: matches.slice(0, MAX_TEXT_MATCHES) };
+  } finally {
+    try { fs.unlinkSync(outPath); } catch { /* best-effort */ }
+  }
+}
+
+export interface ClickTextArgs {
+  text: string;
+  index?: number;
+  match?: string;
+  button?: string;
+  double?: boolean;
+  window?: string;
+  screenshot_after_ms?: number;
+}
+
+/** Find `text` on screen (fresh OCR) and click its center — atomic, no stale coords. */
+export async function desktopClickText(args: ClickTextArgs): Promise<{ clicked: { text: string; center: [number, number] }; candidates: number; index: number; screenshot?: ScreenshotResult }> {
+  if (!args.text || typeof args.text !== 'string' || !args.text.trim()) throw new DesktopError('BAD_ARGS', 'text is required (the on-screen label to click)');
+  const exact = args.match === 'exact';
+  const found = await desktopFindText({ query: exact ? undefined : args.text, window: args.window });
+  const want = args.text.trim().toLowerCase();
+  const candidates = exact ? found.matches.filter((m) => m.text.trim().toLowerCase() === want) : found.matches;
+  if (!candidates.length) {
+    // Near-misses: what text WAS recognized (unfiltered), so the caller can adjust.
+    const all = await desktopFindText({ window: args.window });
+    const near = all.matches.slice(0, 8).map((m) => `"${m.text}"`).join(', ');
+    throw new DesktopError('BAD_ARGS', `no on-screen text ${exact ? 'exactly matched' : 'contained'} "${args.text}". Recognized nearby: ${near || '(nothing legible)'}`);
+  }
+  const index = clamp(args.index ?? 0, 0, candidates.length - 1);
+  const target = candidates[index];
+  const button = args.button === 'right' ? 'right_click' : args.button === 'middle' ? 'middle_click' : args.double ? 'double_click' : 'left_click';
+  return withWriteLock(async () => {
+    const b = backend();
+    if (args.window) {
+      await b.windowAction({ window: args.window, action: 'activate' });
+      await new Promise((r) => setTimeout(r, ACTIVATE_SETTLE_MS));
+    }
+    await b.input({ action: button as DesktopInputAction, coordinate: target.center });
+    let screenshot: ScreenshotResult | undefined;
+    if (args.screenshot_after_ms !== undefined) {
+      await new Promise((r) => setTimeout(r, clamp(args.screenshot_after_ms ?? 0, 0, 10_000)));
+      screenshot = await desktopScreenshot({ maxPx: DEFAULT_MAX_PX, cursor: true });
+    }
+    return { clicked: { text: target.text, center: target.center }, candidates: candidates.length, index, screenshot };
+  });
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

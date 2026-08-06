@@ -227,6 +227,18 @@ export interface ProcessInfo {
   /** Owning user, when reported. */
   user?: string;
 }
+/** One OCR-recognized text line with its on-screen location (desktop pixels). */
+export interface OcrMatch {
+  /** The recognized line text. */
+  text: string;
+  /** Mean word confidence 0-100. */
+  confidence: number;
+  /** Line bounding box in DESKTOP pixels. */
+  bounds: Rect;
+  /** Center of the box in desktop pixels — the point to click. */
+  center: [number, number];
+}
+
 /** Filter/bound for a process query. */
 export interface ProcessQuery {
   /** Case-insensitive substring matched against the process name (find). */

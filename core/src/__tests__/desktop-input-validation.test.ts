@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateInput } from '../desktop/service';
+import { validateInput, parseTsvLines } from '../desktop/service';
 import { DesktopError } from '../desktop/types';
 
 /**
@@ -62,4 +62,22 @@ test('cursor_position needs nothing and rejects text', () => {
   const ok = validateInput({ action: 'cursor_position' });
   assert.strictEqual(ok.action, 'cursor_position');
   assert.throws(() => validateInput({ action: 'cursor_position', text: 'x' }), /does not accept text/);
+});
+
+test('parseTsvLines groups words into lines with union boxes, mean conf, conf filter', () => {
+  // tesseract tsv: level page block par line word left top width height conf text
+  const tsv = [
+    'level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext',
+    '5\t1\t1\t1\t1\t1\t100\t50\t40\t12\t92\tSend',
+    '5\t1\t1\t1\t1\t2\t145\t50\t30\t12\t88\tmail',   // same block.par.line -> joined
+    '5\t1\t2\t1\t1\t1\t100\t80\t60\t12\t20\tInbox',  // below minConf -> dropped
+    '5\t1\t3\t1\t1\t1\t400\t80\t50\t14\t95\tCompose',
+  ].join('\n');
+  const lines = parseTsvLines(tsv, 50);
+  assert.strictEqual(lines.length, 2);
+  assert.strictEqual(lines[0].text, 'Send mail');
+  assert.strictEqual(lines[0].left, 100);          // union left
+  assert.strictEqual(lines[0].width, 75);          // 145+30-100
+  assert.strictEqual(lines[0].conf, 90);           // mean(92,88)
+  assert.strictEqual(lines[1].text, 'Compose');
 });

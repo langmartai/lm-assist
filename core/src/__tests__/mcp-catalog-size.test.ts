@@ -154,7 +154,14 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 //   (cross-platform desktop control), not re-inlined boilerplate, so the guard's
 //   real target — the ~90 KB re-inlining regression — is untouched; the
 //   shared-boilerplate test above still passes.
-const CATALOG_BUDGET_BYTES = 290_000;
+//
+// MEASURED 2026-08-06, desktop family grown to 10 tools (added clipboard, process,
+// wait_for, find_text, click_text — utility + OCR text-targeting): 266 tools,
+// catalogue 290,694 B. A deliberate +5,000 B raise (the five new tools ~5,700 B
+// of real capability, descriptions already trimmed to trigger words). New budget
+// 295,000 B -> ~4,300 B headroom. Still additive new tools, not re-inlined
+// boilerplate; the shared-boilerplate guard above still passes.
+const CATALOG_BUDGET_BYTES = 295_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};

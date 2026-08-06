@@ -32,9 +32,9 @@ afterEach(() => {
   lastBody = null;
 });
 
-test('all eight tools are registered, scoped, and flow into the expanded surface', () => {
+test('all ten tools are registered, scoped, and flow into the expanded surface', () => {
   const names = DESKTOP_TOOL_DEFS.map((t) => t.name);
-  assert.deepStrictEqual(names.sort(), ['desktop_clipboard', 'desktop_input', 'desktop_process', 'desktop_screenshot', 'desktop_status', 'desktop_wait_for', 'desktop_window', 'desktop_windows']);
+  assert.deepStrictEqual(names.sort(), ['desktop_click_text', 'desktop_clipboard', 'desktop_find_text', 'desktop_input', 'desktop_process', 'desktop_screenshot', 'desktop_status', 'desktop_wait_for', 'desktop_window', 'desktop_windows']);
   for (const n of names) {
     assert.ok(n in DESKTOP_HANDLERS, `${n} has no handler`);
     assert.ok(n in TOOL_SCOPES, `${n} has no scope`);
@@ -47,11 +47,44 @@ test('all eight tools are registered, scoped, and flow into the expanded surface
   assert.strictEqual(TOOL_SCOPES.desktop_screenshot, 'read');
   assert.strictEqual(TOOL_SCOPES.desktop_process, 'read');
   assert.strictEqual(TOOL_SCOPES.desktop_wait_for, 'read');
+  assert.strictEqual(TOOL_SCOPES.desktop_find_text, 'read');
   assert.strictEqual(TOOL_SCOPES.desktop_window, 'write');
   assert.strictEqual(TOOL_SCOPES.desktop_input, 'write');
   assert.strictEqual(TOOL_SCOPES.desktop_clipboard, 'write');
+  assert.strictEqual(TOOL_SCOPES.desktop_click_text, 'write');
   // and the boot-time guard is satisfied (this is what crashes Core if a scope is missing)
   assert.doesNotThrow(() => assertScopesCoverTools());
+});
+
+test('desktop_find_text lists recognized lines with their click centers', async () => {
+  stubFetch({ success: true, data: { screen: { width: 3840, height: 2160 }, capture: { x: 0, y: 0, width: 3840, height: 2160 }, total: 2, truncated: false, matches: [
+    { text: 'Compose', confidence: 95, bounds: { x: 40, y: 170, width: 90, height: 20 }, center: [85, 180] },
+    { text: 'Inbox', confidence: 92, bounds: { x: 40, y: 220, width: 60, height: 18 }, center: [70, 229] },
+  ] } });
+  const r = await DESKTOP_HANDLERS.desktop_find_text({ query: 'compose' });
+  assert.match(lastUrl, /\/desktop\/find-text$/);
+  assert.deepStrictEqual(lastBody, { query: 'compose' });
+  assert.match(r.content[0].text as string, /\(85,180\)\s+"Compose"/);
+});
+
+test('desktop_click_text reports what it clicked, and can return a verify image', async () => {
+  stubFetch({ success: true, data: { clicked: { text: 'Compose', center: [85, 180] }, candidates: 1, index: 0 } });
+  let r = await DESKTOP_HANDLERS.desktop_click_text({ text: 'Compose' });
+  assert.match(lastUrl, /\/desktop\/click-text$/);
+  assert.strictEqual(lastBody!.text, 'Compose');
+  assert.match(r.content[0].text as string, /Clicked "Compose" at \(85,180\)/);
+  stubFetch({ success: true, data: { clicked: { text: 'Save', center: [10, 20] }, candidates: 2, index: 0, screenshot: { meta: { image: { width: 1568, height: 882 }, format: 'jpeg', mapping: 'm' }, base64: 'ZZZ', mimeType: 'image/jpeg' } } });
+  r = await DESKTOP_HANDLERS.desktop_click_text({ text: 'Save', screenshot_after_ms: 400 });
+  assert.strictEqual(r.content.length, 2);
+  assert.strictEqual(r.content[1].type, 'image');
+  assert.match(r.content[0].text as string, /match 1 of 2/);
+});
+
+test('desktop_click_text surfaces a no-match error with near-misses', async () => {
+  stubFetch({ success: false, error: 'no on-screen text contained "Nope". Recognized nearby: "Compose", "Inbox"', code: 'BAD_ARGS' });
+  const r = await DESKTOP_HANDLERS.desktop_click_text({ text: 'Nope' });
+  assert.strictEqual(r.isError, true);
+  assert.match(r.content[0].text as string, /Recognized nearby/);
 });
 
 test('desktop_process renders the heaviest-first table from /desktop/process', async () => {

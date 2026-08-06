@@ -175,7 +175,7 @@ mod('gmail.ts', 'gmail', [
 // --- desktop automation ---
 mod('desktop.ts', 'desktop', [
   'desktop_status', 'desktop_windows', 'desktop_screenshot', 'desktop_window', 'desktop_input',
-  'desktop_clipboard', 'desktop_process', 'desktop_wait_for',
+  'desktop_clipboard', 'desktop_process', 'desktop_wait_for', 'desktop_find_text', 'desktop_click_text',
 ]);
 
 // --- backup ---

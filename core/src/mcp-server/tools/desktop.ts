@@ -172,6 +172,45 @@ export const desktopWaitForToolDef = {
   },
 };
 
+export const desktopFindTextToolDef = {
+  name: 'desktop_find_text',
+  description:
+    'OCR the screen (or region/window) → the visible TEXT lines with each one\'s click-center in desktop pixels. ' +
+    'query filters to lines containing it. Locate a menu item / button / link by its LABEL instead of guessing ' +
+    'pixels, then click its center (or use desktop_click_text). Trigger: "where does it say X", "read the screen". Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      query: { type: 'string' as const, description: 'Case-insensitive substring to filter recognized lines by (omit to get all text).' },
+      region: { type: 'array' as const, items: { type: 'number' as const }, description: 'OCR only this rectangle [x1,y1,x2,y2] (desktop px). Default: whole screen.' },
+      window: { type: 'string' as const, description: 'OCR this window id (from desktop_windows) instead of the screen.' },
+      min_confidence: { type: 'number' as const, description: 'Drop text below this OCR confidence 0-100 (default 50).' },
+    },
+  },
+};
+
+export const desktopClickTextToolDef = {
+  name: 'desktop_click_text',
+  description:
+    'Click an on-screen element BY ITS VISIBLE TEXT (button/menu item/link) — re-OCRs fresh then clicks the match ' +
+    'center, so the coordinate never goes stale. Trigger: "click the X button", "press Save". index disambiguates ' +
+    'multiple matches; match:"exact" = whole-line equals text; screenshot_after_ms verifies. No match → lists what was seen.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      text: { type: 'string' as const, description: 'The visible label to click.' },
+      index: { type: 'number' as const, description: 'Which match when several contain the text (default 0 = first in reading order).' },
+      match: { type: 'string' as const, enum: ['substring', 'exact'], description: 'Default substring (case-insensitive); exact requires the whole line to equal text.' },
+      button: { type: 'string' as const, enum: ['left', 'right', 'middle'], description: 'Default left.' },
+      double: { type: 'boolean' as const, description: 'Double-click instead of single (left only).' },
+      window: { type: 'string' as const, description: 'Scope OCR to this window id and activate it first.' },
+      screenshot_after_ms: { type: 'number' as const, description: 'After clicking, wait this many ms and return a screenshot (0-10000).' },
+    },
+    required: ['text'],
+  },
+};
+
 // ─── handlers ────────────────────────────────────────────────────────────────
 
 interface StatusData {
@@ -366,6 +405,45 @@ async function handleWaitFor(args: Record<string, unknown>): Promise<McpToolResu
   }
 }
 
+interface OcrMatchRow { text: string; confidence: number; bounds: { x: number; y: number; width: number; height: number }; center: [number, number] }
+interface FindTextData { screen: { width: number; height: number }; capture: { x: number; y: number; width: number; height: number }; total: number; truncated: boolean; matches: OcrMatchRow[] }
+async function handleFindText(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const resp = await workerPostRaw('/desktop/find-text', {
+      query: args.query, region: args.region, window: args.window, min_confidence: args.min_confidence,
+    });
+    if (resp.success === false) return err(`desktop_find_text failed: ${String(resp.error || 'unknown')}${resp.code ? ` (${String(resp.code)})` : ''}`);
+    const d = (resp.data || {}) as FindTextData;
+    const lines = [`${d.total} text line(s)${d.truncated ? ' (capped)' : ''}${args.query ? ` matching "${String(args.query)}"` : ''} — center is where to click:`];
+    for (const m of d.matches) lines.push(`  [${String(m.confidence).padStart(3)}%] (${m.center[0]},${m.center[1]})  "${m.text}"`);
+    return textResult(lines.join('\n'));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+interface ClickTextData { clicked: { text: string; center: [number, number] }; candidates: number; index: number; screenshot?: ScreenshotData }
+async function handleClickText(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const resp = await workerPostRaw('/desktop/click-text', {
+      text: args.text, index: args.index, match: args.match, button: args.button, double: args.double, window: args.window, screenshot_after_ms: args.screenshot_after_ms,
+    });
+    if (resp.success === false) return err(`desktop_click_text failed: ${String(resp.error || 'unknown')}${resp.code ? ` (${String(resp.code)})` : ''}`);
+    const d = (resp.data || {}) as ClickTextData;
+    const head = `Clicked "${d.clicked.text}" at (${d.clicked.center[0]},${d.clicked.center[1]})${d.candidates > 1 ? ` — match ${d.index + 1} of ${d.candidates}` : ''}`;
+    if (d.screenshot) {
+      const m = d.screenshot.meta;
+      return { content: [
+        { type: 'text', text: `${head}\nScreenshot after click — ${m.image.width}x${m.image.height} ${m.format}. ${m.mapping}` },
+        { type: 'image', data: d.screenshot.base64, mimeType: d.screenshot.mimeType },
+      ] };
+    }
+    return textResult(head);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /** Wrap text as a successful MCP result typed against configure's McpToolResult. */
 function textResult(text: string): McpToolResult {
   return { content: [{ type: 'text', text }] };
@@ -382,6 +460,8 @@ export const DESKTOP_TOOL_DEFS = [
   desktopClipboardToolDef,
   desktopProcessToolDef,
   desktopWaitForToolDef,
+  desktopFindTextToolDef,
+  desktopClickTextToolDef,
 ];
 
 export const DESKTOP_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
@@ -393,4 +473,6 @@ export const DESKTOP_HANDLERS: Record<string, (args: Record<string, unknown>) =>
   desktop_clipboard: handleClipboard,
   desktop_process: handleProcess,
   desktop_wait_for: handleWaitFor,
+  desktop_find_text: handleFindText,
+  desktop_click_text: handleClickText,
 };
