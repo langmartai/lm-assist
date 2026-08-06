@@ -165,7 +165,7 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
     'Budget bumped deliberately to 60,000 (still under the 64 KiB cap); the standing NEEDS-CAP debt is unchanged — ' +
     'it is still a bare NOTHING-bound collection and wants detail/limit/offset like backlog_graph got.' },
   session_footprints: { measuredBytes: 19547, budgetBytes: 27000, bound: 'NOTHING', verdict: 'NEEDS-CAP' },
-  backlog_graph: { measuredBytes: 13146, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
+  backlog_graph: { measuredBytes: 25461, budgetBytes: 40000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'GREW 13,146 -> 25,461 B (2026-08-06) purely from the backlog graph accumulating on the live fleet — unrelated drift caught by the live sweep. Bumped to 40,000 (still under the 64 KiB cap); it is a bare NOTHING-bound graph and wants detail/limit like backlog_list/mission_graph.' },
   list_session_messages: {
     measuredBytes: 65865, budgetBytes: 66000, bound: 'NOTHING', verdict: 'NEEDS-CAP',
     note: 'GREW 19,362 -> 27,840 B (+44%) DURING the audit session, and the guard caught it — the ' +
