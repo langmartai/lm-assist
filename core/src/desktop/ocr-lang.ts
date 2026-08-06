@@ -132,12 +132,21 @@ export function parseOsdScript(osd: string): string | null {
   return m ? m[1] : null;
 }
 
-/** The tesseract lang implied by the system locale ($LANG / LC_ALL / culture). */
+/** The tesseract lang implied by the system locale. Checks the Unix env vars
+ *  first ($LC_ALL/$LANG/$LANGUAGE), then the Node Intl locale — which is the only
+ *  signal on WINDOWS, where those env vars are unset (measured: Intl gives
+ *  "zh-SG" on a Chinese Windows, the env vars nothing). */
 export function localeLang(): string | null {
-  const raw = (process.env.LC_ALL || process.env.LANG || process.env.LANGUAGE || '').toLowerCase();
-  if (!raw) return null;
-  const tag = raw.split(/[.:@]/)[0].replace('_', '-'); // en_sg.utf-8 -> en-sg
-  return LOCALE_TO_LANG[tag] || LOCALE_TO_LANG[tag.split('-')[0]] || null;
+  const candidates: string[] = [];
+  const env = process.env.LC_ALL || process.env.LANG || process.env.LANGUAGE || '';
+  if (env) candidates.push(env);
+  try { const l = Intl.DateTimeFormat().resolvedOptions().locale; if (l) candidates.push(l); } catch { /* no Intl */ }
+  for (const raw of candidates) {
+    const tag = raw.toLowerCase().split(/[.:@]/)[0].replace('_', '-'); // en_sg.utf-8 / zh-SG -> en-sg / zh-sg
+    const hit = LOCALE_TO_LANG[tag] || LOCALE_TO_LANG[tag.split('-')[0]];
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** Run OSD script detection on an image; returns a tesseract lang or null. */

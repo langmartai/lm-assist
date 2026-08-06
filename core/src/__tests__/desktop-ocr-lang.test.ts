@@ -30,8 +30,12 @@ test('localeLang maps $LANG to a tesseract code, prefix-fallback', (t) => {
   assert.strictEqual(localeLang(), 'jpn');
   process.env.LANG = 'en_SG.UTF-8';
   assert.strictEqual(localeLang(), 'eng');
-  process.env.LANG = 'zz_ZZ.UTF-8'; // unknown
-  assert.strictEqual(localeLang(), null);
+  // Unknown env → falls through to the Intl locale (the Windows signal); the CI
+  // runner's Intl locale is Latin-based, so we only assert it doesn't crash and
+  // returns a string-or-null, not a specific value.
+  process.env.LANG = 'zz_ZZ.UTF-8';
+  const fallback = localeLang();
+  assert.ok(fallback === null || typeof fallback === 'string');
 });
 
 test('KNOWN_LANGS (auto-install allowlist) includes the detected langs + base', () => {
