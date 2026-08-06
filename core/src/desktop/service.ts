@@ -403,12 +403,15 @@ interface TsvLine { text: string; conf: number; left: number; top: number; width
 export function parseTsvLines(tsv: string, minConf: number): TsvLine[] {
   const groups = new Map<string, { texts: string[]; confs: number[]; l: number; t: number; r: number; b: number }>();
   const order: string[] = [];
-  for (const raw of tsv.split('\n')) {
+  // Split on CRLF or LF — Windows tesseract emits CRLF, and splitting only on \n
+  // leaves a trailing \r on every word's text field (so "OK" becomes "OK\r" and
+  // exact matches / display break). Trim the word defensively too.
+  for (const raw of tsv.split(/\r?\n/)) {
     const c = raw.split('\t');
     if (c.length < 12 || c[0] === 'level' || c[0] !== '5') continue; // level 5 = word
     const conf = parseFloat(c[10]);
-    const text = c[11];
-    if (!text || !text.trim() || !Number.isFinite(conf) || conf < minConf) continue;
+    const text = (c[11] ?? '').replace(/[\r\n]+$/, '').trim();
+    if (!text || !Number.isFinite(conf) || conf < minConf) continue;
     const left = parseInt(c[6], 10), top = parseInt(c[7], 10), w = parseInt(c[8], 10), h = parseInt(c[9], 10);
     if (![left, top, w, h].every(Number.isFinite)) continue;
     const key = `${c[2]}.${c[3]}.${c[4]}`; // block.par.line
