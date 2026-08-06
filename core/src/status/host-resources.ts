@@ -95,7 +95,10 @@ export async function storageReport(): Promise<StatusReport> {
   return formatStorage(vols);
 }
 
-// ─── network (host NICs) ───────────────────────────────────────────────────────
+// ─── nics (the host's own network interfaces) ──────────────────────────────────
+// Named "nics", NOT "network": in lm-assist "fabric" is the cross-node transport
+// DATA PLANE (the peer mesh), and reusing "network" for the host's interfaces
+// would collide with that. These are strictly THIS host's NICs.
 
 export interface NicInfo {
   name: string;
@@ -123,6 +126,6 @@ export function formatNetwork(hostname: string, nics: NicInfo[]): StatusReport {
   return { verdict: v4.length ? 'ok' : 'warn', summary, detail: { hostname, interfaces: nics } };
 }
 
-export function networkReport(): StatusReport {
+export function nicsReport(): StatusReport {
   return formatNetwork(os.hostname(), collectNics(os.networkInterfaces()));
 }

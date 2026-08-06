@@ -14,24 +14,27 @@ export const NODE_STATUS_TOOL_DEFS = [
     name: 'node_status',
     description:
       'General status of an lm-assist node — every subsystem in one call: services (uptime), hub ' +
-      'connection, STORAGE (disk volumes: total/used/free per mount), NETWORK (the host\'s own NICs + ' +
-      'IPs), the fabric MESH peer-links, and any other registered provider. Pass section="storage" for ' +
-      'disks, section="network" for the host IPs/interfaces, section="fabric" (aka "peers") for the mesh, ' +
-      'or another section name for its detail. Pass node=<host> to read another node. Read-only.',
+      'connection, STORAGE (disk volumes: total/used/free per mount), NICS (the host\'s own network ' +
+      'interfaces + IPs), the FABRIC mesh (cross-node transport data plane — peer links), and any other ' +
+      'registered provider. Pass section="storage" for disks, section="nics" for the host IPs/interfaces, ' +
+      'section="fabric" (aka "peers") for the inter-node mesh, or another section name for its detail. ' +
+      '"nics" and "fabric" are DIFFERENT layers: nics = this host; fabric = the node-to-node mesh. ' +
+      'Pass node=<host> to read another node. Read-only.',
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        section: { type: 'string', description: 'Optional subsystem: "storage"/"disk", "network"/"nics" (host IPs), "fabric"/"peers" (mesh), "hub", "services", … Omit for the all-subsystem summary.' },
+        section: { type: 'string', description: 'Optional subsystem: "storage"/"disk", "nics"/"interfaces" (this host\'s NICs), "fabric"/"peers" (the cross-node mesh data plane — NOT the host\'s NICs), "hub", "services", … Omit for the all-subsystem summary.' },
       },
     },
   },
 ];
 
-/** Section aliases → provider name. "network" now means the HOST's NICs (was an
- *  alias for "fabric"); the mesh is reached via "fabric"/"peers"/"mesh". */
+/** Section aliases → provider name. "nics" = the HOST's own interfaces; the
+ *  cross-node transport mesh (data plane) is "fabric" (aka peers/mesh). The bare
+ *  word "network" is deliberately NOT used — it would blur the host-vs-mesh line. */
 const SECTION_ALIAS: Record<string, string> = {
-  peers: 'fabric', mesh: 'fabric', disk: 'storage', disks: 'storage', nic: 'network', nics: 'network', interfaces: 'network',
+  peers: 'fabric', mesh: 'fabric', disk: 'storage', disks: 'storage', nic: 'nics', interfaces: 'nics', 'host-network': 'nics',
 };
 
 interface SectionReport { verdict: string; summary: string; detail?: unknown }

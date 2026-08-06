@@ -86,9 +86,10 @@ export function registerCoreStatusProviders(): void {
     return getBus().statusReport();
   });
 
-  // Host resources — the machine's own disks + NICs (distinct from `fabric`, the
-  // lm-assist mesh). Cross-platform, no subprocess.
-  const { storageReport, networkReport } = require('./host-resources') as typeof import('./host-resources');
+  // Host resources — the machine's own disks + NICs. Registered as `storage` and
+  // `nics` (NOT `network`): `fabric` above is the cross-node transport DATA PLANE
+  // (the peer mesh), so `nics` keeps the host's interfaces unambiguously separate.
+  const { storageReport, nicsReport } = require('./host-resources') as typeof import('./host-resources');
   registerStatusProvider('storage', () => storageReport());
-  registerStatusProvider('network', () => networkReport());
+  registerStatusProvider('nics', () => nicsReport());
 }
