@@ -144,6 +144,7 @@ export class ApiRelayHandler {
     '/terminal/cc-sessions', // local Claude Code session list/prompt/interrupt (CCR cross-node rows; NOT the wider /terminal tmux surface)
     '/lifecycle',     // graceful exit/restart of a node's Core/Web (node_lifecycle → POST /lifecycle/{exit,restart})
     '/whatsapp',      // whatsapp cloud-api connector (send/chats/messages/search/status; webhook is reached directly by Meta, not via the hub)
+    '/ui-pages',      // pluggable-UI serving status + lifecycle (assist UI Pages page controls the node via the machine proxy)
   ];
 
   /**
@@ -157,6 +158,13 @@ export class ApiRelayHandler {
     const sorted = [...this.serviceRoutes].sort((a, b) => b.pathPrefix.length - a.pathPrefix.length);
 
     for (const route of sorted) {
+      // '/ui-pages' is the Core's OWN management API, not a served UI — without this
+      // reservation the '/ui-' rawPrefix route swallows it and the lmui dev server 404s
+      // the control calls. 'pages' is denylisted as a uiId on the gateway to match.
+      if (route.rawPrefix && route.pathPrefix === '/ui-' &&
+          (normalizedPath === '/ui-pages' || normalizedPath.startsWith('/ui-pages/'))) {
+        continue;
+      }
       const matches = route.rawPrefix
         ? normalizedPath.startsWith(route.pathPrefix)
         : normalizedPath === route.pathPrefix || normalizedPath.startsWith(route.pathPrefix + '/');
