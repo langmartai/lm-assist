@@ -1,0 +1,9 @@
+{
+  "uiId": "assist-manage",
+  "name": "Assist — UI Pages Manager",
+  "scope": "lm-assist",
+  "service": "ui-assist-manage",
+  "grant": [
+    { "service": "node", "pathPrefix": "/ui-pages", "verbs": ["GET", "POST", "DELETE"] }
+  ]
+}
