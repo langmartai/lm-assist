@@ -11,6 +11,7 @@
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { uiPagesReport, controlPage, respawnDeadPages, defaultUiAppsDir } from '../../ui-pages/manager';
 import { gatewayCall, publicUiUrl, resolvedGatewayUrl } from '../../ui-pages/gateway-client';
+import { reportStatusesOnce, uploadScreenshot } from '../../ui-pages/reporter';
 import { loadServicePorts, getHubConfig } from '../../hub-client/hub-config';
 
 function uiAppsDirOverride(): string | undefined {
@@ -27,6 +28,9 @@ export function createUiPagesRoutes(_ctx: RouteContext): RouteHandler[] {
           const ports = loadServicePorts();
           const uiWebPort = ports.uiWebPort ?? null;
           const report = await uiPagesReport(uiWebPort, !!uiWebPort, defaultUiAppsDir(uiAppsDirOverride()));
+          // Opportunistic heartbeat: a status read is the freshest data we'll ever have —
+          // push it platform-side too (fire-and-forget; the interval reporter still runs).
+          reportStatusesOnce().catch(() => {});
           return { success: true, data: report };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };
@@ -138,6 +142,23 @@ export function createUiPagesRoutes(_ctx: RouteContext): RouteHandler[] {
           if (b.pathPrefix) body.pathPrefix = String(b.pathPrefix);
           const r = await gatewayCall('POST', '/access/revoke', body);
           return { success: true, data: { gatewayStatus: r.status, response: r.data } };
+        } catch (e) {
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/ui-pages\/screenshot$/,
+      handler: async (req: ParsedRequest) => {
+        const b = req.body || {};
+        const uiId = String(b.uiId || '');
+        const filePath = String(b.path || '');
+        if (!uiId || !filePath) return { success: false, error: 'uiId and path (local image file) required' };
+        try {
+          const r = await uploadScreenshot(uiId, filePath);
+          if (r.status >= 300) return { success: false, error: `gateway refused (${r.status}): ${JSON.stringify(r.data)}` };
+          return { success: true, data: r.data };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };
         }

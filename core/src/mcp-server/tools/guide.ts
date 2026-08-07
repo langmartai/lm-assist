@@ -727,6 +727,8 @@ FULL LIFECYCLE, NO BROWSER, NO CLI:
 
 RESPAWN-ON-BOOT: when the Core starts with uiWebPort configured, every dead-but-respawnable page auto-respawns — a host reboot brings the UIs back with the agent. Pages whose app dir or lmui.config.json vanished are reported \`stale\` by \`ui_pages\` instead (never silently dropped).
 
+PLATFORM-SIDE STATUS + SCREENSHOTS: the Core heartbeats each page's serving status to the gateway (every 2 min + on every \`ui_pages\` read), so the management pages show it with "last updated" — and derive OFFLINE when the report goes stale (node crashed/rebooted/offline = its pages read offline, automatically). \`ui_screenshot {uiId, path}\` uploads a local capture; the gateway auto-resizes (≤1280px, webp) and stores it per UI as the preview on /manage and the assist UI Pages page.
+
 🔴 TRAPS:
 - No /ui-* route (\`ui_pages\` says uiWebPort NOT SET) → set \`uiWebPort\` in \`~/.lm-assist/hub.json\` and restart the Core; the route + port persist from then on.
 - A page serving on a port ≠ uiWebPort is invisible through the hub — \`ui_pages\` flags the mismatch; restart the page with the right PORT.

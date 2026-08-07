@@ -116,9 +116,25 @@ export const uiUnregisterToolDef = {
   },
 };
 
+export const uiScreenshotToolDef = {
+  name: 'ui_screenshot',
+  description:
+    'Upload a screenshot for one of your pluggable UIs to the platform (stored per UI, shown ' +
+    'on the management pages). Pass a LOCAL image file path (png/jpg/webp, ≤12MB) — the ' +
+    'gateway auto-resizes oversized captures (≤1280px wide, webp). WRITE.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      uiId: { type: 'string', description: 'The UI id the screenshot belongs to.' },
+      path: { type: 'string', description: 'Absolute path of the image file on this node.' },
+    },
+    required: ['uiId', 'path'],
+  },
+};
+
 export const UI_PAGES_TOOL_DEFS = [
   uiPagesToolDef, uiPagesControlToolDef, uiRegisterToolDef, uiListToolDef,
-  uiGrantsToolDef, uiGrantReleaseToolDef, uiUnregisterToolDef,
+  uiGrantsToolDef, uiGrantReleaseToolDef, uiUnregisterToolDef, uiScreenshotToolDef,
 ] as const;
 
 interface PageStatus {
@@ -221,6 +237,16 @@ async function handleUiUnregister(args: Record<string, unknown>): Promise<McpToo
   }
 }
 
+async function handleUiScreenshot(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const d = await workerPost<{ ok?: boolean; width?: number; height?: number; bytes?: number }>(
+      '/ui-pages/screenshot', { uiId: String(args.uiId || ''), path: String(args.path || '') });
+    return ok(`Screenshot stored for ${args.uiId}: ${d.width}×${d.height}, ${d.bytes} bytes (auto-resized server-side). Visible on the /manage page and assist UI Pages.`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 export const UI_PAGES_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   ui_pages: handleUiPages,
   ui_pages_control: handleUiPagesControl,
@@ -229,4 +255,5 @@ export const UI_PAGES_HANDLERS: Record<string, (args: Record<string, unknown>) =
   ui_grants: handleUiGrants,
   ui_grant_release: handleUiGrantRelease,
   ui_unregister: handleUiUnregister,
+  ui_screenshot: handleUiScreenshot,
 };

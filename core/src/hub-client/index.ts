@@ -253,6 +253,11 @@ export class HubClient extends EventEmitter {
           try {
             const { respawnDeadPages } = require('../ui-pages/manager');
             respawnDeadPages((msg: string) => console.log(msg));
+            // Heartbeat: push each page's serving status to the gateway on an interval so
+            // the platform-side status stays fresh — the gateway reads a stale report as
+            // OFFLINE, which is exactly what this node going silent should look like.
+            const { startStatusHeartbeat } = require('../ui-pages/reporter');
+            startStatusHeartbeat((msg: string) => console.log(msg));
           } catch (e) {
             console.error('[HubClient] ui-pages respawn failed:', e instanceof Error ? e.message : String(e));
           }
