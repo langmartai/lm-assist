@@ -23,6 +23,7 @@ export const TOPIC_TOOLS: Record<string, string[]> = {
   account: ['auth_status', 'claude_code_usage', 'claude_code_account', 'claudeai_account', 'claudeai_active_sessions'],
   github: ['github_query', 'github_mutate'],
   files: ['fs_drives', 'fs_list', 'fs_stat', 'fs_read', 'transfer_queue', 'transfer_send_file', 'transfer_list_remote', 'transfer_stats', 'transfer_cancel', 'transfer_status'],
+  'ui-pages': ['ui_pages', 'ui_pages_control', 'ui_register', 'ui_list', 'ui_grants', 'ui_grant_release', 'ui_unregister'],
   roles: ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate'],
   // `mission_place`/`mission_schedule` live HERE, not on mission-controller: their trap
   // (go:true / ready is NOT placement) is documented in the missions playbook, and that

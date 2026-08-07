@@ -94,6 +94,7 @@ export interface DatasetUpdatedMessage {
 
 export class HubClient extends EventEmitter {
   private wsClient: WebSocketClient | null = null;
+  private uiRespawnDone = false;
   private apiRelayHandler: ApiRelayHandler | null = null;
   private consoleRelayHandler: ConsoleRelayHandler | null = null;
   private portForwardHandler: PortForwardHandler | null = null;
@@ -242,6 +243,20 @@ export class HubClient extends EventEmitter {
           rawPrefix: true, // '/ui-<uiId>' has no segment boundary after the prefix
           description: 'Pluggable UI host (lmui)',
         });
+        // The route survives restarts (uiWebPort is persisted) — the UI dev servers behind
+        // it must too, or every reboot silently kills all worker-hosted UIs until the
+        // author remembers to restart them. Respawn every dead-but-respawnable lmui state
+        // file (~/.lmui/dev-*.json); an explicitly stopped page (ui_pages_control) was
+        // parked out of that set and stays stopped. Once per process, not per reconnect.
+        if (!this.uiRespawnDone) {
+          this.uiRespawnDone = true;
+          try {
+            const { respawnDeadPages } = require('../ui-pages/manager');
+            respawnDeadPages((msg: string) => console.log(msg));
+          } catch (e) {
+            console.error('[HubClient] ui-pages respawn failed:', e instanceof Error ? e.message : String(e));
+          }
+        }
       }
 
       // Create API relay handler
