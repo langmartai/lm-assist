@@ -9,7 +9,7 @@
  *  completes the whole register → serve → grants lifecycle without a browser.
  */
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
-import { uiPagesReport, controlPage, respawnDeadPages, defaultUiAppsDir } from '../../ui-pages/manager';
+import { uiPagesReport, controlPage, respawnDeadPages, defaultUiAppsDir, setAutoStart } from '../../ui-pages/manager';
 import { gatewayCall, publicUiUrl, resolvedGatewayUrl } from '../../ui-pages/gateway-client';
 import { reportStatusesOnce, uploadScreenshot } from '../../ui-pages/reporter';
 import { loadServicePorts, getHubConfig } from '../../hub-client/hub-config';
@@ -44,12 +44,18 @@ export function createUiPagesRoutes(_ctx: RouteContext): RouteHandler[] {
         const b = req.body || {};
         const uiId = String(b.uiId || '');
         const action = String(b.action || '');
-        if (!uiId || (action !== 'start' && action !== 'stop' && action !== 'respawn-dead')) {
-          return { success: false, error: 'uiId and action (start|stop|respawn-dead) required' };
+        const ACTIONS = ['start', 'stop', 'respawn-dead', 'autostart-on', 'autostart-off'];
+        if (!uiId || !ACTIONS.includes(action)) {
+          return { success: false, error: `uiId and action (${ACTIONS.join('|')}) required` };
         }
         try {
           if (action === 'respawn-dead') {
             return { success: true, data: { results: respawnDeadPages((m) => console.log(m)) } };
+          }
+          if (action === 'autostart-on' || action === 'autostart-off') {
+            const on = action === 'autostart-on';
+            setAutoStart(uiId, on);
+            return { success: true, data: { detail: `${uiId}: autostart ${on ? 'enabled — boot respawn will bring it back' : 'disabled — stays down across Core restarts (running instance untouched)'}` } };
           }
           const r = await controlPage(uiId, action as 'start' | 'stop');
           return r.ok ? { success: true, data: { detail: r.detail } } : { success: false, error: r.detail };
@@ -142,6 +148,22 @@ export function createUiPagesRoutes(_ctx: RouteContext): RouteHandler[] {
           if (b.pathPrefix) body.pathPrefix = String(b.pathPrefix);
           const r = await gatewayCall('POST', '/access/revoke', body);
           return { success: true, data: { gatewayStatus: r.status, response: r.data } };
+        } catch (e) {
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/ui-pages\/enable$/,
+      handler: async (req: ParsedRequest) => {
+        const b = req.body || {};
+        const uiId = String(b.uiId || '');
+        if (!uiId || typeof b.enabled !== 'boolean') return { success: false, error: 'uiId and enabled (boolean) required' };
+        try {
+          const r = await gatewayCall('PATCH', `/registry/uis/${encodeURIComponent(uiId)}`, { enabled: b.enabled });
+          if (r.status >= 300) return { success: false, error: `gateway refused (${r.status}): ${JSON.stringify(r.data)}` };
+          return { success: true, data: { enabled: b.enabled } };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };
         }

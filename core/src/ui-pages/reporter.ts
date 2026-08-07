@@ -27,7 +27,9 @@ export async function reportStatusesOnce(log: (m: string) => void = () => {}): P
       const r = await gatewayCall('PUT', `/registry/uis/${encodeURIComponent(s.uiId)}/status`, {
         workerId: hub.gatewayId || undefined,
         alive: st.alive, serving: st.serving, reachable: st.reachableViaHub, port: st.port,
-        detail: st.issue ? { issue: st.issue } : undefined,
+        // dir + autoStart ride the heartbeat so the platform surfaces can show WHERE the
+        // UI's files live and whether a reboot brings it back — without asking the node.
+        detail: { dir: st.dir, autoStart: st.autoStart, ...(st.issue ? { issue: st.issue } : {}) },
       });
       // 404 = serving locally but not registered — nothing to report against; not an error.
       if (r.status < 300) sent++;

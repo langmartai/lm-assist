@@ -269,6 +269,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   ui_grant_release: 'write',
   ui_unregister: 'write',
   ui_screenshot: 'write',
+  ui_enable: 'write',
   auth_status: 'read',
   claude_code_account: 'read',
   claudeai_account: 'read',

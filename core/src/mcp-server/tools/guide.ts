@@ -722,8 +722,9 @@ FULL LIFECYCLE, NO BROWSER, NO CLI:
 2. Serve the files: put the app in the preferred apps dir (\`ui_pages\` reports it, default \`~/.lmui/apps/<uiId>/\`) and run \`node <spec-clone>/sdk/lmui.js start\` there with PORT = this node's uiWebPort. The state file \`~/.lmui/dev-<uiId>.json\` is the contract; lmui is its only writer.
 3. \`ui_pages\` — per-page serving status: alive (pid), serving (HTTP probe), reachableViaHub (port must equal uiWebPort), stale + why. \`ui_list\` merges gateway registrations with local state — "registered AND alive?" in one call.
 4. \`ui_grants {uiId}\` / \`ui_grant_release\` — see declared vs runtime-approved access; release what the page no longer needs.
-5. \`ui_pages_control {uiId, start|stop}\` — lifecycle. An explicit stop PARKS the page (a Core restart does not resurrect it); \`start\` un-parks it.
-6. \`ui_unregister {uiId}\` — remove the registration (local files untouched).
+5. \`ui_pages_control {uiId, start|stop|autostart-on|autostart-off}\` — local lifecycle + boot policy. Stop PARKS the page (a Core restart does not resurrect it); \`start\` un-parks. \`autostart-off\` keeps a running page running but a reboot leaves it down; \`autostart-on\` (default) restores respawn-on-boot.
+6. \`ui_enable {uiId, enabled}\` — platform-wide on/off switch for the REGISTRATION: disabled = the public URL refuses for everyone while registration, grants and files are kept.
+7. \`ui_unregister {uiId}\` — remove the registration (local files untouched).
 
 RESPAWN-ON-BOOT: when the Core starts with uiWebPort configured, every dead-but-respawnable page auto-respawns — a host reboot brings the UIs back with the agent. Pages whose app dir or lmui.config.json vanished are reported \`stale\` by \`ui_pages\` instead (never silently dropped).
 

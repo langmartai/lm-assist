@@ -35,6 +35,7 @@ export interface UiPageStatus extends UiPageState {
   serving: boolean;        // HTTP probe on 127.0.0.1:<port>/<service>/index.html succeeded
   reachableViaHub: boolean; // serving AND port === uiWebPort (else the hub route can't reach it)
   stale: boolean;          // dead AND not respawnable (dir gone / config gone)
+  autoStart: boolean;      // will the boot respawn bring this page back? (default true)
   issue?: string;          // human-readable reason when something is off
 }
 
@@ -74,6 +75,28 @@ export function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+// ── Autostart flags ────────────────────────────────────────────────────────────────────
+// ~/.lmui/autostart.json: { "<uiId>": false } — Core-owned (lmui never reads it), default
+// TRUE for every page. false = the boot respawn leaves this page down; start/stop remain
+// available. Distinct from parking (stopped-*.json): parking is "stopped right now",
+// autostart is "what boot does" — disable-autostart on a running page keeps it running.
+const autostartFile = (): string => path.join(runDir(), 'autostart.json');
+
+export function readAutostartFlags(): Record<string, boolean> {
+  try { return JSON.parse(fs.readFileSync(autostartFile(), 'utf8')) || {}; } catch { return {}; }
+}
+
+export function autoStartEnabled(uiId: string): boolean {
+  return readAutostartFlags()[uiId] !== false;
+}
+
+export function setAutoStart(uiId: string, enabled: boolean): void {
+  const flags = readAutostartFlags();
+  if (enabled) delete flags[uiId]; else flags[uiId] = false;
+  fs.mkdirSync(runDir(), { recursive: true });
+  fs.writeFileSync(autostartFile(), JSON.stringify(flags, null, 2) + '\n');
+}
+
 export function probeHttp(port: number, pathName: string, timeoutMs = 3000): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.get({ host: '127.0.0.1', port, path: pathName, timeout: timeoutMs }, (res) => {
@@ -98,14 +121,16 @@ export async function statusOf(s: UiPageState, uiWebPort: number | null): Promis
   const alive = pidAlive(s.pid);
   const serving = alive ? await probeHttp(s.port, `/${s.service}/index.html`) : false;
   const r = alive ? { ok: true as const } : respawnable(s);
+  const autoStart = autoStartEnabled(s.uiId);
   const issues: string[] = [];
-  if (!alive) issues.push(r.ok ? 'process dead (respawnable)' : `stale: ${r.reason}`);
+  if (!alive) issues.push(r.ok ? (autoStart ? 'process dead (respawns on boot)' : 'process dead (autostart disabled)') : `stale: ${r.reason}`);
   if (alive && !serving) issues.push('process alive but HTTP probe failed');
   if (uiWebPort !== null && s.port !== uiWebPort) issues.push(`port ${s.port} ≠ uiWebPort ${uiWebPort} — unreachable through the hub`);
   return {
     ...s, alive, serving,
     reachableViaHub: serving && uiWebPort !== null && s.port === uiWebPort,
     stale: !alive && !r.ok,
+    autoStart,
     issue: issues.length ? issues.join('; ') : undefined,
   };
 }
@@ -138,6 +163,11 @@ export function respawnDeadPages(log: (msg: string) => void = () => {}): Respawn
   const results: RespawnResult[] = [];
   for (const s of listStateFiles()) {
     if (pidAlive(s.pid)) { results.push({ uiId: s.uiId, action: 'alive' }); continue; }
+    if (!autoStartEnabled(s.uiId)) {
+      results.push({ uiId: s.uiId, action: 'skipped', reason: 'autostart disabled' });
+      log(`[ui-pages] NOT respawning ${s.uiId}: autostart disabled`);
+      continue;
+    }
     const r = respawnable(s);
     if (!r.ok) {
       results.push({ uiId: s.uiId, action: 'skipped', reason: r.reason });

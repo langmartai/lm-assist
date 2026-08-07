@@ -25,17 +25,36 @@ export const uiPagesToolDef = {
 export const uiPagesControlToolDef = {
   name: 'ui_pages_control',
   description:
-    'Start or stop one pluggable UI page\'s local server on this node. `stop` SIGTERMs the ' +
-    'recorded pid (after verifying it is an lmui process) and parks the page so a Core restart ' +
-    'does NOT respawn it; `start` resurrects a parked or dead page from its recorded state. ' +
-    '`respawn-dead` re-runs the boot respawn sweep. WRITE — manages a local process.',
+    'Control one pluggable UI page\'s local server on this node. `stop` SIGTERMs the recorded ' +
+    'pid (verified as an lmui process) and parks the page (a Core restart does NOT respawn it); ' +
+    '`start` resurrects a parked or dead page. `autostart-on`/`autostart-off` set whether the ' +
+    'boot respawn brings THIS page back (default on; the running instance is untouched — this ' +
+    'governs what happens at the next Core start/reboot). `respawn-dead` re-runs the boot sweep. ' +
+    'WRITE — manages a local process / its boot policy.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       uiId: { type: 'string', description: 'The UI id (from ui_pages / ui_list).' },
-      action: { type: 'string', enum: ['start', 'stop', 'respawn-dead'], description: 'What to do.' },
+      action: { type: 'string', enum: ['start', 'stop', 'autostart-on', 'autostart-off', 'respawn-dead'], description: 'What to do.' },
     },
     required: ['uiId', 'action'],
+  },
+};
+
+export const uiEnableToolDef = {
+  name: 'ui_enable',
+  description:
+    'Enable or disable one of your pluggable UI REGISTRATIONS on the platform gateway. ' +
+    'Disabled = the public URL stops serving (404/disabled for everyone, including you) while ' +
+    'the registration, grants and local files all remain — the reversible off-switch. For the ' +
+    'local server / boot behavior on this node use ui_pages_control instead. WRITE.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      uiId: { type: 'string', description: 'The UI id.' },
+      enabled: { type: 'boolean', description: 'true = serve it; false = refuse serving platform-wide.' },
+    },
+    required: ['uiId', 'enabled'],
   },
 };
 
@@ -133,19 +152,20 @@ export const uiScreenshotToolDef = {
 };
 
 export const UI_PAGES_TOOL_DEFS = [
-  uiPagesToolDef, uiPagesControlToolDef, uiRegisterToolDef, uiListToolDef,
+  uiPagesToolDef, uiPagesControlToolDef, uiEnableToolDef, uiRegisterToolDef, uiListToolDef,
   uiGrantsToolDef, uiGrantReleaseToolDef, uiUnregisterToolDef, uiScreenshotToolDef,
 ] as const;
 
 interface PageStatus {
   uiId: string; service: string; pid: number; port: number; dir: string; log: string;
   startedAt: string; alive: boolean; serving: boolean; reachableViaHub: boolean;
-  stale: boolean; issue?: string;
+  stale: boolean; autoStart?: boolean; issue?: string;
 }
 
 function pageLine(p: PageStatus): string {
   const state = p.stale ? 'STALE' : !p.alive ? 'dead' : !p.serving ? 'not-serving' : p.reachableViaHub ? 'serving' : 'serving (port mismatch)';
-  return `  ${p.uiId}  [${state}]  pid ${p.pid}  port ${p.port}  dir ${p.dir}${p.issue ? `\n    ⚠ ${p.issue}` : ''}`;
+  const auto = p.autoStart === false ? 'autostart OFF' : 'autostart on';
+  return `  ${p.uiId}  [${state}]  ${auto}  pid ${p.pid}  port ${p.port}\n    repo: ${p.dir}${p.issue ? `\n    ⚠ ${p.issue}` : ''}`;
 }
 
 async function handleUiPages(): Promise<McpToolResult> {
@@ -247,8 +267,18 @@ async function handleUiScreenshot(args: Record<string, unknown>): Promise<McpToo
   }
 }
 
+async function handleUiEnable(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const d = await workerPost<{ enabled: boolean }>('/ui-pages/enable', { uiId: String(args.uiId || ''), enabled: args.enabled === true });
+    return ok(`${args.uiId} is now ${d.enabled ? 'ENABLED — public URL serves again' : 'DISABLED — public URL refuses for everyone; registration, grants and files kept'}.`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 export const UI_PAGES_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   ui_pages: handleUiPages,
+  ui_enable: handleUiEnable,
   ui_pages_control: handleUiPagesControl,
   ui_register: handleUiRegister,
   ui_list: handleUiList,
