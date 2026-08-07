@@ -57,6 +57,40 @@ export function stopStatusHeartbeat(): void {
   if (timer) { clearInterval(timer); timer = null; }
 }
 
+/** Declarative sync of MANAGED UIs: every app under the apps root whose
+ *  lmui.config.json carries `"managed": true` is (re-)registered on the gateway
+ *  verbatim from the file. Disk is the source of truth — the gateway refuses runtime
+ *  PATCH/DELETE on managed entries, and this boot sync heals any drift. lm-assist's
+ *  own UIs (ui-apps/) ship with the flag; user UIs omit it and stay API-managed. */
+export async function syncManagedUis(log: (m: string) => void = () => {}): Promise<number> {
+  const path = await import('path');
+  const os = await import('os');
+  const appsRoot = process.env.LMUI_APPS_DIR || path.join(os.homedir(), '.lmui', 'apps');
+  let names: string[] = [];
+  try { names = fs.readdirSync(appsRoot); } catch { return 0; }
+  const hub = getHubConfig();
+  if (!hub.gatewayId || !hub.apiKey) return 0;
+  let synced = 0;
+  for (const n of names) {
+    let cfg: { uiId?: string; name?: string; scope?: string; service?: string; grant?: unknown; managed?: boolean };
+    try { cfg = JSON.parse(fs.readFileSync(path.join(appsRoot, n, 'lmui.config.json'), 'utf8')); } catch { continue; }
+    if (cfg.managed !== true || !cfg.uiId) continue;
+    try {
+      const r = await gatewayCall('POST', '/registry/uis', {
+        uiId: cfg.uiId, name: cfg.name || cfg.uiId, scope: cfg.scope || 'lm-assist', access: 'owner',
+        grant: cfg.grant, source: 'worker', workerId: hub.gatewayId,
+        service: cfg.service || `ui-${cfg.uiId}`, artifactDir: cfg.uiId, managed: true,
+      });
+      if (r.status < 300) { synced++; log(`[ui-pages] managed sync: ${cfg.uiId} asserted from ${appsRoot}/${n}`); }
+      else log(`[ui-pages] managed sync of ${cfg.uiId} refused (${r.status}): ${JSON.stringify(r.data)}`);
+    } catch (e) {
+      log(`[ui-pages] managed sync failed: ${e instanceof Error ? e.message : String(e)}`);
+      break;
+    }
+  }
+  return synced;
+}
+
 const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
 
 /** Upload a local screenshot file for one of this user's UIs. The gateway resizes
