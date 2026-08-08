@@ -32,7 +32,8 @@
      drops its own header (no double chrome) and its background, so it reads as the
      shell's main pane rather than a page-in-a-page. It stays fully usable standalone —
      the bare URL is unchanged, which keeps deep links working. */
-  body.embed{background:transparent}
+  body.embed{background:transparent;overflow:hidden}
+  body.embed,html:has(body.embed){height:auto}
   body.embed header{display:none}
   body.embed main{margin:.4rem auto;max-width:none}
 </style>
@@ -72,7 +73,8 @@
   if (EMBEDDED) document.body.classList.add('embed');
   function reportHeight() {
     if (!EMBEDDED || !window.parent || window.parent === window) return;
-    var h = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    var main = document.querySelector('main');
+    var h = main ? Math.ceil(main.offsetTop + main.offsetHeight + 16) : document.body.scrollHeight;
     try { window.parent.postMessage({ type: 'lmui:height', uiId: (window.__UI_ID__ || ''), height: h }, '*'); } catch (e) {}
   }
   if (EMBEDDED) {
