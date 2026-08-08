@@ -28,6 +28,13 @@
   aside .g{font-family:ui-monospace,monospace;font-size:.74rem;margin:.15rem 0}
   aside .g.rt{color:var(--amber)}
   #host{font-family:ui-monospace,monospace;font-size:.74rem;color:var(--dim);line-height:1.7}
+  /* Embedded in the app shell: the shell already renders identity + nav, so this page
+     drops its own header (no double chrome) and its background, so it reads as the
+     shell's main pane rather than a page-in-a-page. It stays fully usable standalone —
+     the bare URL is unchanged, which keeps deep links working. */
+  body.embed{background:transparent}
+  body.embed header{display:none}
+  body.embed main{margin:.4rem auto;max-width:none}
 </style>
 </head>
 <body>
@@ -55,6 +62,24 @@
 (function () {
   'use strict';
   var out = document.getElementById('out');
+
+  // ── Embedding contract ────────────────────────────────────────────────────────────
+  // ?embed=1 → rendered inside the first-party shell. A cross-origin frame cannot size
+  // itself, so the page reports its height; the shell listens and resizes the iframe.
+  // Nothing else crosses the boundary: no DOM access either way, and the page keeps its
+  // own view token + grant regardless of where it is displayed.
+  var EMBEDDED = /[?&]embed=1\b/.test(location.search);
+  if (EMBEDDED) document.body.classList.add('embed');
+  function reportHeight() {
+    if (!EMBEDDED || !window.parent || window.parent === window) return;
+    var h = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    try { window.parent.postMessage({ type: 'lmui:height', uiId: (window.__UI_ID__ || ''), height: h }, '*'); } catch (e) {}
+  }
+  if (EMBEDDED) {
+    window.addEventListener('load', reportHeight);
+    if (window.ResizeObserver) new ResizeObserver(reportHeight).observe(document.body);
+    setInterval(reportHeight, 1500);
+  }
   function say(t) { out.textContent = typeof t === 'string' ? t : JSON.stringify(t, null, 2); }
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
