@@ -209,6 +209,7 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   search_memory: { measuredBytes: 4359, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE' },
   list_projects: { measuredBytes: 4185, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   rule_sync_status: { measuredBytes: 1630, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
+  ccr_local_bridges: { measuredBytes: 3354, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   ccr_bridge_registry: { measuredBytes: 3354, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   ccr_live_list: { measuredBytes: 4614, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE', note:
     'Measured on 117, 2026-07-29, against a real account of 357 sessions. Default call (live only, ' +
