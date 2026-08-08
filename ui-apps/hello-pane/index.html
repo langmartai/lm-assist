@@ -1,0 +1,36 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Hello Pane</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
+ body.embed{background:transparent;overflow:hidden}
+ main{max-width:44rem;margin:1rem auto;padding:0 1rem}
+ .card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:1rem}
+ code{font-family:ui-monospace,monospace;background:#0b1220;padding:.1rem .35rem;border-radius:4px}
+ #out{font-family:ui-monospace,monospace;font-size:.8rem;color:#94a3b8;white-space:pre-wrap;margin-top:.6rem}
+ button{border:0;border-radius:6px;padding:.4rem .8rem;background:#3b82f6;color:#fff;cursor:pointer}
+</style></head><body>
+<main><div class="card">
+  <h2 style="margin:.2rem 0 .6rem">Hello Pane 👋</h2>
+  <p style="font-size:.9rem;color:#94a3b8;margin:.2rem 0 .8rem">
+    A brand-new scoped UI. It appeared in the sidebar the moment it was registered —
+    no shell code was changed. Its whole authority: <code>node:/health [GET]</code>.
+  </p>
+  <button id="go">Call my declared grant</button>
+  <div id="out">ready</div>
+</div></main>
+<script src="assets/lmui.js"></script>
+<script>
+(function(){
+  var EMBEDDED = /[?&]embed=1\b/.test(location.search);
+  if (EMBEDDED) document.body.classList.add('embed');
+  function report(){ if(!EMBEDDED||window.parent===window) return;
+    var m=document.querySelector('main');
+    var h=m?Math.ceil(m.offsetTop+m.offsetHeight+16):document.body.scrollHeight;
+    try{ window.parent.postMessage({type:'lmui:height',uiId:(window.__UI_ID__||''),height:h},'*'); }catch(e){} }
+  if (EMBEDDED){ window.addEventListener('load',report); setInterval(report,1500); }
+  document.getElementById('go').addEventListener('click', function(){
+    lmui.call('node','/health').then(function(r){ return r.json().catch(function(){return null;}).then(function(b){
+      document.getElementById('out').textContent='HTTP '+r.status+'\n'+JSON.stringify(b,null,2).slice(0,300);
+      setTimeout(report,60); }); });
+  });
+})();
+</script></body></html>

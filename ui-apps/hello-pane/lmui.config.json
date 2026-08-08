@@ -1,0 +1,7 @@
+{
+  "uiId": "hello-pane",
+  "name": "Hello Pane",
+  "scope": "lm-assist",
+  "service": "ui-hello-pane",
+  "grant": [{ "service": "node", "pathPrefix": "/health", "verbs": ["GET"] }]
+}
