@@ -36,6 +36,18 @@
   body.embed,html:has(body.embed){height:auto}
   body.embed header{display:none}
   body.embed main{margin:.4rem auto;max-width:none}
+
+  /* Embedded panes inherit the shell's theme via ?theme=. A dark pane inside a light
+     shell reads as foreign content pasted into the page; these overrides make the pane
+     look like the shell's own body. */
+  body.theme-light{--bg:#ffffff;--panel:#f8fafc;--panel2:#f1f5f9;--line:#e2e8f0;--txt:#0f172a;--dim:#64748b}
+  body.theme-light .msg.them{background:#f1f5f9}
+  body.theme-light .msg.me{background:#d1fae5;color:#064e3b}
+  body.theme-light button{background:#e2e8f0;color:#0f172a}
+  body.theme-light button.primary{background:var(--green);color:#052e16}
+  /* Full-bleed when embedded: the pane IS the page body, so it must not re-center itself
+     inside its own max-width column — that produced the wide empty margins. */
+  body.embed main{max-width:none;margin:0;padding:0}
 </style>
 </head>
 <body>
@@ -71,6 +83,10 @@
   // own view token + grant regardless of where it is displayed.
   var EMBEDDED = /[?&]embed=1\b/.test(location.search);
   if (EMBEDDED) document.body.classList.add('embed');
+  // Theme is passed by the shell (?theme=light|dark); standalone defaults to dark.
+  var THEME = (/[?&]theme=light/.test(location.search)) ? 'light' : 'dark';
+  if (THEME === 'light') document.body.classList.add('theme-light');
+
   function reportHeight() {
     if (!EMBEDDED || !window.parent || window.parent === window) return;
     var main = document.querySelector('main');
