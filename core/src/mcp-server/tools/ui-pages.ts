@@ -16,7 +16,8 @@ export const uiPagesToolDef = {
     'Serving status of every pluggable UI page hosted on this node (the local lmui dev servers ' +
     'the hub /ui-* route relays to). Reports uiWebPort + whether the route is configured, the ' +
     'preferred app directory for new UIs, and per page: alive (pid), serving (HTTP probe), ' +
-    'reachableViaHub (port matches uiWebPort), stale (dead + not respawnable) with the reason. ' +
+    'reachableViaHub (port matches uiWebPort), stale (dead + not respawnable) with the reason, ' +
+    'plus the gateway-issued URL + uiKey of a registered page. ' +
     'Dead-but-respawnable pages auto-respawn when the Core boots. Read-only.',
   annotations: { readOnlyHint: true },
   inputSchema: { type: 'object' as const, properties: {} },
@@ -62,15 +63,16 @@ export const uiRegisterToolDef = {
   name: 'ui_register',
   description:
     'Register a pluggable UI page on the platform UI gateway, served FROM THIS NODE: claims the ' +
-    'uiId (which IS the subdomain — ui-<uiId>.<domain>, no DNS step exists), binds it to your ' +
-    'account (owner-only serving), and auto-wires this node\'s worker id so the gateway relays ' +
-    'file requests here. Returns the public URL. Serve the files with the lmui SDK ' +
+    'uiId within YOUR account (ids are unique per owner — a name someone else took is still ' +
+    'yours), binds it to you (owner-only serving), and auto-wires this node\'s worker id so the ' +
+    'gateway relays file requests here. The gateway forms the hostname and returns the public ' +
+    'URL + uiKey; no DNS step exists. Serve the files with the lmui SDK ' +
     '(agentic-ui-spec) on this host\'s uiWebPort, then check ui_pages. Optional grant = the ' +
     'declared data-plane access rules. Re-registering your own uiId updates it. WRITE.',
   inputSchema: {
     type: 'object' as const,
     properties: {
-      uiId: { type: 'string', description: 'Lowercase letters/digits/hyphens. Becomes ui-<uiId>.<domain>.' },
+      uiId: { type: 'string', description: 'Lowercase letters/digits/hyphens, at most 51 chars (the rest of the hostname is the gateway\'s).' },
       name: { type: 'string', description: 'Display name (defaults to uiId).' },
       scope: { type: 'string', description: 'Data-plane scope: "lm-assist" (default, this node\'s API) or "langmart" (platform API).' },
       grant: {
@@ -157,7 +159,7 @@ export const UI_PAGES_TOOL_DEFS = [
 ] as const;
 
 interface PageStatus {
-  uiId: string; service: string; pid: number; port: number; dir: string; log: string;
+  uiId: string; uiKey?: string; origin?: string; service: string; pid: number; port: number; dir: string; log: string;
   startedAt: string; alive: boolean; serving: boolean; reachableViaHub: boolean;
   stale: boolean; autoStart?: boolean; issue?: string;
 }
@@ -165,7 +167,11 @@ interface PageStatus {
 function pageLine(p: PageStatus): string {
   const state = p.stale ? 'STALE' : !p.alive ? 'dead' : !p.serving ? 'not-serving' : p.reachableViaHub ? 'serving' : 'serving (port mismatch)';
   const auto = p.autoStart === false ? 'autostart OFF' : 'autostart on';
-  return `  ${p.uiId}  [${state}]  ${auto}  pid ${p.pid}  port ${p.port}\n    repo: ${p.dir}${p.issue ? `\n    ⚠ ${p.issue}` : ''}`;
+  // uiId first because that is what a human types and what lmui.config.json declares; the
+  // uiKey is machine addressing and only worth a trailing note.
+  const key = p.uiKey ? `  (uiKey ${p.uiKey})` : '';
+  const url = p.origin ? `\n    url: ${p.origin}` : '';
+  return `  ${p.uiId}${key}  [${state}]  ${auto}  pid ${p.pid}  port ${p.port}${url}\n    repo: ${p.dir}${p.issue ? `\n    ⚠ ${p.issue}` : ''}`;
 }
 
 async function handleUiPages(): Promise<McpToolResult> {
@@ -196,9 +202,10 @@ async function handleUiRegister(args: Record<string, unknown>): Promise<McpToolR
     if (args.name) body.name = String(args.name);
     if (args.scope) body.scope = String(args.scope);
     if (args.grant !== undefined) body.grant = args.grant;
-    const d = await workerPost<{ gatewayStatus: number; response: unknown; url: string | null }>('/ui-pages/register', body);
+    const d = await workerPost<{ gatewayStatus: number; response: unknown; uiKey: string | null; url: string | null }>('/ui-pages/register', body);
     if (d.gatewayStatus >= 300) return err(`gateway refused (${d.gatewayStatus}): ${JSON.stringify(d.response)}`);
-    return ok(`Registered ${body.uiId} → ${d.url || '(url unknown)'}\nNext: serve the files on this node (lmui start on uiWebPort), then verify with ui_pages. Owner-only: only YOUR signed-in browser can open it.`);
+    const key = d.uiKey ? `\nuiKey (how the gateway addresses it): ${d.uiKey}` : '';
+    return ok(`Registered ${body.uiId} → ${d.url || '(url unknown)'}${key}\nNext: serve the files on this node (lmui start on uiWebPort), then verify with ui_pages. Owner-only: only YOUR signed-in browser can open it.`);
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -208,13 +215,16 @@ async function handleUiList(): Promise<McpToolResult> {
   try {
     const d = await workerGet<{
       gatewayStatus: number;
-      uis: Array<{ uiId: string; name?: string; enabled?: boolean; scope?: string; url: string | null; local: PageStatus | null }>;
+      uis: Array<{ uiId: string; uiKey?: string; name?: string; enabled?: boolean; scope?: string; url: string | null; local: PageStatus | null }>;
       localOnly: PageStatus[];
     }>('/ui-pages/registry');
     if (d.gatewayStatus >= 300) return err(`gateway refused (${d.gatewayStatus}) — is this node's API key valid?`);
     const lines = d.uis.map((u) => {
       const local = u.local ? (u.local.serving ? `serving locally (pid ${u.local.pid}, port ${u.local.port})` : u.local.stale ? 'local state STALE' : 'local server dead') : 'no local server on this node';
-      return `  ${u.uiId}${u.enabled === false ? ' [disabled]' : ''}  scope=${u.scope || '?'}  ${u.url || ''}\n    ${local}`;
+      // Lead with the name + uiId a human recognises; the uiKey trails as addressing detail.
+      const label = u.name && u.name !== u.uiId ? `${u.uiId} — ${u.name}` : u.uiId;
+      const key = u.uiKey ? `  uiKey=${u.uiKey}` : '';
+      return `  ${label}${u.enabled === false ? ' [disabled]' : ''}  scope=${u.scope || '?'}${key}  ${u.url || ''}\n    ${local}`;
     });
     const localOnly = d.localOnly.length
       ? `\n\nServing locally but NOT registered (register with ui_register):\n${d.localOnly.map((p) => `  ${p.uiId} (port ${p.port})`).join('\n')}`

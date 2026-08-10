@@ -715,10 +715,10 @@ GATHER RECIPE (populate a node): (1) \`POST /machine-access/import\` dry-run to 
 
   'ui-pages': `# Guide: pluggable UI pages (register + serve + manage, all over MCP)
 
-WHAT: an agent can author a WEB PAGE, register it on the platform UI gateway, and serve it FROM A NODE'S OWN DISK as a real internet URL — \`https://ui-<uiId>.<domain>/\` — with standard OIDC sign-in, owner-only access, and a scoped data plane. Nothing is uploaded: the gateway relays each request over this node's existing hub WebSocket to a small local dev server. The open spec + SDK live in the public \`agentic-ui-spec\` repo (\`lmui\` CLI: init/login/register/dev/start/stop/status).
+WHAT: an agent can author a WEB PAGE, register it on the platform UI gateway, and serve it FROM A NODE'S OWN DISK as a real internet URL (the gateway mints it and hands it back; \`ui_register\`/\`ui_list\` report it) — with standard OIDC sign-in, owner-only access, and a scoped data plane. Nothing is uploaded: the gateway relays each request over this node's existing hub WebSocket to a small local dev server. The open spec + SDK live in the public \`agentic-ui-spec\` repo (\`lmui\` CLI: init/login/register/dev/start/stop/status).
 
 FULL LIFECYCLE, NO BROWSER, NO CLI:
-1. \`ui_register {uiId}\` — claims the uiId on the gateway (the uiId IS the subdomain; no DNS step exists), binds it to YOUR account, and auto-wires THIS node's worker id so the gateway relays here. Optional \`grant\` = declared data-plane access. Returns the public URL.
+1. \`ui_register {uiId}\` — claims the uiId inside YOUR account (ids are unique per owner, so a name someone else took is still free for you; ≤51 chars), binds it to your account, and auto-wires THIS node's worker id so the gateway relays here. Optional \`grant\` = declared data-plane access. Returns the public URL plus the \`uiKey\` (\`<ownerSlug>-<uiId>\`) the gateway addresses it by; no DNS step exists.
 2. Serve the files: put the app in the preferred apps dir (\`ui_pages\` reports it, default \`~/.lmui/apps/<uiId>/\`) and run \`node <spec-clone>/sdk/lmui.js start\` there with PORT = this node's uiWebPort. The state file \`~/.lmui/dev-<uiId>.json\` is the contract; lmui is its only writer.
 3. \`ui_pages\` — per-page serving status: alive (pid), serving (HTTP probe), reachableViaHub (port must equal uiWebPort), stale + why. \`ui_list\` merges gateway registrations with local state — "registered AND alive?" in one call.
 4. \`ui_grants {uiId}\` / \`ui_grant_release\` — see declared vs runtime-approved access; release what the page no longer needs.
@@ -792,7 +792,7 @@ const BLURB: Record<string, string> = {
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node) — incl. why `auth_status(allNodes)` is a smell test, not an inventory, and how a node picks an ACCOUNT rather than a set of conversations',
   github: 'query/mutate GitHub via the user gh auth',
   files: 'list/stat/read files + transfer files between hosts',
-  'ui-pages': 'register + serve agent-authored web UIs from this node as real OIDC-secured URLs (ui-<uiId>.<domain>) — full lifecycle over MCP: register, serve, status, grants, respawn-on-boot',
+  'ui-pages': 'register + serve agent-authored web UIs from this node as real OIDC-secured URLs the gateway mints — full lifecycle over MCP: register, serve, status, grants, respawn-on-boot',
   missions: 'durable cross-project goals — the fleet-elected Mission Controller binds an executor (cloud or native worktree), adapts + drives it to done, never auto-approves gates/pivots. Born `waiting`; `active` = already running. `env.repo` must be ABSOLUTE, `env.isolation` defaults to `cloud`',
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
   clusters: 'isolated fleet partitions — concept, shared-vs-within table, cluster_list/assign/unassign/describe, build one cluster at a time, respect-other-clusters scope norm',

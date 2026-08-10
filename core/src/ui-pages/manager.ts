@@ -31,6 +31,8 @@ export interface UiPageState {
 }
 
 export interface UiPageStatus extends UiPageState {
+  uiKey?: string;          // gateway addressing (<ownerSlug8>-<uiId>), once registered
+  origin?: string;         // public URL, verbatim from the gateway
   alive: boolean;          // recorded pid exists
   serving: boolean;        // HTTP probe on 127.0.0.1:<port>/<service>/index.html succeeded
   reachableViaHub: boolean; // serving AND port === uiWebPort (else the hub route can't reach it)
@@ -97,6 +99,40 @@ export function setAutoStart(uiId: string, enabled: boolean): void {
   fs.writeFileSync(autostartFile(), JSON.stringify(flags, null, 2) + '\n');
 }
 
+// ── Gateway addressing ─────────────────────────────────────────────────────────────────
+// ~/.lmui/addressing.json: { "<uiId>": { uiKey, origin } } — Core-owned (lmui neither reads
+// nor writes it, and the dev-*.json contract files are lmui's alone), filled from what the
+// gateway answers on register/list. The gateway owns the URL shape, so remembering its
+// answer is the only way to know a page's public URL without asking again — and a page that
+// was never registered simply has no entry.
+const addressingFile = (): string => path.join(runDir(), 'addressing.json');
+
+export interface UiAddressRecord { uiKey?: string; origin?: string }
+
+export function readAddressing(): Record<string, UiAddressRecord> {
+  try { return JSON.parse(fs.readFileSync(addressingFile(), 'utf8')) || {}; } catch { return {}; }
+}
+
+export function addressingFor(uiId: string): UiAddressRecord {
+  return readAddressing()[uiId] || {};
+}
+
+export function rememberAddressing(uiId: string, addr: UiAddressRecord): void {
+  if (!addr.uiKey && !addr.origin) return;
+  const all = readAddressing();
+  all[uiId] = { ...all[uiId], ...(addr.uiKey ? { uiKey: addr.uiKey } : {}), ...(addr.origin ? { origin: addr.origin } : {}) };
+  try {
+    fs.mkdirSync(runDir(), { recursive: true });
+    fs.writeFileSync(addressingFile(), JSON.stringify(all, null, 2) + '\n');
+  } catch { /* cache only — the gateway remains the source of truth */ }
+}
+
+/** How to address this UI on the gateway. The path routes take either, but the uiKey is
+ *  the globally unique one — prefer it whenever we have been told what it is. */
+export function gatewayUiRef(uiId: string): string {
+  return addressingFor(uiId).uiKey || uiId;
+}
+
 export function probeHttp(port: number, pathName: string, timeoutMs = 3000): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.get({ host: '127.0.0.1', port, path: pathName, timeout: timeoutMs }, (res) => {
@@ -127,7 +163,7 @@ export async function statusOf(s: UiPageState, uiWebPort: number | null): Promis
   if (alive && !serving) issues.push('process alive but HTTP probe failed');
   if (uiWebPort !== null && s.port !== uiWebPort) issues.push(`port ${s.port} ≠ uiWebPort ${uiWebPort} — unreachable through the hub`);
   return {
-    ...s, alive, serving,
+    ...s, ...addressingFor(s.uiId), alive, serving,
     reachableViaHub: serving && uiWebPort !== null && s.port === uiWebPort,
     stale: !alive && !r.ok,
     autoStart,

@@ -67,15 +67,34 @@ export function resolvedGatewayUrl(): string | null {
   return deriveGatewayUrl(cfg.hubUrl, loadUiGatewayOverride() ?? undefined);
 }
 
-/** The public URL a registered UI is served at (prefix host mode, the deployed default). */
-export function publicUiUrl(uiId: string): string | null {
-  const cfg = getHubConfig();
-  const base = deriveGatewayUrl(cfg.hubUrl, loadUiGatewayOverride() ?? undefined);
-  if (!base) return null;
-  try {
-    const u = new URL(base);
-    if (u.hostname === '127.0.0.1' || u.hostname === 'localhost') return `${base}/ui/${uiId}`;
-    const parent = u.hostname.replace(/^ui\./, '');
-    return `https://ui-${uiId}.${parent}/`;
-  } catch { return null; }
+// A uiId is only unique within its OWNER; what appears in the hostname is the gateway's
+// uiKey (<ownerSlug8>-<uiId>). The origin host therefore spends 'ui-' + 8 slug chars + '-'
+// out of a 63-character DNS label, leaving this much for the id. The gateway rejects longer
+// ids with a 400 — check it here so the author gets a sentence instead of a status code.
+export const MAX_UI_ID_LENGTH = 51;
+
+/** Why this uiId cannot be registered, or null when it is fine. */
+export function uiIdError(uiId: string): string | null {
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(uiId)) return 'uiId required: lowercase letters, digits, hyphens';
+  if (uiId.length > MAX_UI_ID_LENGTH) {
+    return `uiId "${uiId}" is ${uiId.length} characters — at most ${MAX_UI_ID_LENGTH} are available ` +
+      `(the public host is ui-<ownerSlug>-<uiId>.<domain> and a DNS label holds 63)`;
+  }
+  return null;
+}
+
+/** The uiKey + public origin a gateway response carries for one UI.
+ *
+ *  Never rebuild the origin from the uiId. The URL shape is the gateway's to decide — it
+ *  already changed once (the owner slug moved into the hostname when uiIds stopped being
+ *  globally unique) and it can change again without a release on this side; the only
+ *  trustworthy URL is the one the gateway just told us. */
+export interface UiAddress { uiKey?: string; origin?: string }
+
+export function readUiAddress(row: unknown): UiAddress {
+  const r = row as { uiKey?: unknown; origin?: unknown } | null;
+  return {
+    uiKey: typeof r?.uiKey === 'string' ? r.uiKey : undefined,
+    origin: typeof r?.origin === 'string' ? r.origin : undefined,
+  };
 }

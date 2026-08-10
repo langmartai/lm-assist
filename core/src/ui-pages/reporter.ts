@@ -9,8 +9,8 @@
  */
 
 import * as fs from 'fs';
-import { listStateFiles, statusOf } from './manager';
-import { gatewayCall, resolvedGatewayUrl } from './gateway-client';
+import { listStateFiles, statusOf, gatewayUiRef, rememberAddressing } from './manager';
+import { gatewayCall, resolvedGatewayUrl, uiIdError, readUiAddress } from './gateway-client';
 import { getHubConfig, loadServicePorts } from '../hub-client/hub-config';
 
 export const HEARTBEAT_MS = 120_000;
@@ -24,7 +24,9 @@ export async function reportStatusesOnce(log: (m: string) => void = () => {}): P
   for (const s of listStateFiles()) {
     try {
       const st = await statusOf(s, uiWebPort);
-      const r = await gatewayCall('PUT', `/registry/uis/${encodeURIComponent(s.uiId)}/status`, {
+      // The path routes take a bare uiId (resolved inside our own namespace) or the uiKey;
+      // send the uiKey once we know it, since it names the row without that resolution step.
+      const r = await gatewayCall('PUT', `/registry/uis/${encodeURIComponent(gatewayUiRef(s.uiId))}/status`, {
         workerId: hub.gatewayId || undefined,
         alive: st.alive, serving: st.serving, reachable: st.reachableViaHub, port: st.port,
         // dir + autoStart ride the heartbeat so the platform surfaces can show WHERE the
@@ -75,13 +77,19 @@ export async function syncManagedUis(log: (m: string) => void = () => {}): Promi
     let cfg: { uiId?: string; name?: string; scope?: string; service?: string; grant?: unknown; managed?: boolean };
     try { cfg = JSON.parse(fs.readFileSync(path.join(appsRoot, n, 'lmui.config.json'), 'utf8')); } catch { continue; }
     if (cfg.managed !== true || !cfg.uiId) continue;
+    const bad = uiIdError(cfg.uiId);
+    if (bad) { log(`[ui-pages] managed sync of ${appsRoot}/${n} skipped: ${bad}`); continue; }
     try {
       const r = await gatewayCall('POST', '/registry/uis', {
         uiId: cfg.uiId, name: cfg.name || cfg.uiId, scope: cfg.scope || 'lm-assist', access: 'owner',
         grant: cfg.grant, source: 'worker', workerId: hub.gatewayId,
         service: cfg.service || `ui-${cfg.uiId}`, artifactDir: cfg.uiId, managed: true,
       });
-      if (r.status < 300) { synced++; log(`[ui-pages] managed sync: ${cfg.uiId} asserted from ${appsRoot}/${n}`); }
+      if (r.status < 300) {
+        synced++;
+        rememberAddressing(cfg.uiId, readUiAddress(r.data));
+        log(`[ui-pages] managed sync: ${cfg.uiId} asserted from ${appsRoot}/${n}`);
+      }
       else log(`[ui-pages] managed sync of ${cfg.uiId} refused (${r.status}): ${JSON.stringify(r.data)}`);
     } catch (e) {
       log(`[ui-pages] managed sync failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -106,7 +114,7 @@ export async function uploadScreenshot(uiId: string, filePath: string): Promise<
   if (!hub.apiKey) throw new Error('no API key in hub config');
   const base = resolvedGatewayUrl();
   if (!base) throw new Error('cannot resolve ui-gateway URL');
-  const r = await fetch(`${base}/registry/uis/${encodeURIComponent(uiId)}/screenshot`, {
+  const r = await fetch(`${base}/registry/uis/${encodeURIComponent(gatewayUiRef(uiId))}/screenshot`, {
     method: 'PUT',
     headers: { authorization: `Bearer ${hub.apiKey}`, 'content-type': type },
     body,
