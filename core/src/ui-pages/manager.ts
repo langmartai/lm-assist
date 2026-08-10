@@ -77,6 +77,42 @@ export function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+/** The single state file `lmui host` writes for a server covering the whole apps root. */
+export const HOST_UI_ID = '_host';
+
+/**
+ * The UIs whose status is worth reporting, which is NOT the same list as the processes.
+ *
+ * A state file names a PROCESS. In per-app mode the two coincide, but `lmui host` runs ONE
+ * server over the entire apps root and writes a single `_host` file, serving each app under
+ * its own `/{service}/` path. Reporting state files verbatim therefore reported a UI called
+ * `_host` — a name no registry row can ever match, because registration is per app. The
+ * gateway answered 404, the reporter treats 404 as "not registered, nothing to say" and
+ * stayed quiet, and the platform received no status for ANY page: every pane read offline
+ * while serving perfectly. (SG prod, 2026-08-10: ui_page_status empty, 0 rows.)
+ *
+ * The expansion lives here rather than in listStateFiles so the process contract stays
+ * intact: boot respawn and start/stop must keep acting on the one thing that IS a process.
+ * Killing a synthetic per-app entry would take down every app sharing the host server.
+ */
+export function listReportableUis(): UiPageState[] {
+  const out: UiPageState[] = [];
+  for (const s of listStateFiles()) {
+    if (s.uiId !== HOST_UI_ID) { out.push(s); continue; }
+    let names: string[] = [];
+    try { names = fs.readdirSync(s.dir); } catch { continue; }
+    for (const n of names) {
+      let cfg: { uiId?: string; service?: string };
+      try { cfg = JSON.parse(fs.readFileSync(path.join(s.dir, n, 'lmui.config.json'), 'utf8')); } catch { continue; }
+      if (!cfg?.uiId) continue;
+      // pid/port stay the host's: one process serves them all, so it is the honest answer
+      // to "is this alive" — and the probe still hits each app's own service path.
+      out.push({ ...s, uiId: cfg.uiId, service: cfg.service || `ui-${cfg.uiId}`, dir: path.join(s.dir, n) });
+    }
+  }
+  return out;
+}
+
 // ── Autostart flags ────────────────────────────────────────────────────────────────────
 // ~/.lmui/autostart.json: { "<uiId>": false } — Core-owned (lmui never reads it), default
 // TRUE for every page. false = the boot respawn leaves this page down; start/stop remain

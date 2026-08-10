@@ -11,7 +11,7 @@ process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'uipages-home-'));
 import { deriveGatewayUrl, uiIdError, MAX_UI_ID_LENGTH } from '../ui-pages/gateway-client';
 import * as gatewayClient from '../ui-pages/gateway-client';
 import * as hubConfig from '../hub-client/hub-config';
-import { respawnable, pidAlive, rememberAddressing, gatewayUiRef, addressingFor, type UiPageState } from '../ui-pages/manager';
+import { respawnable, pidAlive, rememberAddressing, gatewayUiRef, addressingFor, listReportableUis, type UiPageState } from '../ui-pages/manager';
 import { createUiPagesRoutes } from '../routes/core/ui-pages.routes';
 import type { ParsedRequest } from '../routes/index';
 
@@ -66,16 +66,32 @@ test('addressing round-trips and gatewayUiRef prefers the uiKey', () => {
 
 // The URL shape is the gateway's: it already moved from ui-<uiId> to ui-<ownerSlug>-<uiId>,
 // so any URL this side builds is a guess that breaks on the next change.
+// The seam here is global fetch, NOT the module namespace. Assigning
+// `(gatewayClient as any).gatewayCall = stub` looks like it works and silently does not:
+// the route imported the binding directly, so it keeps calling the real one — and this
+// test was quietly firing live registrations at the production gateway and failing on
+// whatever it answered. gatewayCall resolves `fetch` at call time, so stubbing the global
+// is what actually intercepts it.
 test('register reports the gateway-supplied origin, not a locally built URL', async () => {
-  const calls: Array<{ method: string; path: string }> = [];
-  const realCall = gatewayClient.gatewayCall;
-  const realHub = hubConfig.getHubConfig;
-  (gatewayClient as any).gatewayCall = async (method: string, pathName: string) => {
-    calls.push({ method, path: pathName });
-    return { status: 200, data: { ok: true, uiId: 'demo', uiKey: '3f9a2b1c-demo', origin: 'https://ui-3f9a2b1c-demo.langmart.ai/' } };
-  };
-  (hubConfig as any).getHubConfig = () => ({ gatewayId: 'gw-test', apiKey: 'sk-test', hubUrl: 'wss://assist-api.langmart.ai' });
+  const calls: Array<{ method: string; url: string }> = [];
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'uihub-'));
+  const realHome = process.env.HOME;
+  const realFetch = globalThis.fetch;
   try {
+    process.env.HOME = home;
+    const cfgDir = path.join(home, '.lm-assist');
+    fs.mkdirSync(cfgDir, { recursive: true });
+    // Written under both suffixes so the test does not depend on whether the runner
+    // classifies this checkout as a dev repo.
+    for (const suffix of ['', '-dev']) {
+      fs.writeFileSync(path.join(cfgDir, `hub${suffix}.json`), JSON.stringify({ hubUrl: 'wss://assist-api.langmart.ai', apiKey: 'sk-test' }));
+      fs.writeFileSync(path.join(cfgDir, `gateway-id${suffix}`), 'gw4-test');
+    }
+    globalThis.fetch = (async (url: any, init: any) => {
+      calls.push({ method: init?.method, url: String(url) });
+      return { ok: true, status: 200, json: async () => ({ ok: true, uiId: 'demo', uiKey: '3f9a2b1c-demo', origin: 'https://ui-3f9a2b1c-demo.langmart.ai/' }) };
+    }) as any;
+
     const route = createUiPagesRoutes({} as any).find((r) => r.method === 'POST' && /register/.test(r.pattern.source))!;
     const req = { method: 'POST', path: '/ui-pages/register', params: {}, query: {}, body: { uiId: 'demo' }, headers: {}, clientIp: '127.0.0.1' } as ParsedRequest;
     const r: any = await route.handler(req, {} as any);
@@ -84,9 +100,12 @@ test('register reports the gateway-supplied origin, not a locally built URL', as
     assert.equal(r.data.uiKey, '3f9a2b1c-demo');
     assert.notEqual(r.data.url, 'https://ui-demo.langmart.ai/'); // what building it from the uiId would have produced
     assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.method, 'POST');
+    assert.equal(calls[0]!.url, 'https://ui.langmart.ai/registry/uis');
   } finally {
-    (gatewayClient as any).gatewayCall = realCall;
-    (hubConfig as any).getHubConfig = realHub;
+    globalThis.fetch = realFetch;
+    if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 
@@ -103,6 +122,47 @@ test('register rejects an over-long uiId locally, without asking the gateway', a
     assert.equal(called, 0);
   } finally {
     (gatewayClient as any).gatewayCall = realCall;
+  }
+});
+
+// `lmui host` writes ONE state file for a server covering every app, so the process list
+// and the reportable-UI list stop being the same thing. Reporting the state file verbatim
+// sent status for a UI called `_host`, which no registry row matches — the gateway 404'd,
+// the reporter swallows 404 as "not registered", and NO page ever got a status row. That
+// is what made every pane read offline on SG prod while it was serving fine.
+test('host mode expands into one reportable UI per app, per-app mode passes through', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'uihome-'));
+  const realHome = process.env.HOME;
+  try {
+    process.env.HOME = home;
+    const apps = path.join(home, '.lmui', 'apps');
+    fs.mkdirSync(apps, { recursive: true });
+    fs.writeFileSync(path.join(home, '.lmui', 'dev-_host.json'), JSON.stringify({
+      ...base, uiId: '_host', service: 'ui-_host', pid: process.pid, port: 5601, dir: apps,
+    }));
+    for (const [id, service] of [['alpha', 'ui-alpha'], ['beta', undefined]] as const) {
+      fs.mkdirSync(path.join(apps, id));
+      fs.writeFileSync(path.join(apps, id, 'lmui.config.json'), JSON.stringify({ uiId: id, ...(service ? { service } : {}) }));
+    }
+    fs.mkdirSync(path.join(apps, 'not-an-app')); // no config — must not be reported
+
+    const got = listReportableUis().sort((a, b) => a.uiId.localeCompare(b.uiId));
+    assert.deepEqual(got.map((s) => s.uiId), ['alpha', 'beta'], 'apps replace the _host entry');
+    assert.equal(got.find((s) => s.uiId === 'beta')!.service, 'ui-beta', 'service defaults to ui-<uiId>');
+    // The probe must hit the app's own path on the SHARED host process/port.
+    assert.deepEqual(got.map((s) => s.port), [5601, 5601]);
+    assert.equal(got[0]!.dir, path.join(apps, 'alpha'), 'dir narrows to the app, not the root');
+    assert.ok(!got.some((s) => s.uiId === '_host'), 'the unmatched _host pseudo-UI is never reported');
+
+    // A per-app state file is a UI and a process at once — unchanged.
+    fs.rmSync(path.join(home, '.lmui', 'dev-_host.json'));
+    fs.writeFileSync(path.join(home, '.lmui', 'dev-solo.json'), JSON.stringify({
+      ...base, uiId: 'solo', service: 'ui-solo', pid: process.pid, port: 5602, dir: apps,
+    }));
+    assert.deepEqual(listReportableUis().map((s) => s.uiId), ['solo']);
+  } finally {
+    if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 

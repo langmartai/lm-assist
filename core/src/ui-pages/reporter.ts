@@ -9,7 +9,7 @@
  */
 
 import * as fs from 'fs';
-import { listStateFiles, statusOf, gatewayUiRef, rememberAddressing } from './manager';
+import { listReportableUis, statusOf, gatewayUiRef, rememberAddressing } from './manager';
 import { gatewayCall, resolvedGatewayUrl, uiIdError, readUiAddress } from './gateway-client';
 import { getHubConfig, loadServicePorts } from '../hub-client/hub-config';
 
@@ -21,7 +21,9 @@ export async function reportStatusesOnce(log: (m: string) => void = () => {}): P
   if (!uiWebPort) return 0;
   const hub = getHubConfig();
   let sent = 0;
-  for (const s of listStateFiles()) {
+  // Reportable, not running: a host-mode server is one process serving many UIs, and the
+  // gateway keys status per registered UI. See listReportableUis.
+  for (const s of listReportableUis()) {
     try {
       const st = await statusOf(s, uiWebPort);
       // The path routes take a bare uiId (resolved inside our own namespace) or the uiKey;
