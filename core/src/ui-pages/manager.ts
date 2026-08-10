@@ -38,6 +38,7 @@ export interface UiPageStatus extends UiPageState {
   reachableViaHub: boolean; // serving AND port === uiWebPort (else the hub route can't reach it)
   stale: boolean;          // dead AND not respawnable (dir gone / config gone)
   autoStart: boolean;      // will the boot respawn bring this page back? (default true)
+  hosted?: boolean;        // served by the shared host-mode server, not its own process
   issue?: string;          // human-readable reason when something is off
 }
 
@@ -95,8 +96,10 @@ export const HOST_UI_ID = '_host';
  * intact: boot respawn and start/stop must keep acting on the one thing that IS a process.
  * Killing a synthetic per-app entry would take down every app sharing the host server.
  */
-export function listReportableUis(): UiPageState[] {
-  const out: UiPageState[] = [];
+export interface ReportableUi extends UiPageState { hosted?: boolean }
+
+export function listReportableUis(): ReportableUi[] {
+  const out: ReportableUi[] = [];
   for (const s of listStateFiles()) {
     if (s.uiId !== HOST_UI_ID) { out.push(s); continue; }
     let names: string[] = [];
@@ -106,8 +109,9 @@ export function listReportableUis(): UiPageState[] {
       try { cfg = JSON.parse(fs.readFileSync(path.join(s.dir, n, 'lmui.config.json'), 'utf8')); } catch { continue; }
       if (!cfg?.uiId) continue;
       // pid/port stay the host's: one process serves them all, so it is the honest answer
-      // to "is this alive" — and the probe still hits each app's own service path.
-      out.push({ ...s, uiId: cfg.uiId, service: cfg.service || `ui-${cfg.uiId}`, dir: path.join(s.dir, n) });
+      // to "is this alive" — and the probe still hits each app's own service path. `hosted`
+      // marks the entry as NOT independently controllable (see controlPage).
+      out.push({ ...s, uiId: cfg.uiId, service: cfg.service || `ui-${cfg.uiId}`, dir: path.join(s.dir, n), hosted: true });
     }
   }
   return out;
@@ -189,7 +193,7 @@ export function respawnable(s: UiPageState): { ok: boolean; reason?: string } {
   return { ok: true };
 }
 
-export async function statusOf(s: UiPageState, uiWebPort: number | null): Promise<UiPageStatus> {
+export async function statusOf(s: ReportableUi, uiWebPort: number | null): Promise<UiPageStatus> {
   const alive = pidAlive(s.pid);
   const serving = alive ? await probeHttp(s.port, `/${s.service}/index.html`) : false;
   const r = alive ? { ok: true as const } : respawnable(s);
@@ -208,7 +212,10 @@ export async function statusOf(s: UiPageState, uiWebPort: number | null): Promis
 }
 
 export async function uiPagesReport(uiWebPort: number | null, routeActive: boolean, uiAppsDir: string): Promise<UiPagesReport> {
-  const pages = await Promise.all(listStateFiles().map((s) => statusOf(s, uiWebPort)));
+  // Reportable, not running — same reason as the heartbeat. Reporting processes here left
+  // every registered UI matching nothing, so the manager listed them all as "no local
+  // server" while `_host` sat in localOnly as a page that is not a page.
+  const pages = await Promise.all(listReportableUis().map((s) => statusOf(s, uiWebPort)));
   return { uiWebPort, routeActive, uiAppsDir, pages };
 }
 
@@ -282,7 +289,17 @@ export async function controlPage(uiId: string, action: 'start' | 'stop'): Promi
     const parked = readStopped(uiId);
     if (parked) s = parked;
   }
-  if (!s) return { ok: false, detail: `no state file for ${uiId} — start it once with 'lmui start' in its app dir (state lives in ~/.lmui/)` };
+  if (!s) {
+    // A host-mode app has no state file of its own: one server covers the whole apps root.
+    // Say so, rather than sending the author off to run `lmui start` in a dir that already
+    // serves — and never fall through to signalling the shared pid, which would take every
+    // other app down with it.
+    const host = listStateFiles().find((x) => x.uiId === HOST_UI_ID);
+    if (host && listReportableUis().some((r) => r.uiId === uiId && r.hosted)) {
+      return { ok: false, detail: `${uiId} is served by the host-mode server (pid ${host.pid}, port ${host.port}) covering ${host.dir} — it has no process of its own. Control the host server instead, or run this app on its own with 'lmui start' in ${path.join(host.dir, uiId)}.` };
+    }
+    return { ok: false, detail: `no state file for ${uiId} — start it once with 'lmui start' in its app dir (state lives in ~/.lmui/)` };
+  }
   if (action === 'start') {
     if (pidAlive(s.pid)) return { ok: true, detail: `${uiId} already running (pid ${s.pid})` };
     const r = respawnable(s);

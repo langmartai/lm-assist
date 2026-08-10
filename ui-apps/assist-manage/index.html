@@ -151,13 +151,18 @@
     var st = u.local
       ? (u.local.serving ? '<span class="pill on">serving</span>' : u.local.stale ? '<span class="pill off">stale</span>' : '<span class="pill off">stopped</span>')
       : '<span class="pill">no local server</span>';
-    var auto = u.local && u.local.autoStart === false ? '<span class="pill off">autostart off</span>' : (u.local ? '<span class="pill on">autostart</span>' : '');
+    // Host mode = one server for the whole apps root, so this app has no process of its
+    // own. Showing start/stop here would offer control that does not exist (and must never
+    // reach the shared pid — that would stop every other app too).
+    var hosted = !!(u.local && u.local.hosted);
+    var auto = hosted ? '<span class="pill">hosted</span>'
+      : (u.local && u.local.autoStart === false ? '<span class="pill off">autostart off</span>' : (u.local ? '<span class="pill on">autostart</span>' : ''));
     var en = u.enabled === false ? '<span class="pill off">disabled</span>' : '<span class="pill on">enabled</span>';
     var repo = u.local && u.local.dir ? '<span class="sub">repo: ' + esc(u.local.dir) + '</span>' : '';
     var btns =
       (u.managed ? '<span class="pill">managed (file)</span>'
         : '<button data-a="enable" data-id="' + esc(u.uiId) + '" data-v="' + (u.enabled === false) + '">' + (u.enabled === false ? 'enable' : 'disable') + '</button>') +
-      (u.local ? '<button data-a="ctl" data-id="' + esc(u.uiId) + '" data-v="' + (u.local.alive ? 'stop' : 'start') + '">' + (u.local.alive ? 'stop' : 'start') + '</button>' +
+      (u.local && !hosted ? '<button data-a="ctl" data-id="' + esc(u.uiId) + '" data-v="' + (u.local.alive ? 'stop' : 'start') + '">' + (u.local.alive ? 'stop' : 'start') + '</button>' +
         '<button data-a="ctl" data-id="' + esc(u.uiId) + '" data-v="' + (u.local.autoStart === false ? 'autostart-on' : 'autostart-off') + '">' + (u.local.autoStart === false ? 'autostart on' : 'autostart off') + '</button>' : '') +
       '<button data-a="grants" data-id="' + esc(u.uiId) + '">grants</button>' +
       (u.managed ? '' : '<button class="warn" data-a="unreg" data-id="' + esc(u.uiId) + '">unregister</button>');
