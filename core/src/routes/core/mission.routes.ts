@@ -1873,6 +1873,7 @@ export interface MissionSpawnDeps {
   startNative?: (m: unknown, decision: unknown, nativeDeps: unknown) => Promise<Record<string, unknown>>;
   buildNativeDeps?: (m: unknown) => Promise<unknown>;
   persist?: (m: unknown) => Promise<void>;
+  actor?: MissionActor;
 }
 
 async function defaultSpawnNativeDeps(m: Record<string, unknown>): Promise<unknown> {
@@ -1937,6 +1938,21 @@ export async function handleMissionSpawn(id: string, b: Record<string, unknown>,
 
   const m = await getM(id);
   if (!m) return fail('MISSION_NOT_FOUND', `mission ${id} not found`);
+  // I-1 (same population as handlePatch's binding gate above): `assertDriveable` resolves a
+  // mission BY SESSION ID, so a spawn that rebinds a standby mission to a fresh executor
+  // detaches the human's session from the guard's view just as effectively as an unbind
+  // would — manageMode stays 'standby' on a record nothing consults, and a new executor
+  // starts driving while the human's terminal is silently orphaned. force:true must not be
+  // able to do from a controller what handlePatch already refuses it for binding changes.
+  // Human-only, not force-only: a human passing force:true here is making a deliberate,
+  // in-person choice to replace their own session — the human-only principle in this
+  // feature is about who may RELEASE the latch, not about forbidding the human who holds
+  // it from acting. So gate on the ACTOR, exactly like the binding check, and let a human's
+  // force:true through.
+  const who = d.actor ?? await actorFor(b);
+  if (isStandby(m as Pick<Mission, 'manageMode'>) && isControllerActor(who)) {
+    return fail('FORBIDDEN', 'spawning a replacement executor for a standby-latched mission is human-only — the human running this session must switch manageMode to handoff first, or spawn the replacement themselves');
+  }
   const force = b.force === true || b.force === 'true';
   const binding = m.binding as { sessionId?: string; kind?: string } | undefined;
   // ── Idempotency key (bl_1c861246 step B) ──
