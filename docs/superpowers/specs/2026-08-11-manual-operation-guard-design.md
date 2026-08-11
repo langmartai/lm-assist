@@ -163,6 +163,55 @@ The scripted checks answer questions that never needed an LLM:
 On a quiescent fleet the controller now receives zero injections. All 75 measured passes
 would have been eliminated.
 
+### Auto-inactive after prolonged absence of human input
+
+A latch is sticky by design — the controller can never release it. Without an expiry,
+every session a person ever touched accumulates as a permanently "active" mission,
+which is the same stale-mission problem that armed the timers in the first place.
+
+Track `lastHumanInputAt` on the mission's `control` field (excluded from `TRACKED_FIELDS`,
+so writes are history-clean). It is set from the two detectors that already establish
+human input: the passive transcript detector, and probe signal 5's unattributed-input
+attribution.
+
+After `manualIdleInactiveMin` minutes with no human input, set the mission's status to
+`paused`. This reuses the existing `MissionStatus` (`mission-model.ts:5`) rather than
+inventing a state, and it drops out of engagement for free: `listActiveMissions`
+(`mission-store.ts:197`) already counts only `active | waiting`.
+
+**Going inactive does not release the latch.** `manageMode` stays `standby`; waking the
+mission remains a human-only action. An idle timer must never be the thing that hands a
+session back to the controller — a person who stepped away for a day would return to find
+it had been driven in their absence.
+
+Default `manualIdleInactiveMin: 240` (4 hours), as a project setting alongside the
+existing `missionSessionIdleCloseMin`. Long enough that stepping away does not flip it,
+short enough that an abandoned session is dormant by the next day.
+
+### Hazard this design introduces: the session reaper will kill manual sessions
+
+`mission-session-reaper.ts` closes a tracked native session — **killing its tmux** — after
+`missionSessionIdleCloseMin` (default 30) minutes of idle. Its idle timer is refreshed by
+`touchActivity`, which is called from exactly two places: `handleSessionRead` and
+`handleSessionDrive`. Both are lm-assist's own operations.
+
+Once the guard blocks those paths for a standby mission, the session receives **zero
+touches** and the reaper closes it roughly 30 minutes later. The feature as designed would
+kill the terminal of the person it exists to protect.
+
+Two required changes:
+
+1. Exempt standby missions from `sweepIdle`.
+2. Call `touchActivity` on **detected human input**, not only on lm-assist operations, so a
+   session in active human use is never a reap candidate regardless of mode.
+
+Change 2 is worth making independently of this feature: today a human can work in a
+resumed mission session for an hour without the controller reading it, and the reaper will
+kill it out from under them.
+
+Related, and worth noting rather than fixing here: the reaper is in-memory and leader-only,
+so a leader failover silently forgets every tracked session.
+
 ### Notify
 
 - A mission history entry recording the latch, its reason, and its timestamp.
@@ -217,6 +266,11 @@ inherit the wrong one.
 - Regression test reproducing the 2026-07-15 shape — all executors quiet, liveness stale —
   asserting the scripted safety check records a finding.
 - Test asserting a timer tick produces zero injections regardless of findings.
+- Reaper tests: a standby mission is never swept; `touchActivity` fires on detected human
+  input; and a session under continuous human use is never reaped despite lm-assist never
+  reading or driving it.
+- Auto-inactive tests: a latched mission goes `paused` after `manualIdleInactiveMin`, and
+  its `manageMode` is still `standby` afterwards — the idle path must never release a latch.
 
 ## Out of scope
 
