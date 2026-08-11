@@ -838,8 +838,19 @@ function realGuardDeps() {
     latch: async (m: Mission, reason: ManualReason, now: number) => {
       m.manageMode = 'standby';
       m.control.lastHumanInputAt = now;
-      m.history = m.history ?? [];
-      m.history.push({ at: now, event: 'manual-latch', detail: reason } as never);
+      // Do NOT hand-write history. `manageMode` is in TRACKED_FIELDS
+      // (`mission-history.ts:6`), so putMission records the flip itself, with a
+      // proper rev/actor/diff. MissionChange is a versioned diff record, not a
+      // free-form event log — pushing to it by hand corrupts the revision chain.
+      // The human-readable REASON goes in adjustments, which is what it is for.
+      m.adjustments = m.adjustments ?? [];
+      m.adjustments.push({
+        at: now,
+        trigger: 'manual-operation-detected',
+        change: `went manual (${reason}) — Mission Control will not write to this session`,
+        by: 'user',
+        actor: { kind: 'user', channel: 'user', at: now },
+      });
       await putMission(m);
     },
   };
