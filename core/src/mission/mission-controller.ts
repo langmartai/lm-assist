@@ -30,6 +30,7 @@ import * as path from 'path';
 import { sessionVerdict } from '../terminal/cc-sessions';
 import { AgentSessionStore } from '../agent-session-store';
 import { detectHumanActivity } from './mission-onboard';
+import { isStandby } from './manual-mode';
 
 /**
  * Resolve a host string (which may be a hostname/label OR a gatewayId) to the
@@ -963,7 +964,10 @@ async function evaluateEngagement(
     try {
       const all = await deps.listAllForSchedule();
       const byId = new Map(all.map((m) => [m.id, m]));
-      readyUnbound = computeSchedule(all).ready.filter((id) => !byId.get(id)?.binding?.sessionId);
+      readyUnbound = computeSchedule(all).ready.filter((id) => {
+        const m = byId.get(id);
+        return !m?.binding?.sessionId && !(m && isStandby(m));
+      });
     } catch { /* best-effort — a schedule read failure must never sink the tick */ }
   }
   const starve = advanceStarvation(readyUnbound, eng.unplacedTicks, deps.starvationTicks ?? STARVATION_TICKS);

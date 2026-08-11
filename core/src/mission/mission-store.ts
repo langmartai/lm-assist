@@ -194,9 +194,17 @@ export async function listMissions(port: MissionDataPort = defaultPort()): Promi
   const all = await port.list();
   return all.filter((m) => !RESERVED_IDS.has(m.id));
 }
+/** Pure: the missions the supervisor should engage on. Standby is excluded — a
+ *  human is running that session, so it must not arm the controller's timers. */
+export function selectActive<T extends { id: string; status: string; manageMode?: string }>(all: T[]): T[] {
+  return all.filter((m) =>
+    !RESERVED_IDS.has(m.id)
+    && (m.status === 'active' || m.status === 'waiting')
+    && m.manageMode !== 'standby');
+}
+
 export async function listActiveMissions(port: MissionDataPort = defaultPort()): Promise<Mission[]> {
-  const all = await port.list();
-  return all.filter((m) => !RESERVED_IDS.has(m.id) && (m.status === 'active' || m.status === 'waiting'));
+  return selectActive(await port.list());
 }
 
 // ---------------------------------------------------------------------------

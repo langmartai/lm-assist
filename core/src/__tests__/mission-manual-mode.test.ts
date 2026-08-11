@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { newMission, type MissionActor } from '../mission/mission-model';
 import { applyManageMode } from '../mission/manual-mode';
+import { selectActive } from '../mission/mission-store';
 
 const human: MissionActor = { kind: 'user', channel: 'mcp', at: 1 };
 const controller: MissionActor = { kind: 'controller', channel: 'controller', at: 1 };
@@ -34,4 +35,18 @@ test('manageMode fails CLOSED on a missing/unidentifiable actor', () => {
   assert.equal(r.ok, false, 'an unknown caller must be refused, not trusted by default');
   if (!r.ok) assert.equal(r.code, 'FORBIDDEN');
   assert.equal(m.manageMode, undefined, 'must not have been mutated');
+});
+
+test('selectActive excludes standby missions', () => {
+  const mk = (id: string, status: string, mode?: string) =>
+    ({ id, status, manageMode: mode } as any);
+  const all = [
+    mk('mission_a', 'active'),
+    mk('mission_b', 'active', 'standby'),
+    mk('mission_c', 'waiting', 'standby'),
+    mk('mission_d', 'waiting', 'handoff'),
+    mk('mission_e', 'done'),
+  ];
+  const ids = selectActive(all).map((m) => m.id);
+  assert.deepEqual(ids, ['mission_a', 'mission_d']);
 });
