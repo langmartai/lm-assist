@@ -207,6 +207,23 @@ export async function listActiveMissions(port: MissionDataPort = defaultPort()):
   return selectActive(await port.list());
 }
 
+/** Pure: the missions that OCCUPY a session, for occupancy/footprint reporting (e.g.
+ *  session-footprint-collector's `managed` field). Deliberately broader than
+ *  `selectActive`: "should the supervisor engage this mission?" and "who occupies this
+ *  session?" are different questions. A standby mission — one a human is personally
+ *  running — is MORE spoken-for than an unbound session, not less, so `manageMode` is
+ *  never consulted here. Only non-terminal status and an actual session binding matter. */
+export function selectBound<T extends { id: string; status: string; binding?: { sessionId?: string | null } | null }>(all: T[]): T[] {
+  return all.filter((m) =>
+    !RESERVED_IDS.has(m.id)
+    && m.status !== 'done' && m.status !== 'failed'
+    && !!m.binding?.sessionId);
+}
+
+export async function listBoundMissions(port: MissionDataPort = defaultPort()): Promise<Mission[]> {
+  return selectBound(await port.list());
+}
+
 // ---------------------------------------------------------------------------
 // Controller session state (reserved key __controller__ in missions dataset)
 // ---------------------------------------------------------------------------
