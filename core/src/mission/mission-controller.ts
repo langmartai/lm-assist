@@ -30,7 +30,7 @@ import * as path from 'path';
 import { sessionVerdict } from '../terminal/cc-sessions';
 import { AgentSessionStore } from '../agent-session-store';
 import { detectHumanActivity } from './mission-onboard';
-import { isStandby, latchOnHumanActivity } from './manual-mode';
+import { isStandby, latchOnHumanActivity, expireIdleStandby } from './manual-mode';
 
 /**
  * Resolve a host string (which may be a hostname/label OR a gatewayId) to the
@@ -2195,6 +2195,18 @@ export function registerMissionController(
     };
 
     const r = await runSupervisorTick(realDeps);
+
+    // Idle-standby expiry: a mission latched to standby is sticky by design (only a human
+    // can release it) — without this every session anyone ever touched accumulates as a
+    // permanently "active" mission. This pauses the ACTIVITY, never the latch: see
+    // expireIdleStandby's own doc for why manageMode must stay untouched here.
+    try {
+      const all = await listMissions();
+      const paused = expireIdleStandby(all, Date.now(), getProjectSettings().manualIdleInactiveMin ?? 240);
+      for (const m of paused) await putMission(m);
+    } catch (e) {
+      console.debug(`[mission-controller] idle-standby expiry failed: ${(e as Error).message}`);
+    }
 
     // Reaper sweep: auto-close resumed native sessions that have been idle past the threshold.
     // Only the leader runs the sweep (non-leaders return skipped=true above, but we also

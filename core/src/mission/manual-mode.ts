@@ -104,3 +104,30 @@ export function latchOnHumanActivity(
   const quiet: HumanSignal = { ...sig, newLines: [] };
   return { latched: !already, reason: 'human-input', signal: quiet };
 }
+
+/**
+ * Expire the ACTIVITY of a long-quiet standby mission — not its latch.
+ *
+ * A latch is sticky by design, so without this every session anyone ever touched
+ * accumulates as a permanently "active" mission. Pausing drops it from
+ * `selectActive` for free.
+ *
+ * 🔴 `manageMode` is deliberately left at 'standby'. An idle timer must never be
+ * the thing that hands a session back to the controller: someone who stepped away
+ * for a day would return to find it had been driven in their absence. Waking a
+ * mission stays a human action.
+ */
+export function expireIdleStandby(missions: Mission[], now: number, idleMin: number): Mission[] {
+  const idleMs = idleMin * 60_000;
+  const changed: Mission[] = [];
+  for (const m of missions) {
+    if (!isStandby(m)) continue;
+    if (m.status !== 'active' && m.status !== 'waiting') continue;
+    const last = m.control?.lastHumanInputAt;
+    if (last === undefined) continue;          // never observed a human — do not guess
+    if (now - last <= idleMs) continue;
+    m.status = 'paused';
+    changed.push(m);
+  }
+  return changed;
+}
