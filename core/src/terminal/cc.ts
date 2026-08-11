@@ -264,6 +264,36 @@ export function composerHoldsText(pane: string, text: string): boolean {
   return norm(extractComposerBlock(pane)).includes(tail);
 }
 
+/** Pure: Claude Code's own composer placeholder when messages are queued
+ *  ("Press up to edit queued messages") — same phrase `paneShowsQueuedMessage`
+ *  matches. It renders INSIDE the composer block once a message has been
+ *  successfully queued, so it looks like composer content but is UI chrome,
+ *  not something a human is mid-typing; it must not count as unsubmitted text. */
+const QUEUED_PLACEHOLDER_RE = /press up to edit queued messages?/i;
+
+/**
+ * Pure: does the composer hold ANY unsubmitted text — not just text we typed
+ * (that's `composerHoldsText`), but anything a human could have typed and not
+ * yet sent? This is the signal a transcript read can never see.
+ *
+ * Builds on `extractComposerBlock` (inherits its STATUSLINE_PROMPT_RE /
+ * isRule guards — never re-parse the pane directly) and strips the composer
+ * marker itself so a bare '>'/'❯' prompt with nothing after it reads as
+ * empty, and strips the queued-message placeholder so a successfully queued
+ * message doesn't read as pending input.
+ */
+export function composerIsNonEmpty(pane: string): boolean {
+  const block = extractComposerBlock(pane);
+  if (!block) return false;
+  const stripped = block
+    .split('\n')
+    .map((l) => l.replace(COMPOSER_MARKER_RE, '').trim())
+    .join(' ')
+    .replace(QUEUED_PLACEHOLDER_RE, '')
+    .trim();
+  return stripped.length > 0;
+}
+
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Type text into the pane, settle, submit, and verify the submit took. */
