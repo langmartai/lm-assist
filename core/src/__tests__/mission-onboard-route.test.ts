@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { handleOnboard } from '../routes/core/mission.routes';
 import type { Mission, MissionActor } from '../mission/mission-model';
-import type { MissionDataPort } from '../mission/mission-store';
+import type { MissionDataPort, MissionHistoryPort } from '../mission/mission-store';
 
 function memPort(): MissionDataPort & { docs: Map<string, Mission> } {
   const docs = new Map<string, Mission>();
@@ -15,13 +15,27 @@ function memPort(): MissionDataPort & { docs: Map<string, Mission> } {
     del: async (id) => { docs.delete(id); },
   };
 }
+
+// Fix wave 2 (task-6): every `handleOnboard` call below mocked `port` but not
+// `historyPort`, so putMission's history append fell through to the live, fleet-synced
+// `mission-history` dataset — confirmed live (mission_64fdde9f:1, actor caller-uuid-1,
+// objective "...caller-uuid-1...") and deleted as part of this fix. `OnboardDeps.historyPort`
+// now threads an in-memory port the same way `port` does.
+function memHistoryPort(): MissionHistoryPort {
+  const store = new Map<string, unknown>();
+  return {
+    isEnabled: () => true,
+    put: async (rec) => { store.set(rec.id, rec); },
+    query: async (missionId) => [...store.values()].filter((r: any) => r.missionId === missionId) as any,
+  };
+}
 const user: MissionActor = { kind: 'user', channel: 'mcp', at: 1 };
 const localSession: MissionActor = { kind: 'local-session', id: 'caller-uuid-1', channel: 'mcp', at: 1 };
 const ctrl: MissionActor = { kind: 'controller', channel: 'controller', at: 1 };
 
 function deps(port: MissionDataPort, over: Record<string, unknown> = {}) {
   return {
-    port, actor: user,
+    port, historyPort: memHistoryPort(), actor: user,
     clusterRecords: async () => [{ gatewayId: 'gw4-self', cluster: 'staging' }, { gatewayId: 'gw4-other', cluster: 'prod' }],
     myCluster: () => 'staging',
     onlineNodes: async () => ['gw4-self', 'gw4-other'],

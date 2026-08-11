@@ -19,7 +19,7 @@ import type {
 } from '../routes/core/mission.routes';
 import type { Mission, MissionActor } from '../mission/mission-model';
 import { thisNode } from '../mission/mission-store';
-import type { MissionDataPort } from '../mission/mission-store';
+import type { MissionDataPort, MissionHistoryPort } from '../mission/mission-store';
 
 const user: MissionActor = { kind: 'user', channel: 'mcp', at: 1 };
 const ctrl: MissionActor = { kind: 'controller', channel: 'controller', at: 1 };
@@ -186,10 +186,31 @@ function mockPort(): MissionDataPort {
   };
 }
 
+/**
+ * Fix wave 2: `putMission` also writes to a SEPARATE live, fleet-synced dataset
+ * (`mission-history`, via `appendMissionHistory(mission.id, change, opts.historyPort)`
+ * — see `mission-store.ts`). `handleOnboard` called `putMission(m, d.port, { actor: who })`
+ * with no `historyPort`, so even with the I2 mock `port` above, history fell through to
+ * `defaultHistoryPort()` → the LIVE store. Because a fresh mission's `old = port.get(m.id)`
+ * is always null, `diffMission` always yields a non-empty change, so history was written on
+ * EVERY run (two real records — mission_b2abd695:1, mission_4678e45d:1 — were found and
+ * deleted). `OnboardDeps.historyPort` now threads an in-memory `MissionHistoryPort` the same
+ * way `port` does, so history writes are captured here too.
+ */
+function mockHistoryPort(): MissionHistoryPort {
+  const store = new Map<string, unknown>();
+  return {
+    isEnabled: () => true,
+    put: async (rec) => { store.set(rec.id, rec); },
+    query: async (missionId) => [...store.values()].filter((r: any) => r.missionId === missionId) as any,
+  };
+}
+
 function onboardDeps(over: Record<string, unknown> = {}) {
   return {
     actor: ctrl,
     port: mockPort(),
+    historyPort: mockHistoryPort(),
     clusterRecords: async () => [{ gatewayId: 'gw-self', cluster: 'default' }],
     myCluster: () => 'default',
     onlineNodes: async () => ['gw-self'],

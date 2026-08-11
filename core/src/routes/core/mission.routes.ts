@@ -9,7 +9,7 @@ import { newMission, defaultIsolation, Mission, MissionStatus, Isolation, coarse
 import { resolveMcpActor, upgradeControllerActor } from '../../mission/mission-actor';
 import { normalizeTags, mergeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
 import {
-  MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession, listMissionHistory,
+  MissionDataPort, MissionHistoryPort, getMission, listMissions, putMission, thisNode, getControllerSession, listMissionHistory,
   findMissionBySessionOrCcr,
 } from '../../mission/mission-store';
 import { resolveMissionSession, ResolvedSession } from '../../mission/mission-session-resolver';
@@ -568,6 +568,11 @@ export async function handleWorkflowRollback(id: string, b: Record<string, unkno
 
 export interface OnboardDeps {
   port?: MissionDataPort;
+  /** Passed straight through to putMission's opts.historyPort. Tests that inject an
+   *  in-memory `port` MUST also inject an in-memory historyPort here — otherwise the
+   *  history append still falls through to the live, fleet-synced `mission-history`
+   *  dataset even though the mission record itself lands in the mock `port`. */
+  historyPort?: MissionHistoryPort;
   actor?: MissionActor;
   leader?: LeaderAnchorDeps;                       // own-cluster anchoring
   clusterRecords?: () => Promise<Array<{ gatewayId: string; cluster?: string | null }>>;
@@ -653,7 +658,7 @@ export async function handleOnboard(b: Record<string, unknown>, d: OnboardDeps =
     { sid, node: sessionNode, transport, mode: modeRaw, note, crossCluster, ownerNode: self, createdBy: who },
     Date.now(), genId,
   );
-  await putMission(m, d.port, { actor: who });
+  await putMission(m, d.port, { actor: who, historyPort: d.historyPort });
   return ok({ mission: m, existing: false, cluster: target, leaderNode: self });
 }
 
