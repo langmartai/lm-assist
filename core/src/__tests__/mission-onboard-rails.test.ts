@@ -70,6 +70,21 @@ test('manageMode patch: human ok, controller forbidden', async () => {
   // "non-onboarded invalid" case left to assert here. See mission-manual-mode.test.ts.
 });
 
+test('manageMode patch: settable on a NON-onboarded mission via the route (the task 1 deliverable)', async () => {
+  const executorMission = { id: 'mission_exec2', origin: undefined, binding: null } as any as Mission;
+  const port = {
+    isEnabled: () => true,
+    get: async () => executorMission,
+    list: async () => [executorMission],
+    put: async (x: Mission) => { Object.assign(executorMission, x); },
+    del: async () => {},
+  } as any;
+  const r = await handlePatch(executorMission.id, { manageMode: 'standby' }, port, user);
+  assert.equal(r.success, true, JSON.stringify(r));
+  assert.equal((r.data as any).manageMode, 'standby');
+  assert.equal(executorMission.manageMode, 'standby');
+});
+
 // ── I1: controller tools auto-resolve node for an onboarded mission bound elsewhere ─────────
 
 /** An onboarded mission whose binding.node is 'n2' (a DIFFERENT node than this test's 'self'='n1'). */

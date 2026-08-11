@@ -24,7 +24,14 @@ export function applyManageMode(m: Mission, value: string, who: MissionActor | u
   if (value !== 'handoff' && value !== 'standby') {
     return { ok: false, code: 'INVALID_INPUT', message: 'manageMode must be handoff|standby' };
   }
-  if (who && isControllerActor(who)) {
+  // Fail CLOSED on an unidentifiable caller: a safety gate that only checks a
+  // *known* controller and lets an absent/unresolved actor through would let anything
+  // impersonating "no actor" bypass the human-only rule. Refuse it, same code as the
+  // controller case, with a message naming the real reason (unknown, not "controller").
+  if (!who) {
+    return { ok: false, code: 'FORBIDDEN', message: 'manageMode is human-only — caller identity is unknown, refusing' };
+  }
+  if (isControllerActor(who)) {
     return { ok: false, code: 'FORBIDDEN', message: 'manageMode is human-only — ask the user to switch it' };
   }
   m.manageMode = value as ManageMode;

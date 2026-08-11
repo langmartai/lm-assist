@@ -27,3 +27,11 @@ test('manageMode rejects an unknown value', () => {
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.code, 'INVALID_INPUT');
 });
+
+test('manageMode fails CLOSED on a missing/unidentifiable actor', () => {
+  const m = newMission({ title: 't', objective: 'o', ownerNode: 'n', createdBy: human }, 1, () => 'mission_w');
+  const r = applyManageMode(m, 'standby', undefined);
+  assert.equal(r.ok, false, 'an unknown caller must be refused, not trusted by default');
+  if (!r.ok) assert.equal(r.code, 'FORBIDDEN');
+  assert.equal(m.manageMode, undefined, 'must not have been mutated');
+});
