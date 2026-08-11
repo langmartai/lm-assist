@@ -8,6 +8,8 @@
  * every session write.
  */
 import { composerIsNonEmpty, paneShowsQueuedMessage } from '../terminal/cc';
+import { Mission } from './mission-model';
+import { isStandby } from './manual-mode';
 
 export type ManualReason = 'human-attached' | 'human-terminal' | 'human-typing' | 'foreign-driver';
 
@@ -77,8 +79,6 @@ export function classifyManualControl(s: ProbeSignals, _now: number): { manual: 
 // ---------------------------------------------------------------------------
 // assertDriveable — the single choke point every session WRITE calls first
 // ---------------------------------------------------------------------------
-import { Mission } from './mission-model';
-import { isStandby } from './manual-mode';
 
 export interface GuardDeps {
   now: number;
@@ -87,7 +87,15 @@ export interface GuardDeps {
   latch: (m: Mission, reason: ManualReason, now: number) => Promise<void>;
 }
 
-export type GuardResult = { ok: true } | { ok: false; code: 'STANDBY_MODE'; message: string };
+/**
+ * `mission` on the ok branch is the (possibly null) mission `assertDriveable` already looked
+ * up via `deps.findMission` — the caller may reuse it instead of calling `findMission` again
+ * for its own post-guard logic (e.g. the onboarded-mission marker-prefix check in
+ * `handleSessionDrive`). `null` covers both "no mission owns this session" and "the lookup
+ * threw" (fail-open) — callers that need to distinguish those cases already have their own
+ * try/catch around their OWN findMission call and don't need to here.
+ */
+export type GuardResult = { ok: true; mission: Mission | null } | { ok: false; code: 'STANDBY_MODE'; message: string };
 
 function refuse(reason: string): GuardResult {
   return {
@@ -112,18 +120,18 @@ export async function assertDriveable(sid: string, deps: GuardDeps): Promise<Gua
   try {
     m = await deps.findMission(sid);
   } catch {
-    return { ok: true };            // unknown ownership → not ours to refuse
+    return { ok: true, mission: null };            // unknown ownership → not ours to refuse
   }
-  if (!m) return { ok: true };      // no mission owns this session
+  if (!m) return { ok: true, mission: null };      // no mission owns this session
   if (isStandby(m)) return refuse('standby');
 
   let verdict: { manual: boolean; reason?: ManualReason };
   try {
     verdict = classifyManualControl(await deps.gather(sid, m), deps.now);
   } catch {
-    return { ok: true };            // fail open
+    return { ok: true, mission: m };            // fail open
   }
-  if (!verdict.manual || !verdict.reason) return { ok: true };
+  if (!verdict.manual || !verdict.reason) return { ok: true, mission: m };
 
   try { await deps.latch(m, verdict.reason, deps.now); } catch { /* best-effort */ }
   return refuse(verdict.reason);
@@ -158,13 +166,26 @@ export async function gatherProbeSignals(sid: string): Promise<ProbeSignals> {
   const out: ProbeSignals = {};
 
   const tmuxMod = require('../terminal/tmux') as typeof import('../terminal/tmux');
-  try { out.attached = tmuxMod.getState(v.tmuxSession).attached; } catch { /* leave undefined */ }
+  let tmuxAttached: boolean | undefined;
+  try { tmuxAttached = tmuxMod.getState(v.tmuxSession).attached; } catch { /* leave undefined */ }
 
+  // I3: `hasAttachedTtyd` comes from the process-status cache, which is EMPTY on first use
+  // and periodically refreshed — a cold Core or a stale-cache window finds no record at all
+  // (not "found, not ours": genuinely NO EVIDENCE either way). Classifier rule 1 fires on
+  // `attached === true && hasAttachedTtyd !== true`, and `undefined !== true`, so leaving
+  // `attached` populated from tmux while the process side stayed empty free-fires
+  // 'human-attached' on a perfectly healthy managed session — and that latch (`manageMode:
+  // 'standby'`) is reversible ONLY by a human. Half-evidence must never trigger a
+  // human-only-reversible latch, so when no process record is found at all, withhold
+  // `attached` too: the pair then reads as "no evidence" and rule 1 cannot fire, same as an
+  // all-undefined ProbeSignals falls through to `{ manual: false }`.
+  let procFound = false;
   try {
     const { getProcessStatusStore } = require('../process-status-store') as typeof import('../process-status-store');
     const proc = getProcessStatusStore().getCachedProcesses().find((p) => p.tmuxSessionName === v.tmuxSession);
-    if (proc) { out.hasAttachedTtyd = proc.hasAttachedTtyd; out.managedBy = proc.managedBy; out.source = proc.source; }
+    if (proc) { procFound = true; out.hasAttachedTtyd = proc.hasAttachedTtyd; out.managedBy = proc.managedBy; out.source = proc.source; }
   } catch { /* leave undefined */ }
+  out.attached = procFound ? tmuxAttached : undefined;
 
   try {
     const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');

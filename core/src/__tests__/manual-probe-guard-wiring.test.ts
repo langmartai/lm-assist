@@ -12,12 +12,14 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   handleSessionDrive, handleSessionControl, handleSessionAnswer, handleSessionResume, handleOnboard,
+  defaultSessionOpsDeps, defaultSessionAnswerDeps, defaultSessionResumeDeps,
 } from '../routes/core/mission.routes';
 import type {
   SessionOpsDeps, SessionAnswerDeps, SessionResumeDeps, LeaderAnchorDeps,
 } from '../routes/core/mission.routes';
 import type { Mission, MissionActor } from '../mission/mission-model';
 import { thisNode } from '../mission/mission-store';
+import type { MissionDataPort } from '../mission/mission-store';
 
 const user: MissionActor = { kind: 'user', channel: 'mcp', at: 1 };
 const ctrl: MissionActor = { kind: 'controller', channel: 'controller', at: 1 };
@@ -164,9 +166,30 @@ test('handleSessionDrive: a handoff mission is unaffected by the guard', async (
 // Onboarding bypass fix (requirement A): explicit mode:'handoff' is human-only
 // ---------------------------------------------------------------------------
 
+/**
+ * I2: an in-memory-only `MissionDataPort` — never `livePort()`/`defaultPort()`. Without
+ * this, `handleOnboard`'s `d.port` argument was omitted, so `putMission`/`listMissions`
+ * fell through to `defaultPort()` → `livePort()`, and on THIS machine
+ * (`dataServiceEnabled: true`) every test run wrote a REAL 'Onboarded: uuid-bypass-…'
+ * mission into the live, fleet-synced `missions` dataset. Two such records were found
+ * live (mission_0a4949e1, mission_3f4703c4) and deleted as part of this fix — see the
+ * task report. Matches the mock shape used in `mission-onboard-rails.test.ts`.
+ */
+function mockPort(): MissionDataPort {
+  const store = new Map<string, Mission>();
+  return {
+    isEnabled: () => true,
+    get: async (id) => store.get(id) ?? null,
+    list: async () => [...store.values()],
+    put: async (m) => { store.set(m.id, m); },
+    del: async (id) => { store.delete(id); },
+  };
+}
+
 function onboardDeps(over: Record<string, unknown> = {}) {
   return {
     actor: ctrl,
+    port: mockPort(),
     clusterRecords: async () => [{ gatewayId: 'gw-self', cluster: 'default' }],
     myCluster: () => 'default',
     onlineNodes: async () => ['gw-self'],
@@ -193,4 +216,42 @@ test('handleOnboard: human actor + explicit mode:handoff is still allowed', asyn
   const r = await handleOnboard({ sessionId: 'uuid-bypass-3', mode: 'handoff' }, onboardDeps({ actor: user }));
   assert.equal(r.success, true, JSON.stringify(r));
   assert.equal((r.data as any).mission.manageMode, 'handoff');
+});
+
+// ---------------------------------------------------------------------------
+// I1: the DEFAULT deps builders must actually wire findMission to the real store.
+//
+// `findMission` is OPTIONAL on SessionOpsDeps/SessionAnswerDeps/SessionResumeDeps, and
+// `realGuardDeps(undefined)` degrades to "no mission → always driveable". Every test above
+// injects its own `findMission`, so it passes identically whether or not the PRODUCTION
+// default builders wire the real store — deleting `findMission: (sid) =>
+// findMissionBySessionOrCcr(sid)` from e.g. `defaultSessionAnswerDeps` would leave every
+// test above green while the guard silently goes inert on /answer. These three assert the
+// default builders each supply a `findMission` that is genuinely the real
+// `findMissionBySessionOrCcr` — checked at the source level (constructing the deps object is
+// side-effect-free; CALLING findMission would hit the live, fleet-synced store, which is
+// exactly what I2 above says never to do from a test) via the function's own source text,
+// so a swap for an inert stub (e.g. `async () => null`) fails this just as loudly as an
+// outright deletion.
+// ---------------------------------------------------------------------------
+
+test('defaultSessionOpsDeps wires findMission to the real store', () => {
+  const d = defaultSessionOpsDeps();
+  assert.equal(typeof d.findMission, 'function');
+  assert.ok(String(d.findMission).includes('findMissionBySessionOrCcr'),
+    'defaultSessionOpsDeps.findMission must delegate to findMissionBySessionOrCcr — the real mission store lookup');
+});
+
+test('defaultSessionAnswerDeps wires findMission to the real store', () => {
+  const d = defaultSessionAnswerDeps();
+  assert.equal(typeof d.findMission, 'function');
+  assert.ok(String(d.findMission).includes('findMissionBySessionOrCcr'),
+    'defaultSessionAnswerDeps.findMission must delegate to findMissionBySessionOrCcr — the real mission store lookup');
+});
+
+test('defaultSessionResumeDeps wires findMission to the real store', () => {
+  const d = defaultSessionResumeDeps();
+  assert.equal(typeof d.findMission, 'function');
+  assert.ok(String(d.findMission).includes('findMissionBySessionOrCcr'),
+    'defaultSessionResumeDeps.findMission must delegate to findMissionBySessionOrCcr — the real mission store lookup');
 });

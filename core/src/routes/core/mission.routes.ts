@@ -31,7 +31,7 @@ import { getMyCluster } from '../../cluster/cluster-config';
 import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowRaw, listWorkflowSnapshots, getWorkflowSnapshot,
   type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
-import { applyManageMode, isStandby } from '../../mission/manual-mode';
+import { applyManageMode } from '../../mission/manual-mode';
 import { assertDriveable, gatherProbeSignals, type GuardDeps, type ManualReason } from '../../mission/manual-probe';
 import { WORKFLOW_DATASET } from '../../mission/workflow-store';
 import { anchorToOrigin, realOriginAnchor as sharedRealOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
@@ -1153,7 +1153,12 @@ export function probeTuiDialog(sid: string): import('../../terminal/ccr-cloud').
   }
 }
 
-function defaultSessionOpsDeps(): SessionOpsDeps {
+/**
+ * Exported (not just internal) so I1's wiring test can assert this builder actually supplies
+ * a real `findMission` — without the export, a test could only see its own injected deps,
+ * which would pass identically whether or not this default is wired to the real store.
+ */
+export function defaultSessionOpsDeps(): SessionOpsDeps {
   return {
     cloudRead: async (opts) => {
       const { cloudRead } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
@@ -1406,13 +1411,12 @@ export async function handleSessionDrive(sid: string, text: string, deps?: Sessi
   if (!guard.ok) return fail(guard.code, guard.message);
   const r = d.resolve(sid);
   let driveText = text;
-  if (d.findMission) {
-    try {
-      const m = await d.findMission(sid);
-      if (m?.origin === 'onboarded') {
-        driveText = markDriveText(text);
-      }
-    } catch { /* best-effort — never block a normal drive on a store hiccup */ }
+  // I4: reuse the guard's own findMission lookup instead of calling it again — `findMission`
+  // does a full port.list({limit:10000}), and this handler ran it TWICE per drive before this
+  // fix (once inside assertDriveable, once here for the marker-prefix check). Same fail-open
+  // semantics: assertDriveable already swallowed a lookup error into `mission: null`.
+  if (guard.mission?.origin === 'onboarded') {
+    driveText = markDriveText(text);
   }
   // Command contract: a command aimed at THE CONTROLLER (user chat included)
   // is tracked — wrapped with a cmd id + the per-task verifiable-⟦RESULT⟧
@@ -1549,7 +1553,8 @@ export interface SessionAnswerDeps {
   findMission?: (sid: string) => Promise<Mission | null>;
 }
 
-function defaultSessionAnswerDeps(): SessionAnswerDeps {
+/** Exported for the same reason as `defaultSessionOpsDeps` — see its comment. */
+export function defaultSessionAnswerDeps(): SessionAnswerDeps {
   return {
     cloudAnswer: (opts) => {
       const { cloudAnswer: ca } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
@@ -1986,7 +1991,8 @@ export async function handleMissionSpawn(id: string, b: Record<string, unknown>,
   return ok({ binding: newBinding, name: missionSessionTitle(m as never) });
 }
 
-function defaultSessionResumeDeps(): SessionResumeDeps {
+/** Exported for the same reason as `defaultSessionOpsDeps` — see its comment. */
+export function defaultSessionResumeDeps(): SessionResumeDeps {
   // The existing native resume body (claude --resume <sid> --remote-control in the
   // mission worktree, preserves sid) — unchanged, just lifted to a named const so
   // both resumeNative and ensureLive.resumeDead can reuse it.
