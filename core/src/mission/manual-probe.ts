@@ -7,7 +7,7 @@
  * Ordered cheapest-first and short-circuits, because the caller runs it before
  * every session write.
  */
-import { composerIsNonEmpty, paneShowsQueuedMessage } from '../terminal/cc';
+import { composerIsNonEmpty } from '../terminal/cc';
 import { Mission } from './mission-model';
 import { isStandby } from './manual-mode';
 
@@ -57,11 +57,22 @@ export function classifyManualControl(s: ProbeSignals, _now: number): { manual: 
   if (s.managedBy === 'unmanaged-tmux' && s.source === 'external-terminal') {
     return { manual: true, reason: 'human-terminal' };
   }
-  // 3+4 — someone has typed, or submitted while we were busy. One capture-pane.
-  if (s.pane) {
-    if (composerIsNonEmpty(s.pane)) return { manual: true, reason: 'human-typing' };
-    if (paneShowsQueuedMessage(s.pane)) return { manual: true, reason: 'human-typing' };
-  }
+  // 3 — someone has typed but not submitted. One capture-pane.
+  //
+  // 🔴 I-2: rule 4 (`paneShowsQueuedMessage`) was removed. Claude Code paints the exact same
+  // "Press up to edit queued messages?" placeholder whether the queued input came from a human
+  // OR from lm-assist's own drive landing on a busy session — this repo's own docs say queuing
+  // IS a successful submit. That made the normal operating path self-destructive: controller
+  // drives a busy worker → CC queues it and paints the placeholder → controller later calls
+  // answer/control/resume → the probe captures the same pane, can't tell the banner apart from
+  // a human's queued message, classifies 'human-typing', and latches manageMode:'standby' on
+  // its OWN worker — a lockout only a human can release, self-inflicted. Distinguishing the two
+  // needs `lastSelfDriveAt`, which is deliberately unwired (see its doc above) — do NOT gate on
+  // it; it is always undefined today, so any such gate would be inert. Losing an ambiguous
+  // signal is strictly better than latching against ourselves on the normal path. Rule 3 above
+  // (composerIsNonEmpty) remains the strong typed-but-unsubmitted signal and does NOT fire on
+  // the queued pane.
+  if (s.pane && composerIsNonEmpty(s.pane)) return { manual: true, reason: 'human-typing' };
   // 5 — attribution: input exists that we did not send.
   //
   // 🔴 Deliberately keyed on the last USER-role message, NOT on jsonl mtime. A driven
@@ -145,7 +156,17 @@ export async function assertDriveable(sid: string, deps: GuardDeps): Promise<Gua
   try {
     m = await deps.findMission(sid);
   } catch {
-    return { ok: true, mission: null };            // unknown ownership → not ours to refuse
+    // I-3: a lookup that THREW is not evidence the session isn't ours — for a cloud sid
+    // (cse_/session_), `gatherProbeSignals` returns {} and an explicit human-set standby is
+    // the ONLY protection that mission has, so failing open here on the first hiccup can
+    // silently drop that protection. Retry once before giving up: this absorbs a single
+    // transient store error without turning a store hiccup into a fleet-wide write outage
+    // (that tradeoff — never fail closed globally — is deliberate; see the doc above).
+    try {
+      m = await deps.findMission(sid);
+    } catch {
+      return { ok: true, mission: null };          // still failing after a retry → genuinely unknown ownership
+    }
   }
   if (!m) return { ok: true, mission: null };      // no mission owns this session
   if (isStandby(m)) {

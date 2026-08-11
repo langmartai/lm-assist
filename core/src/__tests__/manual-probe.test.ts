@@ -74,10 +74,16 @@ test('unsubmitted text in the composer is manual (real pane)', () => {
   assert.equal(r.reason, 'human-typing');
 });
 
-test('a queued-message banner is manual (real pane)', () => {
+// I-2: rule 4 (paneShowsQueuedMessage) was removed. The queued-message banner is NOT
+// attributable — Claude Code paints the identical placeholder whether the queued input
+// came from a human typing or from lm-assist's own drive landing on a busy session. Before
+// the fix this classified as manual, which meant the controller's normal drive → (busy) →
+// answer/control/resume sequence would latch a worker to standby against ITSELF, a lockout
+// only a human can release. Confirm the queued pane, with no OTHER signal present, no longer
+// classifies as manual.
+test('a queued-message banner alone is NOT manual (not attributable — could be our own queued drive)', () => {
   const r = classifyManualControl({ pane: QUEUED_PANE }, NOW);
-  assert.equal(r.manual, true);
-  assert.equal(r.reason, 'human-typing');
+  assert.equal(r.manual, false);
 });
 
 test('input we did not send is a foreign driver', () => {

@@ -2196,32 +2196,42 @@ export function registerMissionController(
 
     const r = await runSupervisorTick(realDeps);
 
-    // Idle-standby expiry: a mission latched to standby is sticky by design (only a human
-    // can release it) — without this every session anyone ever touched accumulates as a
-    // permanently "active" mission. This pauses the ACTIVITY, never the latch: see
-    // expireIdleStandby's own doc for why manageMode must stay untouched here.
-    try {
-      const all = await listMissions();
-      const paused = expireIdleStandby(all, Date.now(), getProjectSettings().manualIdleInactiveMin ?? 240);
-      for (const m of paused) await putMission(m);
-    } catch (e) {
-      console.debug(`[mission-controller] idle-standby expiry failed: ${(e as Error).message}`);
-    }
-
-    // Reaper sweep: auto-close resumed native sessions that have been idle past the threshold.
-    // Only the leader runs the sweep (non-leaders return skipped=true above, but we also
-    // gate here to be explicit about the leader-only contract).
+    // Minor(leader-gate): idle-standby expiry AND the reaper sweep are both leader-only —
+    // every node ticking either would race to write the SAME missions (idle-standby expiry
+    // writes status:'paused' via putMission, which also appends its own `mission-history` rev
+    // into a fleet-synced dataset) each tick. Only the leader runs the sweep (non-leaders
+    // return skipped=true above, but we also gate here to be explicit about the contract).
+    // `listMissions()` is fetched ONCE and shared by both blocks below instead of each doing
+    // its own full list call.
     const { isMonitor: amMonitorNow } = await amIMonitor().catch(() => ({ isMonitor: false }));
     if (amMonitorNow) {
+      let allMissions: Mission[] = [];
+      try {
+        allMissions = await listMissions();
+      } catch (e) {
+        console.debug(`[mission-controller] listMissions failed (idle-standby expiry + reaper sweep skipped): ${(e as Error).message}`);
+      }
+
+      // Idle-standby expiry: a mission latched to standby is sticky by design (only a human
+      // can release it) — without this every session anyone ever touched accumulates as a
+      // permanently "active" mission. This pauses the ACTIVITY, never the latch: see
+      // expireIdleStandby's own doc for why manageMode must stay untouched here.
+      try {
+        const paused = expireIdleStandby(allMissions, Date.now(), getProjectSettings().manualIdleInactiveMin ?? 240);
+        for (const m of paused) await putMission(m);
+      } catch (e) {
+        console.debug(`[mission-controller] idle-standby expiry failed: ${(e as Error).message}`);
+      }
+
+      // Reaper sweep: auto-close resumed native sessions that have been idle past the threshold.
       try {
         const { sweepIdle } = require('./mission-session-reaper') as typeof import('./mission-session-reaper');
         const idleMin = getProjectSettings().missionSessionIdleCloseMin ?? 30;
         // A standby mission gets zero touchActivity calls (Task 6 blocks read/drive for
         // it), so without this veto the reaper would kill the terminal of the human it
-        // exists to protect. Build the standby set fresh each tick — cheap, and avoids
-        // any staleness from caching it across ticks.
+        // exists to protect. Reuses the `allMissions` fetched above for this tick.
         const standbySids = new Set(
-          (await listMissions())
+          allMissions
             .filter((m) => isStandby(m) && m.binding?.sessionId)
             .map((m) => m.binding!.sessionId as string),
         );

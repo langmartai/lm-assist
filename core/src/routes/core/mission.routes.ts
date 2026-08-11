@@ -31,7 +31,7 @@ import { getMyCluster } from '../../cluster/cluster-config';
 import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowRaw, listWorkflowSnapshots, getWorkflowSnapshot,
   type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
-import { applyManageMode } from '../../mission/manual-mode';
+import { applyManageMode, isStandby } from '../../mission/manual-mode';
 import { assertDriveable, gatherProbeSignals, type GuardDeps, type ManualReason } from '../../mission/manual-probe';
 import { WORKFLOW_DATASET } from '../../mission/workflow-store';
 import { anchorToOrigin, realOriginAnchor as sharedRealOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
@@ -397,8 +397,14 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   // I4(a): for an ONBOARDED mission, the binding IS the user's own session — a controller-attributed
   // actor must never rebind/unbind it (that would silently sever mission control from the user's
   // session, or worse, re-point it at a session the human never onboarded). Human-only, like manageMode.
-  if (b.binding !== undefined && m.origin === 'onboarded' && isControllerActor(who)) {
-    return fail('FORBIDDEN', 'binding changes on an onboarded mission are human-only');
+  //
+  // I-1: `assertDriveable` resolves a mission BY SESSION ID, so unbinding (or rebinding to a
+  // different sessionId) removes the session from the guard's view entirely — manageMode stays
+  // 'standby' on a record nothing consults, silently neutralising the latch. This is exactly the
+  // population this branch adds: an auto-latched NON-onboarded mission has origin !== 'onboarded',
+  // so the origin-only check let a controller clear its own lockout. Gate on standby too.
+  if (b.binding !== undefined && (m.origin === 'onboarded' || isStandby(m)) && isControllerActor(who)) {
+    return fail('FORBIDDEN', 'binding changes on an onboarded or standby-latched mission are human-only');
   }
   if (b.binding !== undefined && (b.binding === null || typeof b.binding === 'object')) {
     const bn = (b.binding || {}) as Record<string, unknown>;
