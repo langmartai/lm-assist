@@ -312,12 +312,12 @@ export function MissionDetailView({
             onboarded
           </span>
         )}
-        {mission.origin === 'onboarded' && mission.manageMode && (
+        {mission.manageMode && (
           <span
             className={`badge ${mission.manageMode === 'handoff' ? 'badge-green' : 'badge-default'}`}
-            title={mission.manageMode === 'handoff' ? 'mission control drives this session' : 'observe only — human drives'}
+            title={mission.manageMode === 'handoff' ? 'mission control drives this session' : 'a human is running this session — Mission Control will not write to it'}
           >
-            {mission.manageMode}
+            {mission.manageMode === 'standby' ? 'MANUAL' : 'handoff'}
           </span>
         )}
         <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}>

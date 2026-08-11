@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { newMission, type MissionActor } from '../mission/mission-model';
-import { applyManageMode } from '../mission/manual-mode';
+import { applyManageMode, manualBadge } from '../mission/manual-mode';
 import { selectActive } from '../mission/mission-store';
 
 const human: MissionActor = { kind: 'user', channel: 'mcp', at: 1 };
@@ -49,4 +49,13 @@ test('selectActive excludes standby missions', () => {
   ];
   const ids = selectActive(all).map((m) => m.id);
   assert.deepEqual(ids, ['mission_a', 'mission_d']);
+});
+
+test('a standby mission carries a MANUAL badge', () => {
+  const m: any = { manageMode: 'standby', control: { lastHumanInputAt: 42 } };
+  assert.deepEqual(manualBadge(m), { label: 'MANUAL', reason: 'human input at 42' });
+});
+
+test('a handoff mission has no badge', () => {
+  assert.equal(manualBadge({ manageMode: 'handoff', control: {} } as any), null);
 });

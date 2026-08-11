@@ -131,3 +131,10 @@ export function expireIdleStandby(missions: Mission[], now: number, idleMin: num
   }
   return changed;
 }
+
+/** Display badge for a manually-operated mission; null when the controller owns it. */
+export function manualBadge(m: Mission): { label: string; reason?: string } | null {
+  if (!isStandby(m)) return null;
+  const at = m.control?.lastHumanInputAt;
+  return { label: 'MANUAL', reason: at === undefined ? undefined : `human input at ${at}` };
+}
