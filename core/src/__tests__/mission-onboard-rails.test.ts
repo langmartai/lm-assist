@@ -56,7 +56,7 @@ test('non-onboarded drive untouched', async () => {
   assert.equal(sent[0], 'plain');
 });
 
-test('manageMode patch: human ok, controller forbidden, non-onboarded invalid', async () => {
+test('manageMode patch: human ok, controller forbidden', async () => {
   const m = onboarded('standby');
   const port = { isEnabled: () => true, get: async () => m, list: async () => [m], put: async (x: Mission) => { Object.assign(m, x); }, del: async () => {} } as any;
   const okFlip = await handlePatch(m.id, { manageMode: 'handoff' }, port, user);
@@ -65,9 +65,9 @@ test('manageMode patch: human ok, controller forbidden, non-onboarded invalid', 
   const denied = await handlePatch(m.id, { manageMode: 'standby' }, port, ctrl);
   assert.equal(denied.success, false);
   assert.equal(denied.error!.code, 'FORBIDDEN');
-  const plainPort = { isEnabled: () => true, get: async () => ({ ...m, origin: undefined }), list: async () => [], put: async () => {}, del: async () => {} } as any;
-  const invalid = await handlePatch(m.id, { manageMode: 'handoff' }, plainPort, user);
-  assert.equal(invalid.error!.code, 'INVALID_INPUT');
+  // manageMode used to be onboarded-only (non-onboarded → INVALID_INPUT). That restriction
+  // was deliberately removed — manageMode is now settable on every mission — so there is no
+  // "non-onboarded invalid" case left to assert here. See mission-manual-mode.test.ts.
 });
 
 // ── I1: controller tools auto-resolve node for an onboarded mission bound elsewhere ─────────

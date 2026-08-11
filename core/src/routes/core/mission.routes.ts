@@ -30,6 +30,7 @@ import { getMyCluster } from '../../cluster/cluster-config';
 import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowRaw, listWorkflowSnapshots, getWorkflowSnapshot,
   type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
+import { applyManageMode, isStandby } from '../../mission/manual-mode';
 import { WORKFLOW_DATASET } from '../../mission/workflow-store';
 import { anchorToOrigin, realOriginAnchor as sharedRealOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
 import { stripRoutingKeys } from './transport-keys';
@@ -342,11 +343,8 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   const sv = str(b.status) as MissionStatus | undefined;
   if (sv) { if (!VALID_STATUS.has(sv)) return fail('INVALID_INPUT', `invalid status "${sv}"`); m.status = sv; }
   if (b.manageMode !== undefined) {
-    const mm = str(b.manageMode);
-    if (m.origin !== 'onboarded') return fail('INVALID_INPUT', 'manageMode applies only to onboarded missions');
-    if (mm !== 'handoff' && mm !== 'standby') return fail('INVALID_INPUT', 'manageMode must be handoff|standby');
-    if (isControllerActor(who)) return fail('FORBIDDEN', 'manageMode is human-only — ask the user to switch it');
-    m.manageMode = mm;
+    const r = applyManageMode(m, String(b.manageMode ?? ''), who);
+    if (!r.ok) return fail(r.code, r.message);
   }
   if (b.progress !== undefined) {
     // Human-supplied progress (2026-07-15, human-authorized): previously this field was
