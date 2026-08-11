@@ -2204,9 +2204,19 @@ export function registerMissionController(
       try {
         const { sweepIdle } = require('./mission-session-reaper') as typeof import('./mission-session-reaper');
         const idleMin = getProjectSettings().missionSessionIdleCloseMin ?? 30;
+        // A standby mission gets zero touchActivity calls (Task 6 blocks read/drive for
+        // it), so without this veto the reaper would kill the terminal of the human it
+        // exists to protect. Build the standby set fresh each tick — cheap, and avoids
+        // any staleness from caching it across ticks.
+        const standbySids = new Set(
+          (await listMissions())
+            .filter((m) => isStandby(m) && m.binding?.sessionId)
+            .map((m) => m.binding!.sessionId as string),
+        );
         await sweepIdle({
           now: Date.now(),
           idleMin,
+          skip: (sid) => standbySids.has(sid),
           close: async (sid: string) => {
             // Resolve sid → tmuxSession via sessionVerdict, then kill via tmuxTerminalBackend.
             const verdict = sessionVerdict(sid);

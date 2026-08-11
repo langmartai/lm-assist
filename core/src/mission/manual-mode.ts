@@ -74,6 +74,19 @@ export function latchOnHumanActivity(
   // the latch off this timestamp, and a person still typing must never expire.
   m.control.lastHumanInputAt = now;
 
+  // A human working in this session must never look idle to the reaper. Today the
+  // idle timer is refreshed ONLY by handleSessionRead/handleSessionDrive — lm-assist's
+  // own operations — so a person working uninterrupted for 30 minutes is reapable.
+  // This is a bug independent of the standby guard: best-effort, must never break
+  // the latch itself if the reaper module is unavailable or throws.
+  const sid = m.binding?.sessionId;
+  if (sid) {
+    try {
+      const { touchActivity } = require('./mission-session-reaper') as typeof import('./mission-session-reaper');
+      touchActivity(sid, now);
+    } catch { /* best-effort */ }
+  }
+
   const already = isStandby(m);
   if (!already) m.manageMode = 'standby';
 
