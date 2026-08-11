@@ -74,10 +74,20 @@ export function latchOnHumanActivity(
   // the latch off this timestamp, and a person still typing must never expire.
   m.control.lastHumanInputAt = now;
 
-  // A human working in this session must never look idle to the reaper. Today the
-  // idle timer is refreshed ONLY by handleSessionRead/handleSessionDrive — lm-assist's
-  // own operations — so a person working uninterrupted for 30 minutes is reapable.
-  // This is a bug independent of the standby guard: best-effort, must never break
+  // A human working in this session must never look idle to the reaper.
+  //
+  // 🔴 CURRENTLY A NO-OP. This function has exactly one production caller —
+  // mission-controller.ts's `readSignal`, gated on `m.origin === 'onboarded'` — and
+  // the reaper only ever tracks a sid via `trackResumedNative`, which
+  // `handleSessionResume` (mission.routes.ts) calls ONLY on the NON-onboarded path
+  // ("user session: never enrolled for auto-close" — it returns before
+  // `trackResumedNative` for an onboarded mission). So every sid reaching this call
+  // is, by construction, never in the reaper's `tracked` map: `touchActivity`'s own
+  // `if (entry)` guard makes it a guaranteed no-op today. Left in place — call is
+  // harmless and becomes correct for free if onboarded sessions are ever enrolled —
+  // but do not read this as working coverage. The reachable half of this fix lives
+  // in `assertDriveable` (`manual-probe.ts`), which runs for the non-onboarded
+  // population the reaper actually tracks. Best-effort either way: must never break
   // the latch itself if the reaper module is unavailable or throws.
   const sid = m.binding?.sessionId;
   if (sid) {

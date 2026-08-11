@@ -2213,6 +2213,17 @@ export function registerMissionController(
             .filter((m) => isStandby(m) && m.binding?.sessionId)
             .map((m) => m.binding!.sessionId as string),
         );
+        // 🔴 RESIDUAL WINDOW (honest, not closed here): the reaper's idle timer is
+        // refreshed by lm-assist's own reads/drives, by `latchOnHumanActivity` (only
+        // for onboarded missions — see its comment, currently a no-op), and by
+        // `assertDriveable`'s touch (`manual-probe.ts`, only when a session-WRITE
+        // route actually runs and its probe fires). If a human types into a
+        // TRACKED, non-standby session and Mission Control never attempts a write
+        // during that window — no drive/answer/control/resume call, so no probe
+        // runs — nothing refreshes the timer, and the session can still be reaped
+        // at `missionSessionIdleCloseMin` while the human is present. Closing that
+        // fully needs periodic (not just write-triggered) human detection for
+        // non-onboarded missions, which is out of scope here.
         await sweepIdle({
           now: Date.now(),
           idleMin,

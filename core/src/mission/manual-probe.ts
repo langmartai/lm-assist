@@ -106,6 +106,31 @@ function refuse(reason: string): GuardResult {
 }
 
 /**
+ * Refresh the reaper's idle timer, best-effort, when `assertDriveable` has just
+ * observed confirmed human presence on `sid`.
+ *
+ * Why this is the REACHABLE half of the human-activity → reaper wiring (the other
+ * half, `latchOnHumanActivity` in `manual-mode.ts`, is currently inert — see its
+ * comment): the reaper only ever tracks sids via `trackResumedNative`, which is
+ * called from `handleSessionResume` ONLY on the non-onboarded path (an onboarded
+ * mission's session returns before that call — "never enrolled for auto-close").
+ * So the population `mission-session-reaper` tracks and the population
+ * `assertDriveable` guards for non-onboarded missions are the same population.
+ * A standby refusal or a manual-control verdict here is exactly the human-presence
+ * signal the reaper needs to not kill a session mid-use.
+ *
+ * Best-effort and silent: `touchActivity`'s own `if (entry)` guard makes this a
+ * no-op for sids the reaper never tracked (onboarded, cloud, or already closed) —
+ * that is expected, not an error. Must never affect the guard's verdict either way.
+ */
+function touchReaperActivity(sid: string, now: number): void {
+  try {
+    const { touchActivity } = require('./mission-session-reaper') as typeof import('./mission-session-reaper');
+    touchActivity(sid, now);
+  } catch { /* best-effort */ }
+}
+
+/**
  * The single gate every session WRITE passes through.
  *
  * Order matters: the flag is checked first because it is free and authoritative.
@@ -123,7 +148,13 @@ export async function assertDriveable(sid: string, deps: GuardDeps): Promise<Gua
     return { ok: true, mission: null };            // unknown ownership → not ours to refuse
   }
   if (!m) return { ok: true, mission: null };      // no mission owns this session
-  if (isStandby(m)) return refuse('standby');
+  if (isStandby(m)) {
+    // Already-latched standby, observed again: still a confirmed human-presence
+    // signal for a possibly-tracked sid. See touchReaperActivity for why this is
+    // the reachable path.
+    touchReaperActivity(sid, deps.now);
+    return refuse('standby');
+  }
 
   let verdict: { manual: boolean; reason?: ManualReason };
   try {
@@ -133,6 +164,10 @@ export async function assertDriveable(sid: string, deps: GuardDeps): Promise<Gua
   }
   if (!verdict.manual || !verdict.reason) return { ok: true, mission: m };
 
+  // Confirmed human control detected right now — refresh the reaper timer before
+  // the (best-effort, possibly-throwing) latch, so a latch failure can never
+  // suppress the touch.
+  touchReaperActivity(sid, deps.now);
   try { await deps.latch(m, verdict.reason, deps.now); } catch { /* best-effort */ }
   return refuse(verdict.reason);
 }
