@@ -37,3 +37,47 @@ export function applyManageMode(m: Mission, value: string, who: MissionActor | u
   m.manageMode = value as ManageMode;
   return { ok: true };
 }
+
+export interface HumanSignal {
+  alive: boolean;
+  gated: boolean;
+  cursor: number;
+  newLines: string[];
+  humanActive: boolean;
+}
+
+/**
+ * Latch a mission to standby when a human is detected in its session.
+ *
+ * 🔴 POLARITY. Before 2026-08-11 this path did the opposite: it prepended a
+ * '⟦WORKER-STATUS⟧ human-activity' line, which STATUS_MARKER_RE classifies as
+ * MATERIAL — so a person typing DROVE the controller to inject on top of them.
+ * The returned signal deliberately carries no marker and no newLines, so
+ * classifyExecutorActivity sees nothing to act on.
+ *
+ * This writes `m.manageMode = 'standby'` directly rather than going through
+ * `applyManageMode` — that function enforces human-only writes because its whole
+ * point is to stop the controller handing a session back to ITSELF (standby →
+ * handoff). This call is the opposite direction: the SYSTEM setting standby,
+ * which only ever REDUCES the controller's power over the session. That
+ * direction is safe for anyone (including the system) to take unilaterally;
+ * only the reverse (standby → handoff) must stay gated to a human actor.
+ */
+export function latchOnHumanActivity(
+  m: Mission,
+  sig: HumanSignal,
+  now: number,
+): { latched: boolean; reason?: string; signal: HumanSignal } {
+  if (!sig.humanActive) return { latched: false, signal: sig };
+
+  // Advance the idle clock on EVERY human message, latched or not — Task 6 expires
+  // the latch off this timestamp, and a person still typing must never expire.
+  m.control.lastHumanInputAt = now;
+
+  const already = isStandby(m);
+  if (!already) m.manageMode = 'standby';
+
+  // Strip the output so this tick cannot classify as material.
+  const quiet: HumanSignal = { ...sig, newLines: [] };
+  return { latched: !already, reason: 'human-input', signal: quiet };
+}

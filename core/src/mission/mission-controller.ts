@@ -30,7 +30,7 @@ import * as path from 'path';
 import { sessionVerdict } from '../terminal/cc-sessions';
 import { AgentSessionStore } from '../agent-session-store';
 import { detectHumanActivity } from './mission-onboard';
-import { isStandby } from './manual-mode';
+import { isStandby, latchOnHumanActivity } from './manual-mode';
 
 /**
  * Resolve a host string (which may be a hostname/label OR a gatewayId) to the
@@ -1897,12 +1897,11 @@ export function registerMissionController(
       readSignal: async (m) => {
         if (m.origin === 'onboarded') {
           const s = await readOnboardedSignal(m, defaultOnboardedReadDeps());
-          if (s.humanActive) {
-            // A human message is MATERIAL for the engagement classifier: inject a synthetic
-            // status-marker line so classifyExecutorActivity fires without changing its API.
-            return { ...s, newLines: ['⟦WORKER-STATUS⟧ human-activity', ...s.newLines] };
+          const r = latchOnHumanActivity(m, s, Date.now());
+          if (r.latched || s.humanActive) {
+            try { await realDeps.persistMissionControl!(m); } catch { /* best-effort */ }
           }
-          return s;
+          return r.signal;
         }
         return readExecutorSignal(m);
       },

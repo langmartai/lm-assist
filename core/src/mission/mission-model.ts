@@ -45,6 +45,10 @@ export interface MissionControl {
   /** Step B: the idempotency key of the spawn that produced the current binding. Written in
    *  the SAME persist as the binding, so a repeat resolves instead of launching again. */
   lastSpawnRequest?: string;
+  /** Last time a human was detected inputting to this mission's session. Drives the
+   *  standby idle-expiry (Task 6). `control` is excluded from TRACKED_FIELDS, so
+   *  writing this every tick does not spam the mission's edit history. */
+  lastHumanInputAt?: number;
 }
 export interface MissionResult { at: number; ref: string; summary?: string; by?: MissionActor; }
 export interface MissionAdjustment { at: number; trigger: string; change: string; by: 'controller' | 'user'; actor: MissionActor; }
