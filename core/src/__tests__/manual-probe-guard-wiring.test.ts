@@ -1,0 +1,196 @@
+/**
+ * Task 6 route wiring: `assertDriveable` must actually run — before any write — inside
+ * each of the four session-write handlers, not just be imported. Each test proves this
+ * by injecting a `findMission` that resolves a standby, NON-onboarded mission (the guard
+ * is mission-scoped, not onboarded-only) and asserting both the STANDBY_MODE refusal AND
+ * that the underlying write primitive was never called.
+ *
+ * Also covers the onboarding bypass fix: a controller-attributed caller must not be able
+ * to onboard with an explicit mode:'handoff' and seize drive control pre-emptively.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert';
+import {
+  handleSessionDrive, handleSessionControl, handleSessionAnswer, handleSessionResume, handleOnboard,
+} from '../routes/core/mission.routes';
+import type {
+  SessionOpsDeps, SessionAnswerDeps, SessionResumeDeps, LeaderAnchorDeps,
+} from '../routes/core/mission.routes';
+import type { Mission, MissionActor } from '../mission/mission-model';
+import { thisNode } from '../mission/mission-store';
+
+const user: MissionActor = { kind: 'user', channel: 'mcp', at: 1 };
+const ctrl: MissionActor = { kind: 'controller', channel: 'controller', at: 1 };
+
+function standbyMission(): Mission {
+  // Deliberately origin: undefined (NOT onboarded) — proves the guard gates every
+  // managed session, not just the onboarding rail.
+  return {
+    id: 'mission_standby',
+    manageMode: 'standby',
+    control: {},
+    adjustments: [],
+  } as unknown as Mission;
+}
+
+const STUB_LEADER_IS_SELF: LeaderAnchorDeps = {
+  getElection: async () => ({ isMonitor: true, monitorNodeId: thisNode() }),
+  proxyGet: async () => ({}),
+  proxyPost: async () => ({}),
+};
+
+// ---------------------------------------------------------------------------
+// handleSessionDrive
+// ---------------------------------------------------------------------------
+
+test('handleSessionDrive: standby (non-onboarded) mission refuses BEFORE nativeDrive runs', async () => {
+  let driven = false;
+  const deps: SessionOpsDeps = {
+    resolve: () => ({ sid: 'uuid-guard-1', transport: 'native', missionId: 'mission_standby', role: 'worker' }),
+    cloudRead: async () => ({ messages: [] }),
+    cloudDrive: async () => ({ delivered: true }),
+    cloudStop: async () => ({ stopped: true }),
+    nativeRead: async () => ({ messages: [] }),
+    nativeRawMessages: async () => [],
+    nativeDrive: async () => { driven = true; },
+    nativeInterrupt: async () => {},
+    nativeStop: async () => {},
+    clearController: async () => {},
+    getControllerSession: async () => null,
+    findMission: async () => standbyMission(),
+    selfNode: () => 'n1',
+  } as any;
+  const r = await handleSessionDrive('uuid-guard-1', 'do the thing', deps);
+  assert.equal(r.success, false);
+  assert.equal(r.error!.code, 'STANDBY_MODE');
+  assert.equal(driven, false, 'nativeDrive must never run once the guard refuses');
+});
+
+// ---------------------------------------------------------------------------
+// handleSessionControl
+// ---------------------------------------------------------------------------
+
+test('handleSessionControl: standby (non-onboarded) mission refuses BEFORE nativeInterrupt runs', async () => {
+  let interrupted = false;
+  const deps: SessionOpsDeps = {
+    resolve: () => ({ sid: 'uuid-guard-2', transport: 'native', missionId: 'mission_standby', role: 'worker' }),
+    cloudRead: async () => ({ messages: [] }),
+    cloudDrive: async () => ({ delivered: true }),
+    cloudStop: async () => ({ stopped: true }),
+    nativeRead: async () => ({ messages: [] }),
+    nativeRawMessages: async () => [],
+    nativeDrive: async () => {},
+    nativeInterrupt: async () => { interrupted = true; },
+    nativeStop: async () => {},
+    clearController: async () => {},
+    getControllerSession: async () => null,
+    findMission: async () => standbyMission(),
+    selfNode: () => 'n1',
+  } as any;
+  const r = await handleSessionControl('uuid-guard-2', 'interrupt', deps);
+  assert.equal(r.success, false);
+  assert.equal(r.error!.code, 'STANDBY_MODE');
+  assert.equal(interrupted, false, 'nativeInterrupt must never run once the guard refuses');
+});
+
+// ---------------------------------------------------------------------------
+// handleSessionAnswer
+// ---------------------------------------------------------------------------
+
+test('handleSessionAnswer: standby (non-onboarded) mission refuses BEFORE nativeSendKeys runs', async () => {
+  let sent = false;
+  const deps: SessionAnswerDeps = {
+    cloudAnswer: async () => ({ answered: true }),
+    nativeSendKeys: async () => { sent = true; },
+    nativeGetPendingQuestion: async () => null,
+    nativeTmuxSession: () => 'lmcc-test',
+    resolve: (sid) => ({ sid, transport: 'native', missionId: 'mission_standby', role: 'worker' }),
+    findMission: async () => standbyMission(),
+  };
+  const r = await handleSessionAnswer('uuid-guard-3', { answer: 'yes' }, deps, undefined, STUB_LEADER_IS_SELF);
+  assert.equal(r.success, false);
+  assert.equal(r.error!.code, 'STANDBY_MODE');
+  assert.equal(sent, false, 'nativeSendKeys must never run once the guard refuses');
+});
+
+// ---------------------------------------------------------------------------
+// handleSessionResume
+// ---------------------------------------------------------------------------
+
+test('handleSessionResume: standby (non-onboarded) mission refuses BEFORE resumeNative runs', async () => {
+  let resumed = false;
+  const deps: SessionResumeDeps = {
+    resolve: (sid) => ({ sid, transport: 'native', missionId: 'mission_standby' }),
+    cloudStatus: async (sid) => ({ sid, status: 'active', raw: {} }),
+    cloudWake: async () => {},
+    nativeVerdict: () => ({ connectStrategy: 'create-tmux', safeToCreateTmux: true, inTmux: false }),
+    resumeNative: async (_missionId, sid) => { resumed = true; return { sid, boundAt: Date.now() }; },
+    idleMin: 30,
+    findMission: async () => standbyMission(),
+  };
+  const r = await handleSessionResume('uuid-guard-4', { missionId: 'mission_standby' }, deps, undefined, STUB_LEADER_IS_SELF);
+  assert.equal(r.success, false);
+  assert.equal(r.error!.code, 'STANDBY_MODE');
+  assert.equal(resumed, false, 'resumeNative must never run once the guard refuses');
+});
+
+// ---------------------------------------------------------------------------
+// A clean (handoff) mission is unaffected — the guard doesn't over-refuse
+// ---------------------------------------------------------------------------
+
+test('handleSessionDrive: a handoff mission is unaffected by the guard', async () => {
+  let driven = false;
+  const deps: SessionOpsDeps = {
+    resolve: () => ({ sid: 'uuid-guard-5', transport: 'native', missionId: 'mission_handoff', role: 'worker' }),
+    cloudRead: async () => ({ messages: [] }),
+    cloudDrive: async () => ({ delivered: true }),
+    cloudStop: async () => ({ stopped: true }),
+    nativeRead: async () => ({ messages: [] }),
+    nativeRawMessages: async () => [],
+    nativeDrive: async () => { driven = true; },
+    nativeInterrupt: async () => {},
+    nativeStop: async () => {},
+    clearController: async () => {},
+    getControllerSession: async () => null,
+    findMission: async () => ({ id: 'mission_handoff', manageMode: 'handoff', control: {}, adjustments: [] } as unknown as Mission),
+    selfNode: () => 'n1',
+  } as any;
+  const r = await handleSessionDrive('uuid-guard-5', 'do the thing', deps);
+  assert.equal(r.success, true, JSON.stringify(r));
+  assert.equal(driven, true);
+});
+
+// ---------------------------------------------------------------------------
+// Onboarding bypass fix (requirement A): explicit mode:'handoff' is human-only
+// ---------------------------------------------------------------------------
+
+function onboardDeps(over: Record<string, unknown> = {}) {
+  return {
+    actor: ctrl,
+    clusterRecords: async () => [{ gatewayId: 'gw-self', cluster: 'default' }],
+    myCluster: () => 'default',
+    onlineNodes: async () => ['gw-self'],
+    proxyPost: async () => { throw new Error('no proxy expected'); },
+    nativeExists: () => true,
+    selfNode: () => 'gw-self',
+    ...over,
+  } as any;
+}
+
+test('handleOnboard: controller actor + explicit mode:handoff is FORBIDDEN', async () => {
+  const r = await handleOnboard({ sessionId: 'uuid-bypass-1', mode: 'handoff' }, onboardDeps());
+  assert.equal(r.success, false);
+  assert.equal(r.error!.code, 'FORBIDDEN');
+});
+
+test('handleOnboard: controller actor + omitted mode (defaults standby) is allowed', async () => {
+  const r = await handleOnboard({ sessionId: 'uuid-bypass-2' }, onboardDeps());
+  assert.equal(r.success, true, JSON.stringify(r));
+  assert.equal((r.data as any).mission.manageMode, 'standby');
+});
+
+test('handleOnboard: human actor + explicit mode:handoff is still allowed', async () => {
+  const r = await handleOnboard({ sessionId: 'uuid-bypass-3', mode: 'handoff' }, onboardDeps({ actor: user }));
+  assert.equal(r.success, true, JSON.stringify(r));
+  assert.equal((r.data as any).mission.manageMode, 'handoff');
+});
