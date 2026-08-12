@@ -1,0 +1,108 @@
+:root{
+  --bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;
+  --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
+}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
+
+header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
+header h1{font-size:1rem;margin:0;font-weight:600}
+.chip{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}
+#who{display:flex;align-items:center;gap:.4rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.25rem .7rem;font-size:.8rem}
+#who .dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--green)}
+
+/* Two panes: job list | detail. Collapses to one column on narrow viewports. */
+main{display:grid;grid-template-columns:22rem minmax(0,1fr);gap:1rem;padding:1rem;align-items:start;max-width:80rem;margin:0 auto}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.9rem 1rem;min-width:0}
+
+/* ── filters + list ────────────────────────────────────────────────────── */
+.filters{margin-bottom:.7rem}
+.q{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.4rem .6rem;font-size:.82rem}
+.chip-row{display:flex;align-items:center;gap:.35rem;margin-top:.55rem;flex-wrap:wrap}
+.chip-lbl{font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);width:3rem;flex:none}
+.chips{display:flex;gap:.25rem;flex-wrap:wrap}
+.fchip{font-size:.7rem;border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:999px;padding:.1rem .5rem;cursor:pointer}
+.fchip.on{background:var(--blue);border-color:var(--blue);color:#fff}
+
+.list{display:flex;flex-direction:column;gap:.3rem;max-height:40rem;overflow:auto}
+.row{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:.5rem .6rem;cursor:pointer}
+.row:hover{border-color:var(--blue2)}
+.row.sel{border-color:var(--blue);box-shadow:inset 0 0 0 1px var(--blue)}
+.row .rt{font-size:.85rem;font-weight:500;line-height:1.25;word-break:break-word}
+.row .rmeta{display:flex;gap:.3rem;align-items:center;margin-top:.32rem;flex-wrap:wrap}
+.row .rsub{font-size:.68rem;color:var(--dim);margin-top:.32rem;line-height:1.5;word-break:break-word}
+.row .rsub .k{color:var(--txt)}
+.row .rid{font-family:ui-monospace,monospace;font-size:.64rem;color:var(--dim);margin-top:.22rem;word-break:break-all}
+.counts{margin-top:.55rem;font-size:.72rem;color:var(--dim)}
+.empty-list{color:var(--dim);font-size:.82rem;padding:.4rem 0}
+
+/* ── pills (state / kind / run status) ──────────────────────────────────── */
+.pill{display:inline-block;border-radius:999px;padding:.05rem .5rem;font-size:.66rem;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.pill.en{color:var(--green);border-color:#14532d}
+.pill.dis{color:var(--dim)}
+.pill.run{color:var(--amber);border-color:#78350f}
+.pill.builtin{color:var(--blue2);border-color:#1e3a8a;font-family:ui-monospace,monospace}
+.pill.custom{color:var(--purple);border-color:#581c87;font-family:ui-monospace,monospace}
+.pill.kind{color:var(--blue2);border-color:#1e3a8a;font-family:ui-monospace,monospace}
+.pill.ivl{color:var(--dim);font-family:ui-monospace,monospace}
+.pill.st-ok{color:var(--green);border-color:#14532d}
+.pill.st-error{color:var(--red);border-color:#7f1d1d}
+.pill.st-skipped{color:var(--amber);border-color:#78350f}
+
+/* ── detail ────────────────────────────────────────────────────────────── */
+.detail.empty{color:var(--dim);font-size:.85rem}
+.detail h2.d-title{font-size:1.02rem;margin:0 0 .35rem;line-height:1.3;word-break:break-word}
+.d-idrow{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;margin-bottom:.55rem}
+.d-id{font-family:ui-monospace,monospace;font-size:.72rem;color:var(--dim)}
+.d-pills{display:flex;gap:.3rem;flex-wrap:wrap;margin-bottom:.6rem}
+.d-desc{font-size:.8rem;color:var(--dim);line-height:1.5;margin-bottom:.7rem;word-break:break-word}
+.d-meta{font-size:.72rem;color:var(--dim);line-height:1.6;margin-bottom:.7rem}
+.d-meta .k{color:var(--txt);font-weight:600}
+.d-sect{margin-top:.9rem}
+.d-sect h3{font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin:0 0 .4rem}
+
+/* config + captured streams: plain-text monospace, pre-wrap — no libraries */
+.mono{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.55rem .7rem;font-size:.76rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin:0;max-height:22rem;overflow:auto;font-family:ui-monospace,monospace}
+.mono.none{color:var(--dim);font-style:italic;font-family:inherit}
+
+.actions{display:flex;gap:.5rem;flex-wrap:wrap;margin:.2rem 0 .3rem}
+button{border:0;border-radius:7px;padding:.42rem .8rem;font-size:.78rem;cursor:pointer;background:#334155;color:var(--txt)}
+button:hover{filter:brightness(1.12)}
+button.primary{background:var(--blue);color:#fff}
+button.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+button:disabled{opacity:.5;cursor:not-allowed}
+.test-hint{font-size:.66rem;color:var(--dim);line-height:1.4;margin:.15rem 0 .5rem}
+.out{font-family:ui-monospace,monospace;font-size:.72rem;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:.45rem .6rem;margin:.5rem 0;min-height:1.4rem;white-space:pre-wrap;color:var(--dim);max-height:9rem;overflow:auto}
+.out.err{color:var(--red)}
+
+/* ── a single run record (last run + each history entry) ────────────────── */
+.run{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:.55rem .7rem;margin-bottom:.5rem}
+.run.test{border-color:var(--amber);box-shadow:inset 0 0 0 1px var(--amber)}
+.run-head{display:flex;gap:.3rem;align-items:center;flex-wrap:wrap;margin-bottom:.35rem}
+.run-when{font-size:.68rem;color:var(--dim)}
+.run-result{font-size:.76rem;color:var(--txt);word-break:break-word;margin-bottom:.35rem}
+.run-cond{font-size:.7rem;color:var(--dim);font-style:italic;margin-bottom:.35rem;word-break:break-word}
+.stream-lbl{font-size:.62rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin:.35rem 0 .18rem}
+.stream{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:.4rem .55rem;font-size:.72rem;line-height:1.45;white-space:pre-wrap;word-break:break-word;margin:0;max-height:16rem;overflow:auto;font-family:ui-monospace,monospace}
+.stream.stderr{color:var(--red)}
+
+/* ── full-screen fatal error (a hard call failure, surfaced verbatim) ───── */
+.fatal{position:fixed;inset:0;background:rgba(2,6,23,.92);display:flex;align-items:center;justify-content:center;padding:1.5rem;z-index:50}
+.fatal-card{background:var(--panel);border:1px solid var(--red);border-radius:12px;padding:1.4rem 1.6rem;max-width:44rem;width:100%}
+.fatal-h{font-size:1rem;font-weight:600;color:var(--red);margin-bottom:.7rem}
+.fatal-msg{font-family:ui-monospace,monospace;font-size:.78rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.7rem .85rem;white-space:pre-wrap;word-break:break-word;color:var(--txt);max-height:16rem;overflow:auto;margin:0 0 .9rem}
+
+/* ── embedded in the app shell: drop own chrome + background (sibling-pane contract) ── */
+body.embed{background:transparent;overflow:hidden}
+body.embed,html:has(body.embed){height:auto}
+body.embed header{display:none}
+body.embed main{margin:0;padding:.4rem;max-width:none}
+
+/* ── light theme (shell passes ?theme=light) ───────────────────────────── */
+body.theme-light{--bg:#ffffff;--panel:#f8fafc;--panel2:#f1f5f9;--line:#e2e8f0;--txt:#0f172a;--dim:#64748b}
+body.theme-light .mono,body.theme-light .stream{background:#fff}
+body.theme-light button{background:#e2e8f0;color:#0f172a}
+body.theme-light button.primary,body.theme-light button.on{background:var(--blue);color:#fff}
+body.theme-light button.ghost{background:#fff;border:1px solid var(--line);color:#475569}
