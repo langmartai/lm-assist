@@ -18,9 +18,9 @@
  * BIOS firmware (generation is recorded but v1 does not do UEFI/OVMF — the
  * firmware paths vary per distro), managed tag in <description>.
  *
- * ⚠️ V1 status: this backend is code-complete but has NOT been e2e-verified on
- * a Linux fleet node yet (the feature's e2e ran Hyper-V on 107). vm_status
- * reports real probe results, so a broken assumption shows up there first.
+ * E2e-verified 2026-08-12 on node 117 (Ubuntu 22.04, libvirt 8.0.0, nested
+ * KVM): full create/start/status/snapshot/stop/delete lifecycle through the
+ * MCP tools, privilege 'direct' with the sudo filesystem fallback below.
  */
 
 import { spawn } from 'child_process';
@@ -151,11 +151,28 @@ async function virsh(args: string[], timeoutMs: number, op: string): Promise<str
   return r.stdout;
 }
 
-/** Run a non-virsh helper (qemu-img, mkdir, rm) under the same prefix. */
+const FS_DENIED_RE = /permission denied|operation not permitted/i;
+
+/** Run a non-virsh helper (qemu-img, mkdir, rm) under the same prefix.
+ *
+ *  A 'direct' privilege only proves VIRSH access (libvirt group) — it says
+ *  nothing about filesystem rights on the root-owned storage tree, so a
+ *  denied helper falls back to `sudo -n` (unless elevation is 'never').
+ *  Found live on the first KVM e2e: direct virsh + mkdir /var/lib/lm-vms
+ *  → EACCES. */
 async function helper(argv: string[], timeoutMs: number, op: string): Promise<string> {
   const p = await prefix();
   const full = p === 'sudo' ? ['sudo', '-n', ...argv] : argv;
-  const r = await runArgv(full, timeoutMs);
+  let r = await runArgv(full, timeoutMs);
+  if (
+    r.exitCode !== 0 &&
+    r.exitCode !== null &&
+    (p === 'direct' || p === 'root') &&
+    elevationMode() !== 'never' &&
+    FS_DENIED_RE.test(`${r.stderr}\n${r.stdout}`)
+  ) {
+    r = await runArgv(['sudo', '-n', ...argv], timeoutMs);
+  }
   if (r.exitCode !== 0) {
     const msg = (r.stderr || r.stdout).trim().slice(0, 400);
     if (r.exitCode === null) throw new VmError('VM_TIMEOUT', `${op} timed out: ${msg}`);

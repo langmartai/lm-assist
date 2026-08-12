@@ -17,7 +17,7 @@ core/src/vm/
 ├── service.ts         ← THE single import surface. Validation, managed-VM gate, bounded
 │                        single-flight write mutex. Routes + MCP tools import from here only.
 ├── hyperv-backend.ts  ← win32: PowerShell Hyper-V cmdlets
-└── kvm-backend.ts     ← linux: virsh/qemu-img (⚠ v1 NOT yet e2e-verified on a real libvirt host)
+└── kvm-backend.ts     ← linux: virsh/qemu-img (e2e-verified on 117, 2026-08-12)
 
 core/src/routes/core/vm.routes.ts   ← GET /vm/status|list|config|snapshots,
                                       POST /vm/create|start|stop|delete|snapshot, PUT /vm/config
@@ -49,7 +49,9 @@ core/src/__tests__/vm-service-validation.test.ts
 - **Elevation modes** (`elevation` in `<dataDir>/vm[-dev].json`): `auto` (direct, fall back
   to the :3110 elevated worker when stderr matches DENIED_RE) · `always` · `never`. Linux:
   root / direct (libvirt group) / `sudo -n`. KVM always uses `virsh -c qemu:///system` —
-  bare non-root virsh silently hits `qemu:///session` (split-brain inventory).
+  bare non-root virsh silently hits `qemu:///session` (split-brain inventory). ⚠ A `direct`
+  privilege only proves VIRSH access — filesystem helpers (mkdir/rm on the root-owned storage
+  tree) fall back to `sudo -n` on EACCES (found live on the first KVM e2e).
 - **Managed-VM gate:** delete / snapshot-restore / snapshot-delete refuse a VM lm-assist
   did not create (no `[lm-assist]` tag) unless `force:true`. Disk deletion only ever touches
   files UNDER the storage root — containment is decided in TS (case-insensitive on Windows),
@@ -66,11 +68,15 @@ core/src/__tests__/vm-service-validation.test.ts
   ceiling (create/delete/snapshot 100 s, start 90 s, stop ≤110 s). A hub-relayed connector
   call is cut at ~25–30 s — long ops still complete server-side; poll `vm_status`.
 
-## E2E (verified 2026-08-05 on host 107)
+## E2E — both backends verified
 
-Full lifecycle through the MCP surface (StreamableHTTP `/mcp`, sandboxed Core on :3210):
-create (512 MB gen-2, disk under `C:\lm-vms`) → start → status running → snapshot
-create/list/delete → config flip `{"elevation":"always"}` mid-run proved the
-elevated-worker path (`privilege:"worker"`, no restart needed) → force stop → delete with
-disks → inventory + filesystem absence. KVM backend compiles + is validated by unit tests
-but has NOT run against a real libvirt host yet.
+**Hyper-V (2026-08-05, host 107):** full lifecycle through the MCP surface (StreamableHTTP
+`/mcp`, sandboxed Core on :3210): create (512 MB gen-2, disk under `C:\lm-vms`) → start →
+status running → snapshot create/list/delete → config flip `{"elevation":"always"}` mid-run
+proved the elevated-worker path (`privilege:"worker"`, no restart needed) → force stop →
+delete with disks → inventory + filesystem absence.
+
+**KVM/libvirt (2026-08-12, node 117 — Ubuntu 22.04, libvirt 8.0.0, nested KVM):** same
+lifecycle, privilege `direct` + sudo filesystem fallback, thin qcow2 under `/var/lib/lm-vms`.
+⚠ Linux fleet nodes are themselves VMs — keep nested test guests TINY (≤512 MB RAM, ≤2 GB
+thin disk) so they cannot pressure the parent VM's memory/disk.
