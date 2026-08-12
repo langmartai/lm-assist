@@ -75,8 +75,13 @@ export async function syncManagedUis(log: (m: string) => void = () => {}): Promi
   const hub = getHubConfig();
   if (!hub.gatewayId || !hub.apiKey) return 0;
   let synced = 0;
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 3;
   for (const n of names) {
-    let cfg: { uiId?: string; name?: string; scope?: string; service?: string; grant?: unknown; managed?: boolean };
+    let cfg: {
+      uiId?: string; name?: string; scope?: string; service?: string; grant?: unknown; managed?: boolean;
+      category?: string; sortOrder?: number;
+    };
     try { cfg = JSON.parse(fs.readFileSync(path.join(appsRoot, n, 'lmui.config.json'), 'utf8')); } catch { continue; }
     if (cfg.managed !== true || !cfg.uiId) continue;
     const bad = uiIdError(cfg.uiId);
@@ -86,6 +91,13 @@ export async function syncManagedUis(log: (m: string) => void = () => {}): Promi
         uiId: cfg.uiId, name: cfg.name || cfg.uiId, scope: cfg.scope || 'lm-assist', access: 'owner',
         grant: cfg.grant, source: 'worker', workerId: hub.gatewayId,
         service: cfg.service || `ui-${cfg.uiId}`, artifactDir: cfg.uiId, managed: true,
+        // Placement, forwarded from the file like everything else here. Omitted until now, so
+        // every managed row sat at the registry default (category NULL, sortOrder 100) no matter
+        // what its config declared — the shell had nothing to group or order by and listed every
+        // pane in one undifferentiated bucket. The gateway has had the columns all along
+        // (ui_registry.category/sort_order, ORDER BY sort_order, name, ui_key).
+        ...(cfg.category ? { category: cfg.category } : {}),
+        ...(Number.isFinite(Number(cfg.sortOrder)) ? { sortOrder: Number(cfg.sortOrder) } : {}),
       });
       if (r.status < 300) {
         synced++;
@@ -94,9 +106,20 @@ export async function syncManagedUis(log: (m: string) => void = () => {}): Promi
       }
       else log(`[ui-pages] managed sync of ${cfg.uiId} refused (${r.status}): ${JSON.stringify(r.data)}`);
     } catch (e) {
-      log(`[ui-pages] managed sync failed: ${e instanceof Error ? e.message : String(e)}`);
-      break;
+      // Per-UI isolation: ONE transient fetch blip used to `break` the whole loop, so an
+      // arbitrary alphabetical prefix stayed registered and every later UI silently vanished
+      // from the shell — with nothing in the registry to say why (measured on the dev hub:
+      // api-keys+backlog asserted, the remaining seven skipped). Keep going; only give up
+      // after the gateway has failed repeatedly, which is the real "hub is down" signal.
+      consecutiveFailures++;
+      log(`[ui-pages] managed sync of ${cfg.uiId} failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${e instanceof Error ? e.message : String(e)}`);
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        log(`[ui-pages] managed sync aborted: gateway unreachable after ${MAX_CONSECUTIVE_FAILURES} consecutive failures`);
+        break;
+      }
+      continue;
     }
+    consecutiveFailures = 0;
   }
   return synced;
 }
