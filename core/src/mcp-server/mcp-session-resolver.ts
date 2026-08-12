@@ -34,6 +34,7 @@ import { currentMcpContext } from './principal-context';
 import type { WorkerRecord } from '../worker-role/types';
 import { liveness } from '../worker-role/model';
 import { getRecord } from '../worker-role/worker-store';
+import { loadPersistedMarkers, schedulePersistMarkers, type PersistedMarker } from './bootstrap-persist';
 
 export interface Candidate { id: string; label?: string; updatedAt?: string }
 export interface CallerCandidates {
@@ -47,6 +48,35 @@ export interface CallerCandidates {
 
 interface SessionState { firstSeen: number; lastSeen: number; bootstrappedAt?: number; gateRefusedAt?: number }
 const REGISTRY = new Map<string, SessionState>();           // keyed by candidate id
+
+/** The bootstrapped marker used to live ONLY in REGISTRY, so every Core restart
+ *  forgot every bootstrap and the first playbook-governed call from a long-lived
+ *  session was re-refused with BOOTSTRAP_REQUIRED (bl_5169a15c). The registry is
+ *  now seeded once, lazily, from the small persisted marker file — one sync read
+ *  per process, never per call — and re-persisted write-behind on bootstrap
+ *  (see recordBootstrapped / bootstrap-persist.ts). A missing/corrupt file loads
+ *  as empty, which is exactly today's fresh-process fail-open. */
+let registryLoaded = false;
+function registry(): Map<string, SessionState> {
+  if (!registryLoaded) {
+    registryLoaded = true;
+    try {
+      for (const [id, m] of loadPersistedMarkers()) {
+        if (!REGISTRY.has(id)) REGISTRY.set(id, { firstSeen: m.lastSeen, lastSeen: m.lastSeen, bootstrappedAt: m.bootstrappedAt });
+      }
+    } catch { /* fail open — the gate soft-refuses once, same as before persistence */ }
+  }
+  return REGISTRY;
+}
+
+/** Only what must survive a restart leaves memory: the bootstrapped entries.
+ *  gateRefusedAt is deliberately NOT persisted — losing it costs one extra
+ *  soft-refusal for a session that never bootstrapped anyway. */
+function persistSnapshot(): Record<string, PersistedMarker> {
+  const out: Record<string, PersistedMarker> = {};
+  for (const [id, st] of REGISTRY) if (st.bootstrappedAt) out[id] = { bootstrappedAt: st.bootstrappedAt, lastSeen: st.lastSeen };
+  return out;
+}
 const RESOLVE_TTL_MS = 8000;
 const RESOLVE_TIMEOUT_MS = 2500;
 /** Beyond this, a stale identity stops being "best-effort" and we block for a fresh one.
@@ -518,13 +548,33 @@ export function identityHeader(c: CallerCandidates): string {
   return `[lm-assist — your session identity]\nThe connector does not pass your exact id, so here are the most-recently-active candidates — pick the one matching where you are running (you know your own runtime):\n${body}\nThis session is now recorded as BOOTSTRAPPED.\n\n` + roleSection;
 }
 
-function bootstrapState(c: CallerCandidates): { id?: string } {
-  // Mark whichever candidate(s) exist as bootstrapped; report the precise/claude.ai id preferentially.
+/** Mark whichever candidate(s) exist as bootstrapped; report the precise/claude.ai id
+ *  preferentially. Exported for tests — this is the seam persistence hooks into. */
+export function recordBootstrapped(c: CallerCandidates): { id?: string } {
+  const reg = registry();
+  let changed = false;
   for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {
-    const st = REGISTRY.get(cand.id) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
-    st.lastSeen = Date.now(); st.bootstrappedAt = Date.now(); REGISTRY.set(cand.id, st);
+    const st = reg.get(cand.id) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
+    st.lastSeen = Date.now(); st.bootstrappedAt = Date.now(); reg.set(cand.id, st);
+    changed = true;
   }
+  // Write-behind: debounced + async, never sync IO on the call path. Only the
+  // bootstrapped markers change here — gate-refusal stamps schedule nothing.
+  if (changed) schedulePersistMarkers(persistSnapshot);
   return { id: (c.precise ? c.claudeCode?.id : undefined) ?? c.claudeAi?.id ?? c.claudeCode?.id };
+}
+
+/** Tests only: read the REAL registry (not an injected lookup), so persistence
+ *  round-trips can be asserted through the same lookup the gate uses. */
+export function __registryLookupForTest(id: string): { bootstrappedAt?: number; gateRefusedAt?: number } | undefined {
+  return registry().get(id);
+}
+
+/** Tests only: simulate a Core restart — fresh in-memory registry state that
+ *  reloads from disk on the next access. */
+export function __resetBootstrapRegistryForTest(): void {
+  REGISTRY.clear();
+  registryLoaded = false;
 }
 
 function prefixText(result: McpToolResult, note: string): McpToolResult {
@@ -539,7 +589,7 @@ function prefixText(result: McpToolResult, note: string): McpToolResult {
 export async function enrichBootstrapWithIdentity(result: McpToolResult): Promise<McpToolResult> {
   try {
     const c = await resolveCallerCandidates();
-    bootstrapState(c);
+    recordBootstrapped(c);
     return prefixText(result, identityHeader(c));
   } catch { return result; }
 }
@@ -613,13 +663,14 @@ export async function bootstrapGateCheck(name: string): Promise<McpToolResult | 
     const topic = playbookTopicForTool(name);
     if (!topic || GATE_EXEMPT_TOOLS.has(name)) return null;  // skip resolution entirely for uncovered tools
     const c = await resolveCallerCandidates();
-    const v = evaluateBootstrapGate(name, topic, c, (id) => REGISTRY.get(id));
+    const reg = registry();
+    const v = evaluateBootstrapGate(name, topic, c, (id) => reg.get(id));
     if (!v.block) return null;
     // Stamp EVERY candidate so the retry finds the refusal even if heuristic
     // resolution flips to the other candidate between the two calls.
     for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {
-      const st = REGISTRY.get(cand.id) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
-      st.lastSeen = Date.now(); st.gateRefusedAt = Date.now(); REGISTRY.set(cand.id, st);
+      const st = reg.get(cand.id) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
+      st.lastSeen = Date.now(); st.gateRefusedAt = Date.now(); reg.set(cand.id, st);
     }
     return buildBootstrapRefusal(name, v.topic);
   } catch { return null; }  // the gate must never break a call
@@ -651,7 +702,7 @@ async function getNodeClusterInfo(): Promise<{ cluster: string; otherClusters?: 
 
 async function handleSessionStatus(_args: Record<string, unknown>): Promise<McpToolResult> {
   const c = await resolveCallerCandidates();
-  const bootstrapped = (id?: string) => (id ? !!REGISTRY.get(id)?.bootstrappedAt : false);
+  const bootstrapped = (id?: string) => (id ? !!registry().get(id)?.bootstrappedAt : false);
   const clusterInfo = await getNodeClusterInfo();
   const obj = c.precise && c.claudeCode ? {
     note: 'PRECISE: this MCP call carried a tool-call id (_meta["claudecode/toolUseId"]) that matched the calling conversation exactly — no guessing.',
