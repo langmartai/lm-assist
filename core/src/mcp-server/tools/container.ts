@@ -19,7 +19,7 @@
  * (configure.ts), and registry/catalog.ts — all three, or Core crashes on
  * tools/list (assertScopesCoverTools) / the catalog test fails.
  */
-import { ok, err, workerGet, workerPostRaw, type McpToolResult } from './_passthrough';
+import { ok, err, workerGetRaw, workerPostRaw, type McpToolResult } from './_passthrough';
 
 function pretty(data: unknown): string {
   return typeof data === 'string' ? data : JSON.stringify(data, null, 2);
@@ -132,9 +132,24 @@ export const CONTAINER_TOOL_DEFS = [
 
 // ─── handlers (loopback to /container/* — the routes stay the single source) ─
 
+/** Render a failed route envelope as `CODE: message`.
+ *
+ *  Reads go through workerGetRaw (not workerGet) for exactly this reason:
+ *  workerGet unwraps the envelope and throws a plain Error, which drops
+ *  `error.code` — so a caller saw prose and had to pattern-match it to tell
+ *  CONTAINER_NOT_FOUND from DOCKER_UNAVAILABLE from BAD_ARGS. A dropped
+ *  error.code is how phantom transport bugs get manufactured; the code is the
+ *  part a model routes on, so both verbs preserve it. */
+function envelopeError(r: Record<string, unknown> | null): string {
+  const e = (r && (r.error as Record<string, unknown>)) || {};
+  return `${String(e.code || 'CONTAINER_OP_FAILED')}: ${String(e.message || 'operation failed')}`;
+}
+
 async function get(routePath: string): Promise<McpToolResult> {
   try {
-    return ok(pretty(await workerGet(routePath)));
+    const r = await workerGetRaw(routePath);
+    if (r && r.success) return ok(pretty(r.data));
+    return err(envelopeError(r));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -144,8 +159,7 @@ async function post(routePath: string, body: Record<string, unknown>): Promise<M
   try {
     const r = await workerPostRaw(routePath, body);
     if (r && r.success) return ok(pretty(r.data));
-    const e = (r && (r.error as Record<string, unknown>)) || {};
-    return err(`${String(e.code || 'CONTAINER_OP_FAILED')}: ${String(e.message || 'operation failed')}`);
+    return err(envelopeError(r));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
