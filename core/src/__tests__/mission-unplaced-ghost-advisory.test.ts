@@ -218,3 +218,85 @@ test('a cluster-map read failure never silences in-cluster advice', async () => 
     'the ownership check is skipped on a read failure — advice fails open, never dark');
   _resetNotMonitorStreak();
 });
+
+// ── 4. advise/act symmetry: the ACTION path must apply the SAME gate ─────────
+//
+// Review finding on the fix above: the advisory now gates candidates on
+// `placementAllowed(env.host ?? ownerNode)` — but `placeStarvedMissions` still gated
+// on `env.host` alone, and `placementAllowed` PASSES an undefined host. So an
+// UNHOSTED foreign-owned ghost that the advisory correctly hides could still ride
+// readyUnbound → advanceStarvation → placeStarvedMissions and be SPAWNED LOCALLY on
+// the wrong cluster — the net doing silently what the advisory refuses to advertise.
+
+/** The drive harness at the starvation threshold: every mission has already sat
+ *  unplaced for threshold-1 ticks, so THIS tick is the one where the net fires. */
+function starvedDeps(
+  missions: Mission[],
+  over: Partial<SupervisorDeps> = {},
+): { deps: SupervisorDeps; spawned: string[] } {
+  const spawned: string[] = [];
+  const unplacedTicks: Record<string, number> = {};
+  for (const m of missions) unplacedTicks[m.id] = 14;
+  const { deps } = driveDeps(() => missions, {
+    getEngagement: async () => ({ lastEngagedAt: NOW - 1000, lastActiveIds: [], seen: {}, unplacedTicks }),
+    starvationTicks: 15,
+    spawnMission: async (id) => { spawned.push(id); return { ok: true }; },
+    saveMission: async () => {},
+    ...over,
+  });
+  return { deps, spawned };
+}
+
+test('THE ASYMMETRY: an unhosted foreign-owned ghost that starves is NOT spawned locally', async () => {
+  _resetNotMonitorStreak();
+  const ghost = readyMission('mission_ghost_unhosted', { ownerNode: FOREIGN } as Partial<Mission>);
+  const { deps, spawned } = starvedDeps([ghost]);
+
+  await runSupervisorTick(deps);
+
+  assert.deepStrictEqual(spawned, [],
+    'the net must refuse what the advisory hides — spawning here runs a foreign cluster\'s doc on this machine');
+  _resetNotMonitorStreak();
+});
+
+test('the net still places an unhosted IN-cluster peer-owned mission and an ownerless legacy doc', async () => {
+  _resetNotMonitorStreak();
+  const peers = readyMission('mission_peer_unhosted', { ownerNode: PEER } as Partial<Mission>);
+  const legacy = readyMission('mission_legacy_ownerless', { ownerNode: undefined } as unknown as Partial<Mission>);
+  const { deps, spawned } = starvedDeps([peers, legacy]);
+
+  await runSupervisorTick(deps);
+
+  assert.deepStrictEqual([...spawned].sort(), ['mission_legacy_ownerless', 'mission_peer_unhosted'],
+    'in-cluster ownership by ANOTHER node is not ghostliness, and a legacy doc with no ownerNode fails open');
+  _resetNotMonitorStreak();
+});
+
+test('an explicit in-cluster env.host outranks a foreign ownerNode on the ACTION path too', async () => {
+  _resetNotMonitorStreak();
+  const adopted = readyMission('mission_adopted_act', {
+    ownerNode: FOREIGN,
+    env: { isolation: 'shared', resources: [], host: SELF },
+  } as Partial<Mission>);
+  const { deps, spawned } = starvedDeps([adopted]);
+
+  await runSupervisorTick(deps);
+
+  assert.deepStrictEqual(spawned, ['mission_adopted_act'],
+    'a human pinned this mission to an in-cluster host — the same key order as the advisory (env.host ?? ownerNode)');
+  _resetNotMonitorStreak();
+});
+
+test('a cluster-map read failure skips ONLY the ownership check — the net still places (same posture as the advisory)', async () => {
+  _resetNotMonitorStreak();
+  const mine = readyMission('mission_net_failopen');
+  const { deps, spawned } = starvedDeps([mine], {
+    listClusterRecords: async () => { throw new Error('cluster map not warmed'); },
+  });
+
+  await runSupervisorTick(deps);
+
+  assert.deepStrictEqual(spawned, ['mission_net_failopen'],
+    'the net exists to guarantee eventual placement — a transient read error must not starve an in-cluster mission');
+  _resetNotMonitorStreak();
+});

@@ -1133,12 +1133,21 @@ async function placeStarvedMissions(starved: string[], deps: SupervisorDeps): Pr
     // preferred over the module-level globals so this path is reachable in a test — reading
     // real cluster state made the whole net a no-op under test, which is how it shipped
     // never having been exercised at all.
+    //
+    // The gate is the SAME one buildPlacementAdvisory applies (advise/act symmetry,
+    // bl_939f2dd3): keyed on `env.host` when pinned, else `ownerNode`. Keying on `env.host`
+    // alone let an UNHOSTED foreign-owned ghost — which `placementAllowed(undefined)` waves
+    // through — ride readyUnbound → advanceStarvation into a LOCAL spawn on the wrong
+    // cluster, doing silently what the advisory refuses to advertise. Failure posture is
+    // fail-OPEN, also matching the advisory: a cluster-map read failure skips ONLY the
+    // ownership check (the net exists to guarantee eventual placement — a transient read
+    // error must not starve an in-cluster mission); a legacy doc with no ownerNode passes.
     const self = deps.selfId ? deps.selfId() : thisNode();
     try {
       const records = deps.listClusterRecords ? await deps.listClusterRecords() : await getClusterRecords();
       const cluster = deps.myCluster ? deps.myCluster() : getMyCluster();
-      if (!placementAllowed(m.env.host, records, self, cluster)) continue;
-    } catch { continue; }
+      if (!placementAllowed(m.env.host ?? m.ownerNode, records, self, cluster)) continue;
+    } catch { /* fail open — ownership check only */ }
 
     // ── Where does this belong? (bl_1c861246) ──
     // `notes` prose is excluded from this ranking by construction — a node's free text must
