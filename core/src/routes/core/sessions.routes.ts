@@ -8,6 +8,8 @@
  */
 
 import type { RouteHandler, RouteContext } from '../index';
+import { wrapResponse, wrapError } from '../../api/helpers';
+import { renameLocalSession, SessionRenameError } from '../../session-rename';
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
 import { getSessionSummary, saveSessionSummary, getAllSessionSummaries, deleteSessionSummary, getSessionsNeedingSummaries } from '../../session-summary-store';
 import { enqueuePrompt, getSessionQueue, getAllPendingPrompts, getNextPrompt, markDispatched, markCompleted, cancelPrompt, cleanupQueue, getQueuedBySession, getProjectQueue } from '../../prompt-queue-store';
@@ -504,6 +506,27 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
     // ========================================================================
     // Sessions API (reads from ~/.claude/projects/)
     // ========================================================================
+
+    // POST /sessions/:sessionId/rename — first-class LOCAL session rename {title}.
+    // Appends the CLI's own custom-title record to the transcript (the record
+    // /rename writes) and verifies by re-reading — no TUI driving. See
+    // session-rename.ts for the live-session safety argument.
+    {
+      method: 'POST',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/rename$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          const title = (req.body as { title?: unknown } | undefined)?.title;
+          return wrapResponse(await renameLocalSession(req.params.sessionId, title), start);
+        } catch (e) {
+          if (e instanceof SessionRenameError) {
+            return { ...wrapError(e.code, e.message, start), httpStatus: e.httpStatus };
+          }
+          return { ...wrapError('RENAME_FAILED', e instanceof Error ? e.message : String(e), start), httpStatus: 500 };
+        }
+      },
+    },
 
     // GET /sessions - List sessions
     // Query params: cwd, limit

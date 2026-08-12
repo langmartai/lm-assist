@@ -58,6 +58,7 @@ mod('expanded.ts', 'session', ['stall_status']);
 mod('session-dag-tool.ts', 'session', ['session_dag']);
 mod('session-footprints.ts', 'session', ['session_footprints']);
 mod('session-messaging.ts', 'session', ['send_session_message', 'list_session_messages', 'get_message_status']);
+mod('rename-session.ts', 'session', ['rename_session']);
 // --- mission control ---
 mod('mission.ts', 'mission', [
   'mission_create', 'mission_list', 'mission_update', 'mission_control_status', 'mission_place',

@@ -10,7 +10,7 @@
 // Keeping the map here means the trailer cannot drift from the playbooks it points at,
 // and the trailer does not drag the whole guide content module into its import graph.
 export const TOPIC_TOOLS: Record<string, string[]> = {
-  sessions: ['list_recent_sessions', 'list_session_messages', 'session_dag', 'list_executions', 'get_execution', 'list_projects'],
+  sessions: ['list_recent_sessions', 'list_session_messages', 'session_dag', 'list_executions', 'get_execution', 'list_projects', 'rename_session'],
   knowledge: ['search', 'detail', 'search_memory', 'memory_projects', 'memory_map', 'memory_cross_host', 'memory_record', 'memory_file', 'memory_write', 'memory_import_candidates', 'memory_sync_status', 'rule_map', 'feedback'],
   data: ['data_catalog', 'data_request_access', 'data_get', 'data_query', 'data_search', 'data_put', 'data_delete', 'data_create_dataset', 'data_drop_dataset', 'data_keys', 'data_revoke_key', 'data_sync', 'data_sync_status', 'data_admin'],
   agents: ['agent_execute', 'agent_resume', 'agent_abort', 'get_execution', 'list_executions', 'browser_task'],

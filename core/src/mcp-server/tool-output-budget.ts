@@ -312,6 +312,7 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
     'data_drop_dataset', 'data_revoke_key', 'data_sync', 'data_request_access',
     'set_role', 'report_status', 'decide_gate', 'bus_publish', 'cluster_assign',
     'cluster_unassign', 'cluster_describe', 'cowork_create_task', 'send_session_message',
+    'rename_session',
   ].map((n) => [n, 'write: mutates state (echoes full record + rev history — still needs the ceiling)']),
   // Lifecycle / destructive.
   ...['agent_execute', 'agent_abort', 'agent_resume', 'node_upgrade', 'node_lifecycle',
