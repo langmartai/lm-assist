@@ -1,0 +1,21 @@
+{
+  "uiId": "assist-scheduler",
+  "name": "Scheduler",
+  "scope": "lm-assist",
+  "grant": [
+    {
+      "service": "node",
+      "pathPrefix": "/scheduler",
+      "verbs": [
+        "GET",
+        "POST"
+      ]
+    }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-scheduler",
+  "category": "ops",
+  "sortOrder": 50
+}
