@@ -180,3 +180,113 @@ test('respawnable refuses missing lmui.config.json / sdk, accepts a complete lay
     fs.rmSync(sdk, { recursive: true, force: true });
   }
 });
+
+// ── managed sync: placement + per-UI failure isolation ────────────────────────────────
+// Same seam as the register test above: stub global fetch, never the module namespace.
+
+/** Lay out an apps root of managed configs + the hub config syncManagedUis needs. */
+function managedFixture(home: string, apps: Array<Record<string, unknown>>): string {
+  const cfgDir = path.join(home, '.lm-assist');
+  fs.mkdirSync(cfgDir, { recursive: true });
+  for (const suffix of ['', '-dev']) {
+    fs.writeFileSync(path.join(cfgDir, `hub${suffix}.json`), JSON.stringify({ hubUrl: 'wss://assist-api.langmart.ai', apiKey: 'sk-test' }));
+    fs.writeFileSync(path.join(cfgDir, `gateway-id${suffix}`), 'gw4-test');
+  }
+  const appsRoot = path.join(home, '.lmui', 'apps');
+  for (const cfg of apps) {
+    const d = path.join(appsRoot, String(cfg.uiId));
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'lmui.config.json'), JSON.stringify(cfg));
+  }
+  return appsRoot;
+}
+
+test('managed sync forwards category + sortOrder so the shell can group and order panes', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'uisync-'));
+  const realHome = process.env.HOME;
+  const realFetch = globalThis.fetch;
+  const bodies: any[] = [];
+  try {
+    process.env.HOME = home;
+    const appsRoot = managedFixture(home, [
+      { uiId: 'p-one', name: 'One', scope: 'lm-assist', managed: true, category: 'Node', sortOrder: 20 },
+      { uiId: 'p-two', name: 'Two', scope: 'lm-assist', managed: true },            // no placement declared
+    ]);
+    process.env.LMUI_APPS_DIR = appsRoot;
+    globalThis.fetch = (async (_u: any, init: any) => {
+      bodies.push(JSON.parse(init.body));
+      return { ok: true, status: 200, json: async () => ({ uiId: 'x', uiKey: 'k-x', origin: 'https://x/' }) };
+    }) as any;
+
+    const { syncManagedUis } = await import('../ui-pages/reporter');
+    const n = await syncManagedUis();
+    assert.equal(n, 2);
+    const one = bodies.find((b) => b.uiId === 'p-one');
+    assert.equal(one.category, 'Node');
+    assert.equal(one.sortOrder, 20);
+    // Undeclared placement is OMITTED, not sent as null/undefined — the registry keeps its default.
+    const two = bodies.find((b) => b.uiId === 'p-two');
+    assert.ok(!('category' in two), 'category must be omitted when undeclared');
+    assert.ok(!('sortOrder' in two), 'sortOrder must be omitted when undeclared');
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.LMUI_APPS_DIR;
+    if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('managed sync: one failing UI does not skip the rest (it used to break the loop)', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'uisync-'));
+  const realHome = process.env.HOME;
+  const realFetch = globalThis.fetch;
+  const seen: string[] = [];
+  try {
+    process.env.HOME = home;
+    const appsRoot = managedFixture(home, [
+      { uiId: 'a-first', name: 'A', managed: true },
+      { uiId: 'b-boom', name: 'B', managed: true },   // this one throws
+      { uiId: 'c-last', name: 'C', managed: true },   // must STILL be asserted
+    ]);
+    process.env.LMUI_APPS_DIR = appsRoot;
+    globalThis.fetch = (async (_u: any, init: any) => {
+      const id = JSON.parse(init.body).uiId;
+      seen.push(id);
+      if (id === 'b-boom') throw new Error('fetch failed');
+      return { ok: true, status: 200, json: async () => ({ uiId: id, uiKey: `k-${id}`, origin: 'https://x/' }) };
+    }) as any;
+
+    const { syncManagedUis } = await import('../ui-pages/reporter');
+    const n = await syncManagedUis();
+    assert.deepEqual(seen, ['a-first', 'b-boom', 'c-last'], 'every UI is attempted');
+    assert.equal(n, 2, 'the two healthy UIs are asserted despite the failure between them');
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.LMUI_APPS_DIR;
+    if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('managed sync aborts only after repeated gateway failures (hub really is down)', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'uisync-'));
+  const realHome = process.env.HOME;
+  const realFetch = globalThis.fetch;
+  let attempts = 0;
+  try {
+    process.env.HOME = home;
+    const appsRoot = managedFixture(home, ['a', 'b', 'c', 'd', 'e', 'f'].map((s) => ({ uiId: `p-${s}`, name: s, managed: true })));
+    process.env.LMUI_APPS_DIR = appsRoot;
+    globalThis.fetch = (async () => { attempts++; throw new Error('fetch failed'); }) as any;
+
+    const { syncManagedUis } = await import('../ui-pages/reporter');
+    const n = await syncManagedUis();
+    assert.equal(n, 0);
+    assert.equal(attempts, 3, 'gives up after 3 consecutive failures instead of hammering all six');
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.LMUI_APPS_DIR;
+    if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
