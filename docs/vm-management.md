@@ -59,9 +59,9 @@ core/src/__tests__/vm-service-validation.test.ts
 - **Registration:** a vm tool lives in FOUR places — `tools/vm.ts`, `expanded.ts`,
   `TOOL_SCOPES` in `configure.ts` (missing scope CRASHES Core on tools/list), and
   `registry/catalog.ts`. Run the mcp-tool-catalog + scope tests, not just the vm test.
-- **Catalogue budget is knife-edge:** after adding these 5 tools the connect-time
-  catalogue is 283,905 B vs the 284,000 B budget — **95 bytes of headroom**. The next tool
-  author must trim descriptions (theirs or others'), not raise the budget.
+- **Catalogue budget:** ~291 KB vs the 295 KB budget (~4 KB headroom) after the 2026-08-12
+  re-trim of the shared `NODE_PARAM` string (each byte there costs ~280 on the wire — trim
+  shared boilerplate first, per-tool prose second, and only raise the budget deliberately).
 - **Timeouts:** every backend timeout is held under `workerPostRaw`'s fixed 120 s loopback
   ceiling (create/delete/snapshot 100 s, start 90 s, stop ≤110 s). A hub-relayed connector
   call is cut at ~25–30 s — long ops still complete server-side; poll `vm_status`.

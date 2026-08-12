@@ -376,11 +376,14 @@ export const readConversationToolDef = {
  * Optional per-tool node selector. Injected into every tool's inputSchema.
  *
  * KEEP THIS SHORT — its cost is its length TIMES the tool count. It is injected
- * into 188 tools, so it is the one string on this surface where a sentence costs
- * ~188 sentences. At 751 bytes it was 141,188 B of `tools/list`: 40.3% of the
+ * into ~280 tools, so it is the one string on this surface where a sentence costs
+ * ~280 sentences. At 751 bytes it was 141,188 B of `tools/list`: 40.3% of the
  * entire catalogue, and 97% of all repeated-string waste on the surface — a
  * fixed ~35K-token tax every conversation paid before calling anything, for 188
- * copies of one paragraph (measured on node 117, 2026-07-26).
+ * copies of one paragraph (measured on node 117, 2026-07-26). Trimmed again
+ * 2026-08-12: the tool count had grown 188→280, so the SAME string's total cost
+ * grew ~24 KB and pushed the catalogue over budget; each byte here now costs
+ * ~280 bytes on the wire.
  *
  * What survives here is only what a caller needs AT THE CALL SITE: where a value
  * comes from, what omitting it does, and the empty-result heuristic (which exists
@@ -392,9 +395,9 @@ export const readConversationToolDef = {
 export const NODE_PARAM = {
   type: 'string' as const,
   description:
-    'Target lm-assist node/host: hostId or hostname from `list_nodes`; omit for your default ' +
-    'node. Results are SCOPED to that node/cluster — an EMPTY or "not found" read may mean the ' +
-    'item lives on ANOTHER node, so check `list_nodes` before concluding it is absent.',
+    'hostId or hostname from `list_nodes`; omit = your default node. Results are SCOPED to ' +
+    'that node — an EMPTY/"not found" read may mean the item lives on ANOTHER node; check ' +
+    '`list_nodes` before concluding absent.',
 };
 
 export const listNodesToolDef = {
