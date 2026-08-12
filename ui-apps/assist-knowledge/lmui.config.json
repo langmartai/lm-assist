@@ -1,0 +1,21 @@
+{
+  "uiId": "assist-knowledge",
+  "name": "Knowledge",
+  "scope": "lm-assist",
+  "grant": [
+    {
+      "service": "node",
+      "pathPrefix": "/knowledge",
+      "verbs": [
+        "GET",
+        "POST"
+      ]
+    }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-knowledge",
+  "category": "knowledge",
+  "sortOrder": 40
+}
