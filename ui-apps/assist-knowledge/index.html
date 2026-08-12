@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — Knowledge</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots, so a leading-slash href would break under one of them. -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header>
+  <h1>Knowledge<span class="chip">assist-knowledge</span><span class="chip">scope: lm-assist</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <section class="pane pane-list">
+    <div class="filters">
+      <input id="q" class="q" type="text" placeholder="search knowledge (title / content)…" autocomplete="off">
+      <div class="hint search-hint">empty box lists all entries; text runs a hybrid server search</div>
+      <div class="chip-row"><span class="chip-lbl">type</span><span id="chips-type" class="chips"></span></div>
+      <div class="chip-row"><span class="chip-lbl">status</span><span id="chips-status" class="chips"></span></div>
+      <div class="chip-row"><span class="chip-lbl">origin</span><span id="chips-origin" class="chips"></span></div>
+    </div>
+    <div id="list" class="list">loading…</div>
+    <div id="counts" class="counts"></div>
+  </section>
+
+  <section class="pane pane-detail">
+    <div id="detail" class="detail empty">Select an entry on the left to read its full content and metadata.</div>
+  </section>
+
+  <section class="pane pane-review">
+    <div class="form-head"><h2>Review</h2></div>
+    <div id="rev-status" class="rev-status">…</div>
+    <button id="rev-run" class="ghost">Run review</button>
+    <div class="hint rev-hint">Addresses unaddressed comments on knowledge documents (server-side LLM pass). Safe to trigger repeatedly — it no-ops while already running.</div>
+    <div id="out" class="out">ready</div>
+  </section>
+</main>
+<!-- The serving tier injects window.__VIEW_TOKEN__ / __UI_ID__ / __UI_KEY__ before these
+     scripts run; lmui.js captures them, app.js drives the UI. Both are self-hosted (CSP). -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
