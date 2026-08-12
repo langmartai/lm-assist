@@ -9,7 +9,8 @@ import { newMission, defaultIsolation, Mission, MissionStatus, Isolation, coarse
 import { resolveMcpActor, upgradeControllerActor } from '../../mission/mission-actor';
 import { normalizeTags, mergeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
 import {
-  MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession, listMissionHistory,
+  MissionDataPort, MissionHistoryPort, getMission, listMissions, putMission, thisNode, getControllerSession, listMissionHistory,
+  findMissionBySessionOrCcr,
 } from '../../mission/mission-store';
 import { resolveMissionSession, ResolvedSession } from '../../mission/mission-session-resolver';
 import type { Transport, SessionRole } from '../../mission/mission-session-resolver';
@@ -30,6 +31,8 @@ import { getMyCluster } from '../../cluster/cluster-config';
 import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowRaw, listWorkflowSnapshots, getWorkflowSnapshot,
   type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
+import { applyManageMode, isStandby } from '../../mission/manual-mode';
+import { assertDriveable, gatherProbeSignals, type GuardDeps, type ManualReason } from '../../mission/manual-probe';
 import { WORKFLOW_DATASET } from '../../mission/workflow-store';
 import { anchorToOrigin, realOriginAnchor as sharedRealOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
 import { stripRoutingKeys } from './transport-keys';
@@ -342,11 +345,8 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   const sv = str(b.status) as MissionStatus | undefined;
   if (sv) { if (!VALID_STATUS.has(sv)) return fail('INVALID_INPUT', `invalid status "${sv}"`); m.status = sv; }
   if (b.manageMode !== undefined) {
-    const mm = str(b.manageMode);
-    if (m.origin !== 'onboarded') return fail('INVALID_INPUT', 'manageMode applies only to onboarded missions');
-    if (mm !== 'handoff' && mm !== 'standby') return fail('INVALID_INPUT', 'manageMode must be handoff|standby');
-    if (isControllerActor(who)) return fail('FORBIDDEN', 'manageMode is human-only — ask the user to switch it');
-    m.manageMode = mm;
+    const r = applyManageMode(m, String(b.manageMode ?? ''), who);
+    if (!r.ok) return fail(r.code, r.message);
   }
   if (b.progress !== undefined) {
     // Human-supplied progress (2026-07-15, human-authorized): previously this field was
@@ -397,8 +397,14 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   // I4(a): for an ONBOARDED mission, the binding IS the user's own session — a controller-attributed
   // actor must never rebind/unbind it (that would silently sever mission control from the user's
   // session, or worse, re-point it at a session the human never onboarded). Human-only, like manageMode.
-  if (b.binding !== undefined && m.origin === 'onboarded' && isControllerActor(who)) {
-    return fail('FORBIDDEN', 'binding changes on an onboarded mission are human-only');
+  //
+  // I-1: `assertDriveable` resolves a mission BY SESSION ID, so unbinding (or rebinding to a
+  // different sessionId) removes the session from the guard's view entirely — manageMode stays
+  // 'standby' on a record nothing consults, silently neutralising the latch. This is exactly the
+  // population this branch adds: an auto-latched NON-onboarded mission has origin !== 'onboarded',
+  // so the origin-only check let a controller clear its own lockout. Gate on standby too.
+  if (b.binding !== undefined && (m.origin === 'onboarded' || isStandby(m)) && isControllerActor(who)) {
+    return fail('FORBIDDEN', 'binding changes on an onboarded or standby-latched mission are human-only');
   }
   if (b.binding !== undefined && (b.binding === null || typeof b.binding === 'object')) {
     const bn = (b.binding || {}) as Record<string, unknown>;
@@ -568,6 +574,11 @@ export async function handleWorkflowRollback(id: string, b: Record<string, unkno
 
 export interface OnboardDeps {
   port?: MissionDataPort;
+  /** Passed straight through to putMission's opts.historyPort. Tests that inject an
+   *  in-memory `port` MUST also inject an in-memory historyPort here — otherwise the
+   *  history append still falls through to the live, fleet-synced `mission-history`
+   *  dataset even though the mission record itself lands in the mock `port`. */
+  historyPort?: MissionHistoryPort;
   actor?: MissionActor;
   leader?: LeaderAnchorDeps;                       // own-cluster anchoring
   clusterRecords?: () => Promise<Array<{ gatewayId: string; cluster?: string | null }>>;
@@ -590,6 +601,15 @@ export async function handleOnboard(b: Record<string, unknown>, d: OnboardDeps =
   // 2) mode + note
   const modeRaw = str(b.mode) ?? 'standby';
   if (modeRaw !== 'handoff' && modeRaw !== 'standby') return fail('INVALID_INPUT', 'mode must be handoff|standby');
+  // Onboarding with an explicit mode:'handoff' is human-only. Without this, a
+  // controller-attributed caller could onboard an un-tracked session — one nobody has
+  // put under mission control yet, so the manual-operation guard has never even seen it —
+  // and hand itself immediate drive control, bypassing the human-only gate that
+  // applyManageMode enforces for every OTHER standby→handoff flip. Defaulting to standby
+  // (mode omitted) stays open to anyone; only an explicit handoff request is gated.
+  if (modeRaw === 'handoff' && isControllerActor(who)) {
+    return fail('FORBIDDEN', 'onboarding with mode:handoff is human-only — a controller cannot seize drive control of a session pre-emptively; omit mode (defaults to standby) or ask the user to switch it');
+  }
   const note = str(b.note);
 
   // 3) transport + session node. Stamp the ORIGIN node before any proxy hop so the
@@ -644,7 +664,7 @@ export async function handleOnboard(b: Record<string, unknown>, d: OnboardDeps =
     { sid, node: sessionNode, transport, mode: modeRaw, note, crossCluster, ownerNode: self, createdBy: who },
     Date.now(), genId,
   );
-  await putMission(m, d.port, { actor: who });
+  await putMission(m, d.port, { actor: who, historyPort: d.historyPort });
   return ok({ mission: m, existing: false, cluster: target, leaderNode: self });
 }
 
@@ -1144,7 +1164,12 @@ export function probeTuiDialog(sid: string): import('../../terminal/ccr-cloud').
   }
 }
 
-function defaultSessionOpsDeps(): SessionOpsDeps {
+/**
+ * Exported (not just internal) so I1's wiring test can assert this builder actually supplies
+ * a real `findMission` — without the export, a test could only see its own injected deps,
+ * which would pass identically whether or not this default is wired to the real store.
+ */
+export function defaultSessionOpsDeps(): SessionOpsDeps {
   return {
     cloudRead: async (opts) => {
       const { cloudRead } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
@@ -1234,6 +1259,42 @@ function defaultSessionProxyDeps(): SessionProxyDeps {
     },
   };
 }
+/**
+ * Real deps for `assertDriveable`, the single choke point every session-write handler
+ * calls before it touches a session. `findMission` is passed in per-handler: production
+ * builders (`defaultSessionOpsDeps`, `defaultSessionAnswerDeps`, `defaultSessionResumeDeps`)
+ * wire it to the real `findMissionBySessionOrCcr`, so prod is always guarded; a caller that
+ * omits `findMission` (most unit tests, which don't care about mission ownership) falls back
+ * to a safe no-op that always answers "no mission" — NEVER to the real store. Falling back to
+ * the real store here would run live mission-store IO (and, on THIS machine,
+ * dataServiceEnabled is genuinely true) inside every test that doesn't explicitly stub
+ * findMission, making test results depend on whatever missions happen to exist for real.
+ */
+function realGuardDeps(findMission?: (sid: string) => Promise<Mission | null>): GuardDeps {
+  return {
+    now: Date.now(),
+    findMission: findMission ?? (async () => null),
+    gather: async (sid: string) => gatherProbeSignals(sid),
+    latch: async (m: Mission, reason: ManualReason, now: number) => {
+      m.manageMode = 'standby';
+      m.control.lastHumanInputAt = now;
+      // Do NOT hand-write history. `manageMode` is in TRACKED_FIELDS (`mission-history.ts:6`),
+      // so putMission records the flip itself, with a proper rev/actor/diff. MissionChange is a
+      // versioned diff record, not a free-form event log — pushing to it by hand corrupts the
+      // revision chain. The human-readable REASON goes in adjustments, which is what it is for.
+      m.adjustments = m.adjustments ?? [];
+      m.adjustments.push({
+        at: now,
+        trigger: 'manual-operation-detected',
+        change: `went manual (${reason}) — Mission Control will not write to this session`,
+        by: 'user',
+        actor: { kind: 'user', channel: 'user', at: now },
+      });
+      await putMission(m);
+    },
+  };
+}
+
 /**
  * Normalise a proxy response into an Envelope.
  * The remote Core returns { success, data, ... } — pass it through directly.
@@ -1357,16 +1418,16 @@ export async function handleSessionDrive(sid: string, text: string, deps?: Sessi
       return fail('PROXY_ERROR', (e as Error).message);
     }
   }
+  const guard = await assertDriveable(sid, realGuardDeps(d.findMission));
+  if (!guard.ok) return fail(guard.code, guard.message);
   const r = d.resolve(sid);
   let driveText = text;
-  if (d.findMission) {
-    try {
-      const m = await d.findMission(sid);
-      if (m?.origin === 'onboarded') {
-        if (m.manageMode === 'standby') return fail('STANDBY_MODE', 'mission is standby — the human runs this session; switch manageMode to handoff to drive');
-        driveText = markDriveText(text);
-      }
-    } catch { /* best-effort — never block a normal drive on a store hiccup */ }
+  // I4: reuse the guard's own findMission lookup instead of calling it again — `findMission`
+  // does a full port.list({limit:10000}), and this handler ran it TWICE per drive before this
+  // fix (once inside assertDriveable, once here for the marker-prefix check). Same fail-open
+  // semantics: assertDriveable already swallowed a lookup error into `mission: null`.
+  if (guard.mission?.origin === 'onboarded') {
+    driveText = markDriveText(text);
   }
   // Command contract: a command aimed at THE CONTROLLER (user chat included)
   // is tracked — wrapped with a cmd id + the per-task verifiable-⟦RESULT⟧
@@ -1419,6 +1480,8 @@ export async function handleSessionControl(sid: string, action: string, deps?: S
     }
   }
   const d = deps ?? defaultSessionOpsDeps();
+  const guard = await assertDriveable(sid, realGuardDeps(d.findMission));
+  if (!guard.ok) return fail(guard.code, guard.message);
   const r = d.resolve(sid);
   try {
     // I4(b): before the stop branch executes, resolve whether this is an onboarded (user-owned)
@@ -1495,9 +1558,14 @@ export interface SessionAnswerDeps {
    * (protocol-native control_response — works with no local tmux and from any node).
    */
   workerEventsAnswer?: (opts: { cse: string; answer: string; requestId?: string }) => Promise<unknown>;
+  /** Resolve the mission bound to this sid, for the manual-operation guard. Optional: when
+   *  absent (most unit tests), the guard treats the session as unmanaged rather than reaching
+   *  for the real store — see `realGuardDeps`. */
+  findMission?: (sid: string) => Promise<Mission | null>;
 }
 
-function defaultSessionAnswerDeps(): SessionAnswerDeps {
+/** Exported for the same reason as `defaultSessionOpsDeps` — see its comment. */
+export function defaultSessionAnswerDeps(): SessionAnswerDeps {
   return {
     cloudAnswer: (opts) => {
       const { cloudAnswer: ca } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
@@ -1537,6 +1605,7 @@ function defaultSessionAnswerDeps(): SessionAnswerDeps {
       const { cloudClientEventsAnswer } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
       return cloudClientEventsAnswer(opts);
     },
+    findMission: (sid) => findMissionBySessionOrCcr(sid),
   };
 }
 
@@ -1583,6 +1652,8 @@ export async function handleSessionAnswer(
   }
 
   const d = deps ?? defaultSessionAnswerDeps();
+  const guard = await assertDriveable(sid, realGuardDeps(d.findMission));
+  if (!guard.ok) return fail(guard.code, guard.message);
   const r = d.resolve(sid);
 
   try {
@@ -1743,6 +1814,10 @@ export interface SessionResumeDeps extends ResumeWorkerDeps {
    * fail-safe semantics used by the default).
    */
   lookupOnboarded?: (missionId: string | undefined, sid: string) => Promise<boolean>;
+  /** Resolve the mission bound to this sid, for the manual-operation guard. Optional: when
+   *  absent (most unit tests), the guard treats the session as unmanaged rather than reaching
+   *  for the real store — see `realGuardDeps`. */
+  findMission?: (sid: string) => Promise<Mission | null>;
 }
 
 /**
@@ -1798,6 +1873,7 @@ export interface MissionSpawnDeps {
   startNative?: (m: unknown, decision: unknown, nativeDeps: unknown) => Promise<Record<string, unknown>>;
   buildNativeDeps?: (m: unknown) => Promise<unknown>;
   persist?: (m: unknown) => Promise<void>;
+  actor?: MissionActor;
 }
 
 async function defaultSpawnNativeDeps(m: Record<string, unknown>): Promise<unknown> {
@@ -1862,6 +1938,21 @@ export async function handleMissionSpawn(id: string, b: Record<string, unknown>,
 
   const m = await getM(id);
   if (!m) return fail('MISSION_NOT_FOUND', `mission ${id} not found`);
+  // I-1 (same population as handlePatch's binding gate above): `assertDriveable` resolves a
+  // mission BY SESSION ID, so a spawn that rebinds a standby mission to a fresh executor
+  // detaches the human's session from the guard's view just as effectively as an unbind
+  // would — manageMode stays 'standby' on a record nothing consults, and a new executor
+  // starts driving while the human's terminal is silently orphaned. force:true must not be
+  // able to do from a controller what handlePatch already refuses it for binding changes.
+  // Human-only, not force-only: a human passing force:true here is making a deliberate,
+  // in-person choice to replace their own session — the human-only principle in this
+  // feature is about who may RELEASE the latch, not about forbidding the human who holds
+  // it from acting. So gate on the ACTOR, exactly like the binding check, and let a human's
+  // force:true through.
+  const who = d.actor ?? await actorFor(b);
+  if (isStandby(m as Pick<Mission, 'manageMode'>) && isControllerActor(who)) {
+    return fail('FORBIDDEN', 'spawning a replacement executor for a standby-latched mission is human-only — the human running this session must switch manageMode to handoff first, or spawn the replacement themselves');
+  }
   const force = b.force === true || b.force === 'true';
   const binding = m.binding as { sessionId?: string; kind?: string } | undefined;
   // ── Idempotency key (bl_1c861246 step B) ──
@@ -1927,7 +2018,8 @@ export async function handleMissionSpawn(id: string, b: Record<string, unknown>,
   return ok({ binding: newBinding, name: missionSessionTitle(m as never) });
 }
 
-function defaultSessionResumeDeps(): SessionResumeDeps {
+/** Exported for the same reason as `defaultSessionOpsDeps` — see its comment. */
+export function defaultSessionResumeDeps(): SessionResumeDeps {
   // The existing native resume body (claude --resume <sid> --remote-control in the
   // mission worktree, preserves sid) — unchanged, just lifted to a named const so
   // both resumeNative and ensureLive.resumeDead can reuse it.
@@ -2025,6 +2117,7 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
       return getProjectSettings().missionSessionIdleCloseMin ?? 30;
     })(),
     lookupOnboarded: defaultLookupOnboarded(),
+    findMission: (sid) => findMissionBySessionOrCcr(sid),
   };
 }
 
@@ -2050,6 +2143,8 @@ export async function handleSessionResume(
   if (anchored) return anchored;
 
   const d = deps ?? defaultSessionResumeDeps();
+  const guard = await assertDriveable(sid, realGuardDeps(d.findMission));
+  if (!guard.ok) return fail(guard.code, guard.message);
   const result = await resumeWorker(sid, body.missionId, d, { force: !!body.force });
   // Stamp autoCloseAt + reaper tracking only for a freshly-resumed native session.
   if (result.transport === 'native' && result.resumed && result.reason === 'ok') {

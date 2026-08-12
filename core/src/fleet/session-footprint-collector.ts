@@ -128,13 +128,16 @@ export function getLocalSnapshot(): NodeFootprint {
     const { getSessionCache } = require('../session-cache') as typeof import('../session-cache');
     const { getHubConfig } = require('../hub-client/hub-config') as typeof import('../hub-client/hub-config');
     const { getMyCluster } = require('../cluster/cluster-config') as typeof import('../cluster/cluster-config');
-    const { listActiveMissions, thisNode } = require('../mission/mission-store') as typeof import('../mission/mission-store');
+    const { listBoundMissions, thisNode } = require('../mission/mission-store') as typeof import('../mission/mission-store');
     const gitCache = new Map<string, { at: number; v: Awaited<ReturnType<typeof collectGitState>> }>();
     const build = () => buildSnapshot({
       sessions: () => getSessionCache().getAllSessionsFromCache(),
       bound: async () => {
+        // Deliberately listBoundMissions, not listActiveMissions: occupancy reporting must
+        // see standby missions too (a human running the session is MORE spoken-for, not
+        // less) — see selectBound's doc comment in mission-store.ts.
         const map = new Map<string, string>();
-        for (const m of await listActiveMissions().catch(() => [])) {
+        for (const m of await listBoundMissions().catch(() => [])) {
           const b = m.binding; if (!b) continue;
           if (b.sessionId) map.set(b.sessionId, m.id);
           const ccr = (b as any).ccr; if (ccr?.cse) map.set(ccr.cse, m.id); if (ccr?.sid) map.set(ccr.sid, m.id);

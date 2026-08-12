@@ -194,9 +194,34 @@ export async function listMissions(port: MissionDataPort = defaultPort()): Promi
   const all = await port.list();
   return all.filter((m) => !RESERVED_IDS.has(m.id));
 }
+/** Pure: the missions the supervisor should engage on. Standby is excluded — a
+ *  human is running that session, so it must not arm the controller's timers. */
+export function selectActive<T extends { id: string; status: string; manageMode?: string }>(all: T[]): T[] {
+  return all.filter((m) =>
+    !RESERVED_IDS.has(m.id)
+    && (m.status === 'active' || m.status === 'waiting')
+    && m.manageMode !== 'standby');
+}
+
 export async function listActiveMissions(port: MissionDataPort = defaultPort()): Promise<Mission[]> {
-  const all = await port.list();
-  return all.filter((m) => !RESERVED_IDS.has(m.id) && (m.status === 'active' || m.status === 'waiting'));
+  return selectActive(await port.list());
+}
+
+/** Pure: the missions that OCCUPY a session, for occupancy/footprint reporting (e.g.
+ *  session-footprint-collector's `managed` field). Deliberately broader than
+ *  `selectActive`: "should the supervisor engage this mission?" and "who occupies this
+ *  session?" are different questions. A standby mission — one a human is personally
+ *  running — is MORE spoken-for than an unbound session, not less, so `manageMode` is
+ *  never consulted here. Only non-terminal status and an actual session binding matter. */
+export function selectBound<T extends { id: string; status: string; binding?: { sessionId?: string | null } | null }>(all: T[]): T[] {
+  return all.filter((m) =>
+    !RESERVED_IDS.has(m.id)
+    && m.status !== 'done' && m.status !== 'failed'
+    && !!m.binding?.sessionId);
+}
+
+export async function listBoundMissions(port: MissionDataPort = defaultPort()): Promise<Mission[]> {
+  return selectBound(await port.list());
 }
 
 // ---------------------------------------------------------------------------

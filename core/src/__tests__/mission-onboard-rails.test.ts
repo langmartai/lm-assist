@@ -56,7 +56,7 @@ test('non-onboarded drive untouched', async () => {
   assert.equal(sent[0], 'plain');
 });
 
-test('manageMode patch: human ok, controller forbidden, non-onboarded invalid', async () => {
+test('manageMode patch: human ok, controller forbidden', async () => {
   const m = onboarded('standby');
   const port = { isEnabled: () => true, get: async () => m, list: async () => [m], put: async (x: Mission) => { Object.assign(m, x); }, del: async () => {} } as any;
   const okFlip = await handlePatch(m.id, { manageMode: 'handoff' }, port, user);
@@ -65,9 +65,24 @@ test('manageMode patch: human ok, controller forbidden, non-onboarded invalid', 
   const denied = await handlePatch(m.id, { manageMode: 'standby' }, port, ctrl);
   assert.equal(denied.success, false);
   assert.equal(denied.error!.code, 'FORBIDDEN');
-  const plainPort = { isEnabled: () => true, get: async () => ({ ...m, origin: undefined }), list: async () => [], put: async () => {}, del: async () => {} } as any;
-  const invalid = await handlePatch(m.id, { manageMode: 'handoff' }, plainPort, user);
-  assert.equal(invalid.error!.code, 'INVALID_INPUT');
+  // manageMode used to be onboarded-only (non-onboarded → INVALID_INPUT). That restriction
+  // was deliberately removed — manageMode is now settable on every mission — so there is no
+  // "non-onboarded invalid" case left to assert here. See mission-manual-mode.test.ts.
+});
+
+test('manageMode patch: settable on a NON-onboarded mission via the route (the task 1 deliverable)', async () => {
+  const executorMission = { id: 'mission_exec2', origin: undefined, binding: null } as any as Mission;
+  const port = {
+    isEnabled: () => true,
+    get: async () => executorMission,
+    list: async () => [executorMission],
+    put: async (x: Mission) => { Object.assign(executorMission, x); },
+    del: async () => {},
+  } as any;
+  const r = await handlePatch(executorMission.id, { manageMode: 'standby' }, port, user);
+  assert.equal(r.success, true, JSON.stringify(r));
+  assert.equal((r.data as any).manageMode, 'standby');
+  assert.equal(executorMission.manageMode, 'standby');
 });
 
 // ── I1: controller tools auto-resolve node for an onboarded mission bound elsewhere ─────────
@@ -297,6 +312,50 @@ test('I4(a): binding change on a NON-onboarded mission is unaffected by the guar
   const r = await handlePatch('mission_exec', { binding: { sessionId: 'uuid-new-worker', kind: 'worker' } }, port, ctrl);
   assert.equal(r.success, true, JSON.stringify(r));
   assert.equal((r.data as Mission).binding?.sessionId, 'uuid-new-worker');
+});
+
+// ── I-1: a controller cannot neutralise the standby latch by unbinding/rebinding ─────────────
+//
+// `assertDriveable` resolves a mission BY SESSION ID, so clearing (or moving) the binding on a
+// standby mission removes the session from the guard's view entirely — manageMode stays
+// 'standby' on a record nothing consults. The exposed population is an auto-latched
+// NON-onboarded mission: origin !== 'onboarded', so the I4(a) origin-only check above did NOT
+// cover it. Reviewer-reproduced bypass: PATCH {binding:null} from a controller actor on such a
+// mission previously succeeded and cleared assertDriveable's view of it.
+
+function standbyNonOnboarded(): Mission {
+  // Deliberately origin: undefined (auto-latched, never onboarded) — the exact population I-1
+  // exposed, distinct from the I4(a) onboarded-mission tests above.
+  return {
+    id: 'mission_standby_bound', origin: undefined, manageMode: 'standby',
+    binding: { sessionId: 'uuid-locked', kind: 'worker', node: 'n1', boundAt: 1 },
+  } as any as Mission;
+}
+
+test('I-1: controller CANNOT unbind (binding:null) an auto-latched standby mission', async () => {
+  const m = standbyNonOnboarded();
+  const port = { isEnabled: () => true, get: async () => m, list: async () => [m], put: async (x: Mission) => { Object.assign(m, x); }, del: async () => {} } as any;
+  const r = await handlePatch(m.id, { binding: null }, port, ctrl);
+  assert.equal(r.success, false);
+  assert.equal(r.error!.code, 'FORBIDDEN');
+  assert.ok(m.binding, 'must not have been unbound — that would drop the session out of assertDriveable\'s view');
+});
+
+test('I-1: controller CANNOT rebind a standby mission to a different sessionId', async () => {
+  const m = standbyNonOnboarded();
+  const port = { isEnabled: () => true, get: async () => m, list: async () => [m], put: async (x: Mission) => { Object.assign(m, x); }, del: async () => {} } as any;
+  const r = await handlePatch(m.id, { binding: { sessionId: 'other', kind: 'worker' } }, port, ctrl);
+  assert.equal(r.success, false);
+  assert.equal(r.error!.code, 'FORBIDDEN');
+  assert.equal(m.binding?.sessionId, 'uuid-locked', 'the original binding must be untouched');
+});
+
+test('I-1: human CAN still unbind/rebind a standby mission (release stays human-only, not blocked)', async () => {
+  const m = standbyNonOnboarded();
+  const port = { isEnabled: () => true, get: async () => m, list: async () => [m], put: async (x: Mission) => { Object.assign(m, x); }, del: async () => {} } as any;
+  const r = await handlePatch(m.id, { binding: null }, port, user);
+  assert.equal(r.success, true, JSON.stringify(r));
+  assert.equal((r.data as Mission).binding, null);
 });
 
 // ── I4(b): stop requires force:true on an onboarded mission ──────────────────────────────────

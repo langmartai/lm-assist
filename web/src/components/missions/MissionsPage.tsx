@@ -1249,13 +1249,13 @@ export function MissionsPage() {
                 onboarded
               </span>
             )}
-            {m.origin === 'onboarded' && m.manageMode && (
+            {m.manageMode && (
               <span
                 className={`badge ${m.manageMode === 'handoff' ? 'badge-green' : 'badge-default'}`}
                 style={{ fontSize: 10 }}
-                title={m.manageMode === 'handoff' ? 'mission control drives this session' : 'observe only — human drives'}
+                title={m.manageMode === 'handoff' ? 'mission control drives this session' : 'a human is running this session — Mission Control will not write to it'}
               >
-                {m.manageMode}
+                {m.manageMode === 'standby' ? 'MANUAL' : 'handoff'}
               </span>
             )}
             {m.binding ? (

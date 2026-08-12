@@ -42,12 +42,17 @@ export function createReaper() {
     now: number;
     idleMin: number;
     close: (sid: string) => Promise<void>;
+    /** Veto: return true to spare a sid this sweep WITHOUT untracking it. Used to
+     *  protect manually-operated sessions — the reaper's idle timer is refreshed by
+     *  lm-assist's own reads/drives, and a standby session gets none of those, so
+     *  without this it would kill the terminal of the person we are protecting. */
+    skip?: (sid: string) => boolean;
   }): Promise<void> {
-    const { now, idleMin, close } = opts;
+    const { now, idleMin, close, skip } = opts;
     const idleMs = idleMin * 60_000;
     const expired: string[] = [];
     for (const [sid, entry] of tracked.entries()) {
-      if ((now - entry.lastActivityAt) > idleMs) {
+      if ((now - entry.lastActivityAt) > idleMs && !skip?.(sid)) {
         expired.push(sid);
       }
     }
@@ -94,6 +99,7 @@ export async function sweepIdle(opts: {
   now: number;
   idleMin: number;
   close: (sid: string) => Promise<void>;
+  skip?: (sid: string) => boolean;
 }): Promise<void> {
   return _singleton.sweepIdle(opts);
 }

@@ -30,6 +30,7 @@ import * as path from 'path';
 import { sessionVerdict } from '../terminal/cc-sessions';
 import { AgentSessionStore } from '../agent-session-store';
 import { detectHumanActivity } from './mission-onboard';
+import { isStandby, latchOnHumanActivity, expireIdleStandby } from './manual-mode';
 
 /**
  * Resolve a host string (which may be a hostname/label OR a gatewayId) to the
@@ -1030,13 +1031,26 @@ async function evaluateEngagement(
 }
 
 /**
- * THE "unplaced work" set: `mission_schedule.ready` minus anything already bound.
+ * THE "unplaced work" set: `mission_schedule.ready` minus anything already bound,
+ * minus anything a human is running.
  * One definition for the engagement trigger AND the advisory's live re-validation —
  * deriving either any other way would recreate the exact disagreement bl_28543c78 fixed.
+ *
+ * The standby exclusion lives HERE rather than at the engagement call site precisely
+ * because of that shared-definition rule: the starvation net places a mission the
+ * controller declined to place, so filtering only the engagement path would let the
+ * BACKSTOP spawn a second executor onto a session someone is typing in — the exact
+ * harm the manual-operation guard exists to prevent, arriving by the one route that
+ * bypasses the controller's judgement.
  */
 function computeReadyUnbound(all: Mission[]): string[] {
   const byId = new Map(all.map((m) => [m.id, m]));
-  return computeSchedule(all).ready.filter((id) => !byId.get(id)?.binding?.sessionId);
+  return computeSchedule(all).ready.filter((id) => {
+    const m = byId.get(id);
+    // `m` is undefined only if computeSchedule returned an id absent from `all`, which it
+    // cannot — kept permissive anyway so this resolution changes ONLY the standby behaviour.
+    return !m?.binding?.sessionId && !(m && isStandby(m));
+  });
 }
 
 /**
@@ -1791,6 +1805,98 @@ export function discoverNewCse(
   return null;
 }
 
+export interface IdleStandbyReaperSweepDeps {
+  now: number;
+  listMissions: () => Promise<Mission[]>;
+  putMission: (m: Mission) => Promise<unknown>;
+  idleStandbyMin: number;
+  reaperIdleMin: number;
+  sweepIdle: (opts: { now: number; idleMin: number; skip: (sid: string) => boolean; close: (sid: string) => Promise<void> }) => Promise<void>;
+  closeSession: (sid: string) => Promise<void>;
+}
+
+/**
+ * Leader-only idle-standby expiry + reaper sweep, run once per supervisor tick.
+ * `listMissions()` is fetched ONCE and shared by both blocks below instead of each doing
+ * its own full list call.
+ *
+ * Extracted to its own testable function (was inline in the job handler) so the
+ * skip-on-failure contract below can be unit-tested directly, without exercising the
+ * full mission-controller job-handler wiring (leader election, scheduled-jobs registry,
+ * live tmux/cse backends, ...).
+ */
+export async function runIdleStandbyAndReaperSweep(deps: IdleStandbyReaperSweepDeps): Promise<{ skipped: boolean }> {
+  let allMissions: Mission[] | null = null;
+  try {
+    allMissions = await deps.listMissions();
+  } catch (e) {
+    console.debug(`[mission-controller] listMissions failed (idle-standby expiry + reaper sweep skipped): ${(e as Error).message}`);
+  }
+
+  // A failed listMissions() must skip BOTH blocks below, not just log and fall through
+  // with an empty array: `standbySids` (computed from `allMissions` further down) is the
+  // reaper's ONLY veto for a standby mission, since `sweepIdle` reads only its own
+  // in-memory `tracked` map and has no other way to know a mission is human-latched. An
+  // empty `standbySids` from a throw is indistinguishable from "no standby missions
+  // exist" and the reaper would sweep with no veto at all — exactly the human-latched
+  // session this feature exists to protect, closed by the code that claims to skip it.
+  //
+  // Also skip on a genuinely EMPTY list (fetched fine, zero missions). `livePort.list()`
+  // already swallows a failed query into `[]` instead of throwing (a pre-existing
+  // hazard elsewhere), so an empty list from THIS call site is not trustworthy proof
+  // that the fleet has no missions — treat it the same as a throw. The cost is one
+  // skipped tick on the rare occasion the fleet is actually empty, which has nothing to
+  // reap anyway, so there is no meaningful downside to being cautious here.
+  if (allMissions === null || allMissions.length === 0) {
+    return { skipped: true };
+  }
+
+  // Idle-standby expiry: a mission latched to standby is sticky by design (only a human
+  // can release it) — without this every session anyone ever touched accumulates as a
+  // permanently "active" mission. This pauses the ACTIVITY, never the latch: see
+  // expireIdleStandby's own doc for why manageMode must stay untouched here.
+  try {
+    const paused = expireIdleStandby(allMissions, deps.now, deps.idleStandbyMin);
+    for (const m of paused) await deps.putMission(m);
+  } catch (e) {
+    console.debug(`[mission-controller] idle-standby expiry failed: ${(e as Error).message}`);
+  }
+
+  // Reaper sweep: auto-close resumed native sessions that have been idle past the threshold.
+  try {
+    // A standby mission gets zero touchActivity calls (Task 6 blocks read/drive for
+    // it), so without this veto the reaper would kill the terminal of the human it
+    // exists to protect. Reuses the `allMissions` fetched above for this tick.
+    const standbySids = new Set(
+      allMissions
+        .filter((m) => isStandby(m) && m.binding?.sessionId)
+        .map((m) => m.binding!.sessionId as string),
+    );
+    // 🔴 RESIDUAL WINDOW (honest, not closed here): the reaper's idle timer is
+    // refreshed by lm-assist's own reads/drives, by `latchOnHumanActivity` (only
+    // for onboarded missions — see its comment, currently a no-op), and by
+    // `assertDriveable`'s touch (`manual-probe.ts`, only when a session-WRITE
+    // route actually runs and its probe fires). If a human types into a
+    // TRACKED, non-standby session and Mission Control never attempts a write
+    // during that window — no drive/answer/control/resume call, so no probe
+    // runs — nothing refreshes the timer, and the session can still be reaped
+    // at `missionSessionIdleCloseMin` while the human is present. Closing that
+    // fully needs periodic (not just write-triggered) human detection for
+    // non-onboarded missions, which is out of scope here.
+    await deps.sweepIdle({
+      now: deps.now,
+      idleMin: deps.reaperIdleMin,
+      skip: (sid) => standbySids.has(sid),
+      close: deps.closeSession,
+    });
+  } catch (e) {
+    // Best-effort: never crash the tick because of the reaper.
+    console.debug(`[mission-controller] reaper sweep failed: ${(e as Error).message}`);
+  }
+
+  return { skipped: false };
+}
+
 /**
  * Register the scheduled-job handler AND force the job's tick interval to
  * `missionControllerLifecycleMin` (default 1 min) so that lifecycle reconciliation
@@ -1940,12 +2046,11 @@ export function registerMissionController(
       readSignal: async (m) => {
         if (m.origin === 'onboarded') {
           const s = await readOnboardedSignal(m, defaultOnboardedReadDeps());
-          if (s.humanActive) {
-            // A human message is MATERIAL for the engagement classifier: inject a synthetic
-            // status-marker line so classifyExecutorActivity fires without changing its API.
-            return { ...s, newLines: ['⟦WORKER-STATUS⟧ human-activity', ...s.newLines] };
+          const r = latchOnHumanActivity(m, s, Date.now());
+          if (r.latched || s.humanActive) {
+            try { await realDeps.persistMissionControl!(m); } catch { /* best-effort */ }
           }
-          return s;
+          return r.signal;
         }
         return readExecutorSignal(m);
       },
@@ -2240,34 +2345,34 @@ export function registerMissionController(
 
     const r = await runSupervisorTick(realDeps);
 
-    // Reaper sweep: auto-close resumed native sessions that have been idle past the threshold.
-    // Only the leader runs the sweep (non-leaders return skipped=true above, but we also
-    // gate here to be explicit about the leader-only contract).
+    // Minor(leader-gate): idle-standby expiry AND the reaper sweep are both leader-only —
+    // every node ticking either would race to write the SAME missions (idle-standby expiry
+    // writes status:'paused' via putMission, which also appends its own `mission-history` rev
+    // into a fleet-synced dataset) each tick. Only the leader runs the sweep (non-leaders
+    // return skipped=true above, but we also gate here to be explicit about the contract).
     const { isMonitor: amMonitorNow } = await amIMonitor().catch(() => ({ isMonitor: false }));
     if (amMonitorNow) {
-      try {
-        const { sweepIdle } = require('./mission-session-reaper') as typeof import('./mission-session-reaper');
-        const idleMin = getProjectSettings().missionSessionIdleCloseMin ?? 30;
-        await sweepIdle({
-          now: Date.now(),
-          idleMin,
-          close: async (sid: string) => {
-            // Resolve sid → tmuxSession via sessionVerdict, then kill via tmuxTerminalBackend.
-            const verdict = sessionVerdict(sid);
-            const tmuxSid = verdict.tmuxSession;
-            if (tmuxSid) {
-              const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
-              await backend.tmuxTerminalBackend.close(tmuxSid);
-            } else {
-              // Fallback: try getCcController().close() which uses the sid directly.
-              await getCcController().close(sid).catch(() => {});
-            }
-          },
-        });
-      } catch (e) {
-        // Best-effort: never crash the tick because of the reaper.
-        console.debug(`[mission-controller] reaper sweep failed: ${(e as Error).message}`);
-      }
+      const { sweepIdle } = require('./mission-session-reaper') as typeof import('./mission-session-reaper');
+      await runIdleStandbyAndReaperSweep({
+        now: Date.now(),
+        listMissions,
+        putMission,
+        idleStandbyMin: getProjectSettings().manualIdleInactiveMin ?? 240,
+        reaperIdleMin: getProjectSettings().missionSessionIdleCloseMin ?? 30,
+        sweepIdle,
+        closeSession: async (sid: string) => {
+          // Resolve sid → tmuxSession via sessionVerdict, then kill via tmuxTerminalBackend.
+          const verdict = sessionVerdict(sid);
+          const tmuxSid = verdict.tmuxSession;
+          if (tmuxSid) {
+            const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
+            await backend.tmuxTerminalBackend.close(tmuxSid);
+          } else {
+            // Fallback: try getCcController().close() which uses the sid directly.
+            await getCcController().close(sid).catch(() => {});
+          }
+        },
+      });
     }
 
     return { result: `supervisor action=${r.action}`, controllerSession: r.controllerSession, status: 'ok' };
