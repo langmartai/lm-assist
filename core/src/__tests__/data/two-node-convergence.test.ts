@@ -4,6 +4,16 @@ import { strict as assert } from 'node:assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+
+// pullDataset now applies the SAME cluster gate as the reconcile loop, and 'missions'
+// is cluster-scoped — so this suite must pin its cluster context or its outcome depends
+// on the machine's live ~/.lm-assist/cluster-dev.json (the 2026-08-02 trap documented in
+// sync-engine.test.ts). An isolated HOME with no cluster file makes selfCluster 'default',
+// which matches the record-less peer 'gw-a'; the isolated data dir keeps the singleton
+// getClusterRecords() constructs away from the real machine state.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'lm-2n-'));
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'lm-2n-home-'));
+
 import { DataService } from '../../data/data-service';
 import { SyncEngine } from '../../data/sync-engine';
 import { SyncListener } from '../../data/sync-listener';

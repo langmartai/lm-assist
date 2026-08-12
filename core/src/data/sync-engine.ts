@@ -8,6 +8,7 @@ import type {
   PeerClient, SyncStatus, ManifestEntry, NodeInfo, NodeOrigin, BackendConfig,
 } from './types';
 import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
+import { KeyedLocks } from './key-lock';
 
 /**
  * Pure helper: decide whether to pull a dataset from a peer based on scope + cluster membership.
@@ -53,6 +54,11 @@ export class SyncEngine {
     errors: [],
   };
 
+  /** Per-record lock the tombstone GC deletes under. MUST be the same instance
+   *  DataService put/del use (getDataService wires that) or the GC's re-check
+   *  still races a concurrent re-create; standalone engines get a private one. */
+  private locks: KeyedLocks;
+
   constructor(private deps: {
     datasets: DatasetRegistry;
     backends: BackendRegistry;
@@ -60,7 +66,11 @@ export class SyncEngine {
     nodeId: string;
     /** Tombstone retention override — clamped to TOMBSTONE_GC_FLOOR_MS, never below. */
     tombstoneTtlMs?: number;
-  }) {}
+    /** Share DataService's per-key put/del lock so GC cannot race a re-create. */
+    locks?: KeyedLocks;
+  }) {
+    this.locks = deps.locks ?? new KeyedLocks();
+  }
 
   private tombstoneTtlMs(): number {
     return Math.max(TOMBSTONE_GC_FLOOR_MS, this.deps.tombstoneTtlMs ?? TOMBSTONE_TTL_MS);
@@ -88,18 +98,7 @@ export class SyncEngine {
     }
 
     // Resolve cluster context once per run (for scope-aware filtering)
-    let records: ClusterRecord[] = [];
-    let selfCluster = 'default';
-    try {
-      // Lazy import to avoid circular dependency: sync-engine ↔ cluster-store ↔ data-service
-      const { getClusterRecords } = await import('../cluster/cluster-store');
-      const { getMyCluster } = await import('../cluster/cluster-config');
-      records = await getClusterRecords();
-      selfCluster = getMyCluster();
-    } catch (e) {
-      // Cluster data not available; proceed with defaults (all peers resolve to 'default' cluster)
-    }
-
+    const { records, selfCluster } = await this.clusterContext();
     const selfId = this.deps.nodeId;
 
     for (const peer of peers) {
@@ -161,13 +160,30 @@ export class SyncEngine {
     return this.status();
   }
 
+  /** Cluster context for scope-aware pull filtering — the SAME inputs for the
+   *  reconcile loop and the notify-driven pullDataset path. Falls back to defaults
+   *  (all peers resolve to 'default') when cluster data is unavailable. */
+  private async clusterContext(): Promise<{ records: ClusterRecord[]; selfCluster: string }> {
+    try {
+      // Lazy import to avoid circular dependency: sync-engine ↔ cluster-store ↔ data-service
+      const { getClusterRecords } = await import('../cluster/cluster-store');
+      const { getMyCluster } = await import('../cluster/cluster-config');
+      return { records: await getClusterRecords(), selfCluster: getMyCluster() };
+    } catch {
+      return { records: [], selfCluster: 'default' };
+    }
+  }
+
   /**
    * Purge tombstones older than the retention TTL from every synced local dataset.
    * The QueryFilter is only a PREFILTER — getField() prefers `fields.*`, so a user record
-   * whose payload happens to carry `deleted: true` can match it. The top-level checks in
-   * code below are the authority: only a real tombstone (`rec.deleted === true` at the
-   * record level) that is verifiably old is ever removed. Per-dataset failures are
-   * reported in `errors`, never fatal to the run.
+   * whose payload happens to carry `deleted: true` can match it. The checks in code below
+   * are the authority: at delete time the record is RE-READ under the same per-key lock
+   * DataService.put/del use, and only a record that is STILL a real tombstone (`deleted
+   * === true` at the top level) and STILL expired is removed — the query snapshot alone
+   * would race a legitimate CAS re-create (ifVersion:0 over a tombstone) landing between
+   * the query and the delete, hard-deleting the brand-new live record. Per-dataset
+   * failures are reported in `errors`, never fatal to the run.
    */
   private async gcTombstones(s: SyncStatus): Promise<number> {
     const cutoff = new Date(Date.now() - this.tombstoneTtlMs()).toISOString();
@@ -185,7 +201,14 @@ export class SyncEngine {
           if (rec.deleted !== true) continue;                                   // fields.deleted shadow — NOT a tombstone
           if (typeof rec.updatedAt !== 'string' || !rec.updatedAt) continue;    // unknown age — keep
           if (rec.updatedAt >= cutoff) continue;                                // still within retention
-          if (await backend.delete(d.id, rec.id)) purged++;
+          const deleted = await this.locks.withLock(`${d.id}:${rec.id}`, async () => {
+            const cur = await backend.get(d.id, rec.id);                        // re-read: the snapshot may be stale
+            if (!cur || cur.deleted !== true) return false;                     // re-created (or already gone) — keep
+            if (typeof cur.updatedAt !== 'string' || !cur.updatedAt) return false;
+            if (cur.updatedAt >= cutoff) return false;                          // refreshed within retention — keep
+            return backend.delete(d.id, rec.id);
+          });
+          if (deleted) purged++;
         }
       } catch (e) {
         s.errors.push(`gc ${d.id}: ` + (e instanceof Error ? e.message : String(e)));
@@ -196,12 +219,20 @@ export class SyncEngine {
 
   /**
    * Pull a single dataset from a peer.
-   * Used by reconcile and the dataset_updated event handler (Task 5).
+   * Used by the bus change-notify path (sync-listener) — and gated by the SAME
+   * shouldPullDataset check as the reconcile loop: a foreign-cluster origin's notify
+   * must not pull a dataset the reconcile loop would refuse (tombstones included).
    */
   async pullDataset(node: string, datasetId: string): Promise<{ applied: number; skipped: number }> {
     const { datasets } = await this.deps.peers.manifest(node);
     const m = datasets.find((d) => d.id === datasetId);
     if (!m || m.syncMode !== 'full') return { applied: 0, skipped: 0 };
+
+    const { records, selfCluster } = await this.clusterContext();
+    if (!shouldPullDataset(m.scope, node, records, this.deps.nodeId, selfCluster)) {
+      console.debug(`[sync-engine] pull of ${datasetId} from ${node} refused by cluster scope (scope=${m.scope ?? 'cluster'}, self=${selfCluster})`);
+      return { applied: 0, skipped: 0 };
+    }
 
     const peers = await this.deps.peers.listPeers();
     const peer = peers.find((p) => p.node === node) ?? { node, hostname: '', platform: '' };

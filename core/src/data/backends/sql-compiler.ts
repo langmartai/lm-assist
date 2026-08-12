@@ -12,6 +12,15 @@ function genCol(field: string): string { return '"f_' + field.replace(/[^a-z0-9_
 function colExpr(field: string, indexed: Set<string>, params: unknown[]): string {
   if (!FIELD_RE.test(field)) throw new Error(`invalid field name "${field}"`);
   if (indexed.has(field)) return genCol(field);     // safe: from validated indexedFields config
+  // 'deleted' mirrors the cache backend's getField(): prefer the user's fields.deleted,
+  // fall back to the TOP-LEVEL tombstone flag (NULLIF maps live rows' 0 to NULL, i.e.
+  // "absent" — same as rowToRecord's 0 → undefined). Without this, the tombstone GC's
+  // prefilter can never find a tombstone on a sql dataset. The `"deleted"` identifier is
+  // a code literal, never caller input — the parameterization boundary is unchanged.
+  if (field === 'deleted') {
+    params.push('$.' + field);
+    return `COALESCE(json_extract(fields, ?), NULLIF("deleted", 0))`;
+  }
   params.push('$.' + field);                         // bound json path — caller field never inlined
   return 'json_extract(fields, ?)';
 }

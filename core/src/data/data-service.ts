@@ -14,7 +14,7 @@ import { KnowledgeBackend } from './backends/knowledge-backend';
 import { VectorsBackend } from './backends/vectors-backend';
 import { FileBackend } from './backends/file-backend';
 import { SqlBackend } from './backends/sql-backend';
-import { boundQuerySpec } from './backends/query-filter';
+import { boundQuerySpec, MAX_QUERY_ROWS } from './backends/query-filter';
 import { ensureSystemDatasets, ensureTrackedFiles } from './system-datasets';
 import { getKeyStore } from './key-store';
 import { redactRecord, redactValueDeep, scrubValueDeep } from './redaction';
@@ -23,12 +23,19 @@ import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
 import { FabricPeerClient } from './fabric-peer-client';
 import { SyncEngine } from './sync-engine';
+import { KeyedLocks } from './key-lock';
 
 export interface CallCtx { principal: Principal; keyHeader?: string; }
 export type DataResult<T> = { ok: true; value: T } | { ok: false; code: string; reason: string };
 export type PublicKey = Omit<import('./types').AccessKey, 'secretHash'>;
 
 export const MAX_RECORD_BYTES = 1_048_576; // 1 MiB — a single data record's serialized cap
+
+/** Hard cap on the tombstone-refill loop in query()/search(). Bounds the extra backend
+ *  pages ONE call can burn on a tombstone-heavy window; past it the page returns short
+ *  (still honest — the caller's next offset reaches the remainder). 10 × the requested
+ *  page covers any realistic tombstone density between 14-day GC sweeps. */
+export const TOMBSTONE_REFILL_MAX_PAGES = 10;
 /** Returns a reason string if the record exceeds the size cap, else undefined. */
 export function recordTooLarge(record: DataRecord): string | undefined {
   let n = 0;
@@ -42,9 +49,11 @@ export class DataService {
   // key both read the same stored version, both pass the ifVersion compare, and both write —
   // a silent lost update (CAS's entire purpose is multi-writer safety). Serializes ALL puts to
   // a key (not just CAS ones) so a plain put can't slip between a CAS put's read and write.
-  // Uncontended keys stay fast: a Map miss + immediate resolve, no global lock.
-  private putLocks = new Map<string, Promise<void>>();
-  constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager; notify?: (dataset: string, type: 'changed' | 'deleted', ids: string[]) => void; peers?: PeerClient }) {}
+  // Shareable (deps.locks) so the SyncEngine's tombstone GC deletes under the SAME lock.
+  private locks: KeyedLocks;
+  constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager; notify?: (dataset: string, type: 'changed' | 'deleted', ids: string[]) => void; peers?: PeerClient; locks?: KeyedLocks }) {
+    this.locks = deps.locks ?? new KeyedLocks();
+  }
 
   isEnabled(): boolean {
     if (typeof this.enabledOverride === 'boolean') return this.enabledOverride;
@@ -136,15 +145,40 @@ export class DataService {
     // through — the MCP tools, the REST route, and the internal stores. Doing it in
     // `applyQuery` alone would miss the sql backend, which pages natively and never
     // calls it. See MAX_QUERY_ROWS for why the number is what it is.
-    const r = await a.value.backend!.query(datasetId, boundQuerySpec(q));
+    const bq = boundQuerySpec(q);
     // Hide tombstones from every consumer at THE seam all backends/callers pass through.
     // Filtered on the TOP-LEVEL flag in code — NOT via a QueryFilter on 'deleted', because
     // getField() prefers fields.* and a user record carrying a `deleted` field would vanish.
-    const live = r.records.filter((rec) => rec.deleted !== true);
-    // total is best-effort under pagination: subtract the tombstones seen in this page
-    // (tombstones outside the page can't be counted without a second scan).
-    const total = r.total !== undefined ? r.total - (r.records.length - live.length) : undefined;
-    return { ok: true, value: { records: live.map(redactRecord), total } };
+    //
+    // Because the filter runs AFTER the backend pages, a page could come back short — or
+    // EMPTY — while live records remain beyond it, and callers that page until an empty
+    // page would silently miss data. So: BOUNDED REFILL — keep fetching subsequent backend
+    // pages until the requested limit is filled or the records run out. The iteration cap
+    // bounds the work a tombstone-heavy dataset can consume in one call; past the cap the
+    // page returns short (honest, but bounded — the next offset still reaches the rest).
+    const live: DataRecord[] = [];
+    let tombstonesSeen = 0;
+    let total: number | undefined;
+    let offset = bq.offset;
+    for (let i = 0; i < TOMBSTONE_REFILL_MAX_PAGES; i++) {
+      const r = await a.value.backend!.query(datasetId, { ...bq, offset });
+      const pageLive = r.records.filter((rec) => rec.deleted !== true);
+      tombstonesSeen += r.records.length - pageLive.length;
+      live.push(...pageLive);
+      if (r.total !== undefined) total = r.total;
+      offset += r.records.length;
+      if (live.length >= bq.limit) break;          // requested window filled
+      if (r.records.length < bq.limit) break;      // backend ran out of records
+    }
+    // total is best-effort under pagination: subtract the tombstones seen across the pages
+    // actually fetched (tombstones beyond them can't be counted without a second scan).
+    return {
+      ok: true,
+      value: {
+        records: live.slice(0, bq.limit).map(redactRecord),
+        total: total !== undefined ? total - tombstonesSeen : undefined,
+      },
+    };
   }
 
   async search(ctx: CallCtx, datasetId: string, spec: SearchSpec): Promise<DataResult<Array<DataRecord & { score: number }>>> {
@@ -152,8 +186,23 @@ export class DataService {
     if (!a.ok) return a;
     const backend = a.value.backend!;
     if (!backend.search) return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${backend.kind}" does not support search` };
-    const results = await backend.search(datasetId, spec);
-    return { ok: true, value: results.filter((r) => r.deleted !== true).map((r) => ({ ...redactRecord(r), score: r.score })) };
+    // Same honest-pagination concern as query(): filtering tombstones AFTER the backend
+    // ranks + truncates can under-fill the requested limit while live matches remain.
+    // Search has no offset, so the refill re-asks with a DOUBLED limit (bounded by the
+    // same iteration cap + MAX_QUERY_ROWS) until the request is filled or the backend
+    // returns fewer than asked (i.e. the corpus is exhausted).
+    let results = await backend.search(datasetId, spec);
+    let liveResults = results.filter((r) => r.deleted !== true);
+    const requested = spec.limit ?? results.length; // backends apply their own default when unset
+    let asked = requested;
+    for (let i = 0; i < TOMBSTONE_REFILL_MAX_PAGES && liveResults.length < requested; i++) {
+      if (results.length < asked) break;            // backend already returned everything it has
+      if (asked >= MAX_QUERY_ROWS) break;           // never ask beyond the global row ceiling
+      asked = Math.min(asked * 2, MAX_QUERY_ROWS);
+      results = await backend.search(datasetId, { ...spec, limit: asked });
+      liveResults = results.filter((r) => r.deleted !== true);
+    }
+    return { ok: true, value: liveResults.slice(0, requested).map((r) => ({ ...redactRecord(r), score: r.score })) };
   }
 
   async admin(ctx: CallCtx, datasetId: string, op: string, args?: Record<string, unknown>): Promise<DataResult<unknown>> {
@@ -212,22 +261,9 @@ export class DataService {
     });
   }
 
-  /** Promise-chain mutex: chains `fn` onto the previous critical section for `key` so
-   *  same-key critical sections never overlap, no matter how the previous one settled.
-   *  Cleans up its own map entry when drained — but only if no newer waiter has already
-   *  replaced it — so the map can't grow unbounded. */
-  private async withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.putLocks.get(key) ?? Promise.resolve();
-    const mine = prev.then(fn);
-    // Settles right after `fn`, but never rejects — so a failed put doesn't poison the chain
-    // for the next waiter on this key.
-    const tail = mine.then(() => undefined, () => undefined);
-    this.putLocks.set(key, tail);
-    try {
-      return await mine;
-    } finally {
-      if (this.putLocks.get(key) === tail) this.putLocks.delete(key);
-    }
+  /** Promise-chain mutex over the shared KeyedLocks (see key-lock.ts). */
+  private withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    return this.locks.withLock(key, fn);
   }
 
   async del(ctx: CallCtx, datasetId: string, id: string): Promise<DataResult<boolean>> {
@@ -422,9 +458,12 @@ export function getDataService(): DataService {
     const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: thisNodeId() });
     const nodeId = thisNodeId();
     const peers = new FabricPeerClient(nodeId);
-    engineInstance = new SyncEngine({ datasets, backends, peers, nodeId });
+    // ONE lock instance for put/del AND the sync engine's tombstone GC — the GC's
+    // check-then-delete must serialize against a concurrent CAS re-create.
+    const locks = new KeyedLocks();
+    engineInstance = new SyncEngine({ datasets, backends, peers, nodeId, locks });
     instance = new DataService({
-      datasets, backends, manager, peers,
+      datasets, backends, manager, peers, locks,
       // Production change-notify: publish to the W3 bus topic data:<dataset>. Guarded in notifyChange
       // (publish throws when busEnabled=false) so a disabled bus is a silent no-op.
       notify: (dataset, type, ids) => {

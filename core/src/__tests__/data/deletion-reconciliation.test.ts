@@ -37,7 +37,8 @@ import { DataService } from '../../data/data-service';
 import { AccessManager } from '../../data/access-manager';
 import { KeyStore } from '../../data/key-store';
 import { SyncEngine } from '../../data/sync-engine';
-import type { PeerClient, DataRecord, ManifestEntry, NodeInfo } from '../../data/types';
+import { KeyedLocks } from '../../data/key-lock';
+import type { PeerClient, DataRecord, ManifestEntry, NodeInfo, StorageBackend } from '../../data/types';
 
 // ── Helper to build an isolated DataService + its raw backend (mirrors sync-engine.test) ──
 
@@ -51,9 +52,12 @@ function svc(nodeId: string) {
   const backends = new BackendRegistry();
   backends.register(backend);
   const manager = new AccessManager({ datasets, keys, nodeId });
-  const service = new DataService({ datasets, backends, manager });
+  // The service's put/del lock, shared with any SyncEngine a test builds — GC's
+  // check-then-delete must run under the SAME lock (prod wiring: getDataService).
+  const locks = new KeyedLocks();
+  const service = new DataService({ datasets, backends, manager, locks });
   (service as any).enabledOverride = true;
-  return { service, datasets, backends, backend };
+  return { service, datasets, backends, backend, locks };
 }
 
 const LOCAL_CTX = { principal: { type: 'local' as const } };
@@ -307,6 +311,60 @@ test('deletion reconciliation: the GC TTL floor defeats a too-small configured T
   assert.ok(await b.backend.get('tickets', 'young-tomb'), 'tombstone still present to propagate');
 });
 
+test('deletion reconciliation: GC does not delete a record re-created between its snapshot and its delete (TOCTOU)', async () => {
+  // gcTombstones takes a query-time SNAPSHOT and then hard-deletes. A legitimate
+  // re-create (CAS ifVersion:0 over the tombstone — a supported flow) landing
+  // between the snapshot and the delete must NOT lose its new live record: the GC
+  // has to re-read at delete time under the same per-key lock del/put use.
+  const b = svc('B12');
+  b.datasets.create({ id: 'tickets', backend: 'cache', visibility: 'synced', syncMode: 'full', scope: 'fleet', config: { kind: 'cache' }, acl: [] });
+  await b.backend.createDataset(b.datasets.get('tickets')!);
+
+  // An EXPIRED tombstone — exactly what GC wants to purge.
+  const old = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+  await b.backend.put('tickets', { id: 'r1', version: 2, fields: {}, deleted: true, createdAt: old, updatedAt: old });
+
+  // The engine sees the backend through a wrapper whose query() lands a CAS
+  // re-create AFTER the snapshot is taken but BEFORE GC proceeds — the exact
+  // interleaving of the race, made deterministic.
+  let armed = true;
+  const raw = b.backend;
+  const wrapped: StorageBackend = {
+    kind: raw.kind,
+    createDataset: (d) => raw.createDataset(d),
+    dropDataset: (id) => raw.dropDataset(id),
+    put: (ds, r) => raw.put(ds, r),
+    get: (ds, id) => raw.get(ds, id),
+    delete: (ds, id) => raw.delete(ds, id),
+    exportSince: (ds, since) => raw.exportSince(ds, since),
+    importBatch: (ds, rs, o) => raw.importBatch(ds, rs, o),
+    query: async (ds, q) => {
+      const snapshot = await raw.query(ds, q);
+      if (armed && ds === 'tickets') {
+        armed = false;
+        const recreate = await b.service.put(LOCAL_CTX, 'tickets', mkRecord('r1', { title: 'reborn' }), { ifVersion: 0 });
+        assert.ok(recreate.ok, `re-create during the GC window must succeed (got ${JSON.stringify(recreate)})`);
+      }
+      return snapshot;
+    },
+  };
+  const gcBackends = new BackendRegistry();
+  gcBackends.register(wrapped);
+
+  const noPeers: PeerClient = {
+    listPeers: async () => [], manifest: async () => ({ node: '', datasets: [] }),
+    exportFrom: async () => [], getFrom: async () => null,
+  };
+  // SAME lock instance as the service — the prod wiring (getDataService) does this too.
+  const engine = new SyncEngine({ datasets: b.datasets, backends: gcBackends, peers: noPeers, nodeId: 'B12', locks: b.locks });
+  const status = await engine.reconcile();
+
+  assert.equal(status.tombstonesPurged, 0, 'GC must purge nothing — the tombstone was replaced by a live record');
+  const got = await b.service.get(LOCAL_CTX, 'tickets', 'r1');
+  assert.ok(got.ok && got.value !== null, 'the re-created record survives the GC pass');
+  assert.equal((got.value as DataRecord).fields.title, 'reborn');
+});
+
 // ── 6. Cluster scoping: foreign origins cannot deliver deletions ───────────────
 
 test('deletion reconciliation: a cluster-scoped dataset is untouched by a foreign-cluster origin', async () => {
@@ -340,4 +398,51 @@ test('deletion reconciliation: a cluster-scoped dataset is untouched by a foreig
   assert.equal(exportFromCalls, 0, 'the cluster gate refuses the pull outright');
   const got = await b.service.get(LOCAL_CTX, 'own-things', 'r1');
   assert.ok(got.ok && got.value !== null, 'the record survives — a foreign origin cannot delete what it does not own');
+});
+
+test('deletion reconciliation: the bus-notify pull path (pullDataset) honors the cluster gate too', async () => {
+  // sync-listener → pullDataset is the OTHER road into pullOne. Without the same
+  // shouldPullDataset gate the reconcile loop applies, a foreign-cluster notify
+  // pulls (and can tombstone-delete) a dataset the reconcile loop would refuse.
+  const b = svc('B13');
+  b.datasets.create({ id: 'own-things', backend: 'cache', visibility: 'synced', syncMode: 'full', config: { kind: 'cache' }, acl: [] });
+  await b.backend.createDataset(b.datasets.get('own-things')!);
+  await b.service.put(LOCAL_CTX, 'own-things', mkRecord('r1', { mine: true }));
+
+  let exportFromCalls = 0;
+  const staleT = new Date().toISOString();
+  const foreign: PeerClient = {
+    listPeers: async (): Promise<NodeInfo[]> => [{ node: 'F', hostname: 'fh', platform: 'linux' }],
+    manifest: async () => ({
+      node: 'F',
+      datasets: [{ id: 'own-things', syncMode: 'full', ownerNode: 'F', backend: 'cache', scope: 'cluster' }] as ManifestEntry[],
+    }),
+    exportFrom: async () => {
+      exportFromCalls++;
+      return [{ id: 'r1', version: 99, fields: {}, deleted: true, createdAt: staleT, updatedAt: staleT } as DataRecord];
+    },
+    getFrom: async () => null,
+  };
+
+  const engine = new SyncEngine({ datasets: b.datasets, backends: b.backends, peers: foreign, nodeId: 'B13' });
+  const r = await engine.pullDataset('F', 'own-things');
+
+  assert.equal(exportFromCalls, 0, 'the notify-driven pull is refused before any record moves');
+  assert.deepEqual(r, { applied: 0, skipped: 0 }, 'a refused pull reports zero work');
+  const got = await b.service.get(LOCAL_CTX, 'own-things', 'r1');
+  assert.ok(got.ok && got.value !== null, 'the record survives a foreign-cluster bus notify');
+});
+
+test('deletion reconciliation: pullDataset still pulls from an allowed (fleet-scope) origin', async () => {
+  // The gate must refuse FOREIGN pulls only — the reactive convergence path keeps working.
+  const a = svc('A14');
+  const b = svc('B14');
+  a.datasets.create({ id: 'tickets', backend: 'cache', visibility: 'synced', syncMode: 'full', scope: 'fleet', config: { kind: 'cache' }, acl: [] });
+  await a.backend.createDataset(a.datasets.get('tickets')!);
+  await a.service.put(LOCAL_CTX, 'tickets', mkRecord('r1', { title: 'hello' }));
+
+  const engineB = new SyncEngine({ datasets: b.datasets, backends: b.backends, peers: bridgePeer('A14', a), nodeId: 'B14' });
+  const r = await engineB.pullDataset('A14', 'tickets');
+  assert.ok(r.applied >= 1, `fleet-scope pullDataset applies records (got ${JSON.stringify(r)})`);
+  assert.ok(await b.backend.get('tickets', 'r1'), 'record arrived via the notify-driven pull');
 });

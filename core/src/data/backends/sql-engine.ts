@@ -34,7 +34,7 @@ function sqlite(): any {
 function colName(p: string): string { return 'f_' + p.replace(/[^a-z0-9_]/gi, '_'); }
 function isSafeFieldPath(p: string): boolean { return /^[A-Za-z0-9_.]+$/.test(p); }
 
-const SELECT_COLS = 'id, fields, text, metadata, origin, version, created_at, updated_at';
+const SELECT_COLS = 'id, fields, text, metadata, origin, version, deleted, created_at, updated_at';
 
 export function rowToRecord(row: any): DataRecord {
   return {
@@ -44,6 +44,9 @@ export function rowToRecord(row: any): DataRecord {
     text: row.text == null ? undefined : row.text,
     metadata: row.metadata == null ? undefined : JSON.parse(row.metadata),
     origin: row.origin == null ? undefined : JSON.parse(row.origin),
+    // Top-level tombstone flag (deletion reconciliation): 0 → undefined so a live
+    // record's shape matches the other backends (`deleted` only present when true).
+    deleted: row.deleted ? true : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -56,6 +59,10 @@ export function recordParams(rec: DataRecord): Record<string, unknown> {
     metadata: rec.metadata == null ? null : JSON.stringify(rec.metadata),
     origin: rec.origin == null ? null : JSON.stringify(rec.origin),
     version: rec.version ?? 0,
+    // Losing this flag here turns DataService.del's tombstone into a LIVE record with
+    // blanked fields on read-back — the delete "succeeds", deletes nothing, and the
+    // blanking replicates fleet-wide. It must round-trip losslessly.
+    deleted: rec.deleted === true ? 1 : 0,
     created_at: rec.createdAt,
     updated_at: rec.updatedAt,
   };
@@ -105,6 +112,7 @@ export class SqlEngine {
         metadata TEXT,
         origin TEXT,
         version INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -122,6 +130,11 @@ export class SqlEngine {
     `);
     // Declared indexed fields → generated columns + indexes (best-effort; skip if already present).
     const existing = new Set((h.prepare(`PRAGMA table_info(records)`).all() as any[]).map((c: any) => c.name));
+    // Idempotent migration for DBs created before the tombstone column existed —
+    // same PRAGMA-guarded ALTER pattern as the indexed-field columns below.
+    if (!existing.has('deleted')) {
+      h.exec(`ALTER TABLE records ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;`);
+    }
     for (const f of indexedFields || []) {
       if (!isSafeFieldPath(f.path)) continue;
       const col = colName(f.path);
@@ -155,11 +168,11 @@ export class SqlEngine {
   async put(dataset: string, record: DataRecord): Promise<{ id: string }> {
     const h = this.db(dataset);
     h.prepare(`
-      INSERT INTO records(id, fields, text, metadata, origin, version, created_at, updated_at)
-      VALUES(@id, @fields, @text, @metadata, @origin, @version, @created_at, @updated_at)
+      INSERT INTO records(id, fields, text, metadata, origin, version, deleted, created_at, updated_at)
+      VALUES(@id, @fields, @text, @metadata, @origin, @version, @deleted, @created_at, @updated_at)
       ON CONFLICT(id) DO UPDATE SET
         fields=excluded.fields, text=excluded.text, metadata=excluded.metadata,
-        origin=excluded.origin, version=excluded.version,
+        origin=excluded.origin, version=excluded.version, deleted=excluded.deleted,
         created_at=excluded.created_at, updated_at=excluded.updated_at
     `).run(recordParams(record));
     return { id: record.id };
