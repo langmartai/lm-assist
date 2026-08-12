@@ -261,6 +261,26 @@ export class HubClient extends EventEmitter {
             // Managed UIs: re-assert each managed lmui.config.json on the gateway — the
             // file on disk, not any runtime API call, is the definition of record.
             syncManagedUis((msg: string) => console.log(msg)).catch(() => {});
+            // Local serving tier: a hub-free HTTP origin for these same lmui apps, on
+            // uiWebPort+1 by default. Started once; a bind failure logs and leaves the tier
+            // off (server.on('error')) — the Core must boot regardless. Isolated in its own
+            // try so it cannot take down the respawn/heartbeat above.
+            try {
+              const { startLocalUiTier, isLocalTierRunning } = require('../ui-pages/local-tier/server');
+              if (!isLocalTierRunning()) {
+                const { currentApiToken } = require('../auth/api-token');
+                const localUiPort = loadServicePorts().localUiPort ?? (this.options.uiWebPort! + 1);
+                startLocalUiTier({
+                  localUiPort,
+                  uiWebPort: this.options.uiWebPort!,
+                  apiPort: this.options.localApiPort,
+                  getApiToken: () => currentApiToken(),
+                  log: (msg: string) => console.log(msg),
+                });
+              }
+            } catch (e) {
+              console.error('[HubClient] local serving tier start failed:', e instanceof Error ? e.message : String(e));
+            }
           } catch (e) {
             console.error('[HubClient] ui-pages respawn failed:', e instanceof Error ? e.message : String(e));
           }

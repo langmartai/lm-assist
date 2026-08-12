@@ -8,14 +8,33 @@
  *  (/registry/uis, /access/*) using THIS node's stored platform API key, so an agent
  *  completes the whole register → serve → grants lifecycle without a browser.
  */
+import * as os from 'os';
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
-import { uiPagesReport, controlPage, respawnDeadPages, defaultUiAppsDir, setAutoStart, rememberAddressing, gatewayUiRef, addressingFor } from '../../ui-pages/manager';
+import { uiPagesReport, controlPage, respawnDeadPages, defaultUiAppsDir, setAutoStart, rememberAddressing, gatewayUiRef, addressingFor, listReportableUis } from '../../ui-pages/manager';
 import { gatewayCall, resolvedGatewayUrl, uiIdError, readUiAddress } from '../../ui-pages/gateway-client';
 import { reportStatusesOnce, uploadScreenshot } from '../../ui-pages/reporter';
 import { loadServicePorts, getHubConfig } from '../../hub-client/hub-config';
+import { isLocalTierRunning } from '../../ui-pages/local-tier/server';
+import { mintEntryToken } from '../../ui-pages/local-tier/token';
 
 function uiAppsDirOverride(): string | undefined {
   return loadServicePorts().uiAppsDir;
+}
+
+/** The local serving tier's port: explicit override, else uiWebPort+1 (null when no uiWebPort). */
+function localUiPortOf(ports: ReturnType<typeof loadServicePorts>): number | null {
+  if (ports.localUiPort) return ports.localUiPort;
+  return ports.uiWebPort ? ports.uiWebPort + 1 : null;
+}
+
+/** First non-internal IPv4 — the address a browser off this box reaches the tier at. */
+function firstLanIp(): string | null {
+  for (const ifaces of Object.values(os.networkInterfaces())) {
+    for (const i of ifaces || []) {
+      if (i.family === 'IPv4' && !i.internal) return i.address;
+    }
+  }
+  return null;
 }
 
 export function createUiPagesRoutes(_ctx: RouteContext): RouteHandler[] {
@@ -31,7 +50,34 @@ export function createUiPagesRoutes(_ctx: RouteContext): RouteHandler[] {
           // Opportunistic heartbeat: a status read is the freshest data we'll ever have —
           // push it platform-side too (fire-and-forget; the interval reporter still runs).
           reportStatusesOnce().catch(() => {});
-          return { success: true, data: report };
+          // Local serving tier: its port (configured or derived) and whether its listener is up.
+          return { success: true, data: { ...report, localUiPort: localUiPortOf(ports), localTierActive: isLocalTierRunning() } };
+        } catch (e) {
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/ui-pages\/local-url$/,
+      handler: async (req: ParsedRequest) => {
+        const uiId = String((req.body || {}).uiId || '');
+        if (!uiId) return { success: false, error: 'uiId required' };
+        try {
+          // Only a UI this node actually serves can be handed a local URL — the entry token
+          // is worthless without the lmui app behind it.
+          if (!listReportableUis().some((u) => u.uiId === uiId)) {
+            return { success: false, error: `no local UI '${uiId}' on this node (see ui_pages for what is served here)` };
+          }
+          const ports = loadServicePorts();
+          if (!ports.uiWebPort) {
+            return { success: false, error: 'uiWebPort is unset on this node — the local serving tier has no lmui host to front' };
+          }
+          const localUiPort = localUiPortOf(ports)!;
+          const ip = firstLanIp();
+          if (!ip) return { success: false, error: 'no non-internal IPv4 address found on this node' };
+          const token = mintEntryToken(uiId);
+          return { success: true, data: { url: `http://${ip}:${localUiPort}/ui/${uiId}/?lt=${token}`, expiresInSec: 600 } };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };
         }

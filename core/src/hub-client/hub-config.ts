@@ -237,7 +237,7 @@ export function saveHubConnectionConfig(updates: HubConnectionConfig): void {
  * Load persisted service ports from ~/.lm-assist/hub.json
  * Used by hub-client to discover assist web port without env vars
  */
-export function loadServicePorts(): { assistWebPort?: number; apiPort?: number; uiWebPort?: number; uiAppsDir?: string } {
+export function loadServicePorts(): { assistWebPort?: number; apiPort?: number; uiWebPort?: number; localUiPort?: number; uiAppsDir?: string } {
   const config = loadHubConnectionConfig();
   return {
     assistWebPort: config.assistWebPort,
@@ -246,6 +246,9 @@ export function loadServicePorts(): { assistWebPort?: number; apiPort?: number; 
     // route survives a restart — a route that only exists when someone remembers to export
     // UI_WEB_PORT is a route that silently disappears.
     uiWebPort: (config as any).uiWebPort,
+    // Local serving tier port (default uiWebPort+1). Same persistence rationale as uiWebPort:
+    // the hub-free origin must come back on its own after a restart.
+    localUiPort: (config as any).localUiPort,
     // Preferred root for UI app directories (default ~/.lmui/apps) — where new UIs should
     // be scaffolded so respawn-on-boot and backups find them in one browsable place. The
     // per-page state files remain the truth for where each app actually is.

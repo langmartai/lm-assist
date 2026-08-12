@@ -1,0 +1,21 @@
+{
+  "uiId": "assist-backlog",
+  "name": "Backlog",
+  "scope": "lm-assist",
+  "grant": [
+    {
+      "service": "node",
+      "pathPrefix": "/backlog",
+      "verbs": [
+        "GET",
+        "POST"
+      ]
+    }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-backlog",
+  "category": "planning",
+  "sortOrder": 30
+}
