@@ -1,0 +1,15 @@
+{
+  "uiId": "hello-pane",
+  "name": "Hello Pane",
+  "scope": "user",
+  "service": "ui-hello-pane",
+  "grant": [
+    {
+      "service": "node",
+      "pathPrefix": "/health",
+      "verbs": [
+        "GET"
+      ]
+    }
+  ]
+}

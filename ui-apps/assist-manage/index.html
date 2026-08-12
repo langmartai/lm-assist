@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — UI Pages Manager</title>
+<style>
+  :root{--bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;--blue:#3b82f6;--amber:#fbbf24;--green:#4ade80;--red:#f87171}
+  *{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
+  header{display:flex;align-items:center;justify-content:space-between;padding:.8rem 1.2rem;background:var(--panel2);border-bottom:1px solid var(--line)}
+  header h1{font-size:1rem;margin:0}
+  .chip{font-family:ui-monospace,monospace;font-size:.72rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.15rem .6rem;margin-left:.5rem;color:var(--dim)}
+  #who{display:flex;align-items:center;gap:.45rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.3rem .8rem;font-size:.82rem}
+  #who .dot{width:.55rem;height:.55rem;border-radius:50%;background:var(--green)}
+  main{max-width:64rem;margin:1.1rem auto;padding:0 1rem;display:grid;grid-template-columns:15rem 1fr;gap:1rem;align-items:start}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.9rem 1rem;margin-bottom:1rem}
+  .card h2{font-size:.75rem;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin:0 0 .6rem}
+  .mono{font-family:ui-monospace,monospace;font-size:.78rem}
+  .pill{display:inline-block;border-radius:999px;padding:.05rem .5rem;font-size:.7rem;border:1px solid var(--line);margin-right:.25rem}
+  .on{color:var(--green);border-color:#14532d}.off{color:var(--red);border-color:#7f1d1d}.amb{color:var(--amber);border-color:#78350f}
+  button{border:0;border-radius:6px;padding:.3rem .65rem;font-size:.75rem;cursor:pointer;background:#334155;color:var(--txt);margin:.12rem .18rem .12rem 0}
+  button.warn{background:#7f1d1d;color:#fecaca}
+  table{width:100%;border-collapse:collapse;font-size:.84rem}
+  th{color:var(--dim);text-align:left;font-weight:500;font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;padding:.3rem .45rem;border-bottom:1px solid var(--line)}
+  td{padding:.45rem;border-bottom:1px solid rgba(51,65,85,.5);vertical-align:top}
+  .sub{color:var(--dim);font-size:.72rem;display:block;margin-top:.15rem}
+  #out{font-family:ui-monospace,monospace;font-size:.76rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.6rem .8rem;min-height:2rem;white-space:pre-wrap;color:var(--dim);max-height:14rem;overflow:auto}
+  aside .g{font-family:ui-monospace,monospace;font-size:.74rem;margin:.15rem 0}
+  aside .g.rt{color:var(--amber)}
+  #host{font-family:ui-monospace,monospace;font-size:.74rem;color:var(--dim);line-height:1.7}
+  /* Embedded in the app shell: the shell already renders identity + nav, so this page
+     drops its own header (no double chrome) and its background, so it reads as the
+     shell's main pane rather than a page-in-a-page. It stays fully usable standalone —
+     the bare URL is unchanged, which keeps deep links working. */
+  body.embed{background:transparent;overflow:hidden}
+  body.embed,html:has(body.embed){height:auto}
+  body.embed header{display:none}
+  body.embed main{margin:.4rem auto;max-width:none}
+
+  /* Embedded panes inherit the shell's theme via ?theme=. A dark pane inside a light
+     shell reads as foreign content pasted into the page; these overrides make the pane
+     look like the shell's own body. */
+  body.theme-light{--bg:#ffffff;--panel:#f8fafc;--panel2:#f1f5f9;--line:#e2e8f0;--txt:#0f172a;--dim:#64748b}
+  body.theme-light .msg.them{background:#f1f5f9}
+  body.theme-light .msg.me{background:#d1fae5;color:#064e3b}
+  body.theme-light button{background:#e2e8f0;color:#0f172a}
+  body.theme-light button.primary{background:var(--green);color:#052e16}
+  /* Full-bleed when embedded: the pane IS the page body, so it must not re-center itself
+     inside its own max-width column — that produced the wide empty margins. */
+  body.embed main{max-width:none;margin:0;padding:0}
+</style>
+</head>
+<body>
+<header>
+  <h1>UI Pages Manager<span class="chip">assist-manage</span><span class="chip">scope: lm-assist</span><span class="chip">served from my machine</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <aside>
+    <div class="card"><h2>This page's access</h2>
+      <div id="grants"><div class="g">loading…</div></div>
+      <span class="sub">Everything this manager can do rides one declared grant — it manages UI pages and nothing else on this node.</span>
+    </div>
+    <div class="card"><h2>Host node</h2><div id="host">loading…</div></div>
+  </aside>
+  <section>
+    <div class="card"><h2>UI pages on this node <button id="refresh" style="float:right">refresh</button></h2>
+      <div id="list" class="sub">loading…</div>
+    </div>
+    <div class="card"><h2>Output</h2><div id="out">ready</div></div>
+  </section>
+</main>
+<script src="assets/lmui.js"></script>
+<script>
+(function () {
+  'use strict';
+  var out = document.getElementById('out');
+
+  // ── Embedding contract ────────────────────────────────────────────────────────────
+  // ?embed=1 → rendered inside the first-party shell. A cross-origin frame cannot size
+  // itself, so the page reports its height; the shell listens and resizes the iframe.
+  // Nothing else crosses the boundary: no DOM access either way, and the page keeps its
+  // own view token + grant regardless of where it is displayed.
+  var EMBEDDED = /[?&]embed=1\b/.test(location.search);
+  if (EMBEDDED) document.body.classList.add('embed');
+  // Theme is passed by the shell (?theme=light|dark); standalone defaults to dark.
+  var THEME = (/[?&]theme=light/.test(location.search)) ? 'light' : 'dark';
+  if (THEME === 'light') document.body.classList.add('theme-light');
+
+  function reportHeight() {
+    if (!EMBEDDED || !window.parent || window.parent === window) return;
+    var main = document.querySelector('main');
+    var h = main ? Math.ceil(main.offsetTop + main.offsetHeight + 16) : document.body.scrollHeight;
+    try { window.parent.postMessage({ type: 'lmui:height', uiId: (window.__UI_ID__ || ''), height: h }, '*'); } catch (e) {}
+  }
+  if (EMBEDDED) {
+    window.addEventListener('load', reportHeight);
+    if (window.ResizeObserver) new ResizeObserver(reportHeight).observe(document.body);
+    setInterval(reportHeight, 1500);
+  }
+  function say(t) { out.textContent = typeof t === 'string' ? t : JSON.stringify(t, null, 2); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  // lmui.call returns the raw fetch Response. The node relay adds an outer
+  // {status, data} envelope around the node's own {success, data} — strip the outer
+  // layer here so every handler sees the node's envelope directly.
+  function api(service, path, opts) {
+    return lmui.call(service, path, opts).then(function (r) {
+      return r.json().catch(function () { return null; }).then(function (b) {
+        var inner = b && b.data !== undefined && b.status !== undefined ? b.data : b;
+        var status = b && b.status !== undefined ? b.status : r.status;
+        return { status: status, body: inner };
+      });
+    });
+  }
+
+  function ago(iso) {
+    var m = Math.floor((Date.now() - Date.parse(iso)) / 60000);
+    if (!isFinite(m) || m < 0) return iso;
+    if (m < 1) return 'just now';
+    if (m < 60) return m + 'm ago';
+    return Math.floor(m / 60) + 'h ago';
+  }
+
+  fetch('/auth/me', { credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (d) {
+    document.getElementById('who-name').textContent = (d.claims && (d.claims.name || d.claims.email)) || d.userId;
+  }).catch(function () {});
+
+  // The access panel: what THIS page may reach (its own declared grant, decoded live).
+  function paintGrants() {
+    try {
+      var claims = JSON.parse(atob(lmui.token.split('.')[1]));
+      var rows = (claims.grant || []).map(function (g) {
+        return '<div class="g">&#9312; <b>' + esc(g.verbs.join(',')) + '</b> ' + esc(g.service) + ':' + esc(g.pathPrefix) + '</div>';
+      });
+      document.getElementById('grants').innerHTML = rows.join('') || '<div class="g">(none)</div>';
+    } catch (e) { /* leave the loading text */ }
+  }
+
+  function paintHost(d) {
+    document.getElementById('host').innerHTML =
+      'uiWebPort: <b>' + esc(d.uiWebPort == null ? 'not set' : d.uiWebPort) + '</b><br>' +
+      'route: ' + (d.routeActive ? '<span class="pill on">active</span>' : '<span class="pill off">inactive</span>') + '<br>' +
+      'apps dir:<br><span style="word-break:break-all">' + esc(d.uiAppsDir || '') + '</span>';
+  }
+
+  function row(u) {
+    var st = u.local
+      ? (u.local.serving ? '<span class="pill on">serving</span>' : u.local.stale ? '<span class="pill off">stale</span>' : '<span class="pill off">stopped</span>')
+      : '<span class="pill">no local server</span>';
+    // Host mode = one server for the whole apps root, so this app has no process of its
+    // own. Showing start/stop here would offer control that does not exist (and must never
+    // reach the shared pid — that would stop every other app too).
+    var hosted = !!(u.local && u.local.hosted);
+    var auto = hosted ? '<span class="pill">hosted</span>'
+      : (u.local && u.local.autoStart === false ? '<span class="pill off">autostart off</span>' : (u.local ? '<span class="pill on">autostart</span>' : ''));
+    var en = u.enabled === false ? '<span class="pill off">disabled</span>' : '<span class="pill on">enabled</span>';
+    var repo = u.local && u.local.dir ? '<span class="sub">repo: ' + esc(u.local.dir) + '</span>' : '';
+    var btns =
+      (u.managed ? '<span class="pill">managed (file)</span>'
+        : '<button data-a="enable" data-id="' + esc(u.uiId) + '" data-v="' + (u.enabled === false) + '">' + (u.enabled === false ? 'enable' : 'disable') + '</button>') +
+      (u.local && !hosted ? '<button data-a="ctl" data-id="' + esc(u.uiId) + '" data-v="' + (u.local.alive ? 'stop' : 'start') + '">' + (u.local.alive ? 'stop' : 'start') + '</button>' +
+        '<button data-a="ctl" data-id="' + esc(u.uiId) + '" data-v="' + (u.local.autoStart === false ? 'autostart-on' : 'autostart-off') + '">' + (u.local.autoStart === false ? 'autostart on' : 'autostart off') + '</button>' : '') +
+      '<button data-a="grants" data-id="' + esc(u.uiId) + '">grants</button>' +
+      (u.managed ? '' : '<button class="warn" data-a="unreg" data-id="' + esc(u.uiId) + '">unregister</button>');
+    return '<tr><td><b>' + esc(u.name || u.uiId) + '</b><br><a style="color:#60a5fa" href="' + esc(u.url || '#') + '" target="_blank" rel="noopener" class="mono">' + esc(u.uiId) + ' &#8599;</a>' + repo + '</td>' +
+      '<td>' + en + st + auto + '</td><td class="mono">' + esc(u.scope || '') + '</td><td>' + btns + '</td></tr>';
+  }
+
+  function load() {
+    Promise.all([api('node', '/ui-pages'), api('node', '/ui-pages/registry')]).then(function (rs) {
+      paintGrants();
+      if (rs[0].status === 200 && rs[0].body && rs[0].body.data) paintHost(rs[0].body.data);
+      var reg = rs[1].body && rs[1].body.data;
+      if (rs[1].status !== 200 || !reg) { say('HTTP ' + rs[1].status + ' loading registry: ' + JSON.stringify(rs[1].body)); return; }
+      var uis = reg.uis || [];
+      document.getElementById('list').innerHTML = uis.length
+        ? '<table><tr><th>UI</th><th>State</th><th>Scope</th><th>Actions</th></tr>' + uis.map(row).join('') + '</table>'
+        : 'No UIs registered from this node.';
+    }).catch(function (e) { say(String(e)); });
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t.dataset || !t.dataset.a) return;
+    var id = t.dataset.id;
+    if (t.dataset.a === 'enable') {
+      api('node', '/ui-pages/enable', { method: 'POST', body: { uiId: id, enabled: t.dataset.v === 'true' } })
+        .then(function (r) { say('HTTP ' + r.status + ' ' + JSON.stringify(r.body)); load(); });
+    } else if (t.dataset.a === 'ctl') {
+      api('node', '/ui-pages/control', { method: 'POST', body: { uiId: id, action: t.dataset.v } })
+        .then(function (r) { say('HTTP ' + r.status + ' ' + JSON.stringify(r.body)); setTimeout(load, 700); });
+    } else if (t.dataset.a === 'grants') {
+      api('node', '/ui-pages/grants/' + encodeURIComponent(id))
+        .then(function (r) { say('grants for ' + id + ' (HTTP ' + r.status + ')\n' + JSON.stringify(r.body, null, 2)); });
+    } else if (t.dataset.a === 'unreg') {
+      if (!window.confirm('Unregister ' + id + '? The subdomain stops serving; files stay on this machine.')) return;
+      api('node', '/ui-pages/registry/' + encodeURIComponent(id), { method: 'DELETE' })
+        .then(function (r) { say('HTTP ' + r.status + ' ' + JSON.stringify(r.body)); load(); });
+    }
+  });
+
+  document.getElementById('refresh').addEventListener('click', load);
+  load();
+})();
+</script>
+</body>
+</html>

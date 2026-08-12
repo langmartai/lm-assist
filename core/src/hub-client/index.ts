@@ -36,6 +36,8 @@ export interface HubClientOptions {
   assistWebPort?: number;
   /** Vibe Coder web (Vite) port - enables /vibe/* route */
   vibeCoderPort?: number;
+  /** Pluggable-UI host port - enables the /ui-*\/* route (see below) */
+  uiWebPort?: number;
   /** Auto-reconnect on disconnect */
   autoReconnect?: boolean;
   /** Reconnect delay in ms (doubles on each retry, max 30s) */
@@ -92,6 +94,7 @@ export interface DatasetUpdatedMessage {
 
 export class HubClient extends EventEmitter {
   private wsClient: WebSocketClient | null = null;
+  private uiRespawnDone = false;
   private apiRelayHandler: ApiRelayHandler | null = null;
   private consoleRelayHandler: ConsoleRelayHandler | null = null;
   private portForwardHandler: PortForwardHandler | null = null;
@@ -99,7 +102,7 @@ export class HubClient extends EventEmitter {
   private tcpListenerStarted = false;
   private sessionCacheSync: SessionCacheSync | null = null;
   private config: HubConfig;
-  private options: Required<Pick<HubClientOptions, 'hubUrl' | 'apiKey' | 'localApiPort' | 'autoReconnect' | 'reconnectDelay' | 'maxReconnectAttempts'>> & Pick<HubClientOptions, 'adminWebPort' | 'assistWebPort' | 'vibeCoderPort'>;
+  private options: Required<Pick<HubClientOptions, 'hubUrl' | 'apiKey' | 'localApiPort' | 'autoReconnect' | 'reconnectDelay' | 'maxReconnectAttempts'>> & Pick<HubClientOptions, 'adminWebPort' | 'assistWebPort' | 'vibeCoderPort' | 'uiWebPort'>;
   private status: HubClientStatus = {
     connected: false,
     authenticated: false,
@@ -130,6 +133,7 @@ export class HubClient extends EventEmitter {
       apiKey: options.apiKey || this.config.apiKey || '',
       localApiPort: options.localApiPort || (__dirname.includes('node_modules') ? 3100 : 3200),
       adminWebPort: options.adminWebPort || (process.env.ADMIN_WEB_PORT ? parseInt(process.env.ADMIN_WEB_PORT, 10) : undefined),
+      uiWebPort: options.uiWebPort || (process.env.UI_WEB_PORT ? parseInt(process.env.UI_WEB_PORT, 10) : undefined) || savedPorts.uiWebPort,
       assistWebPort: options.assistWebPort || (process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : undefined) || (__dirname.includes('node_modules') ? (savedPorts.assistWebPort || 3848) : 3948),
       vibeCoderPort: options.vibeCoderPort || (process.env.VIBE_CODER_PORT ? parseInt(process.env.VIBE_CODER_PORT, 10) : undefined),
       autoReconnect: options.autoReconnect ?? true,
@@ -219,6 +223,48 @@ export class HubClient extends EventEmitter {
           stripPrefix: true,
           description: 'Vibe Coder (Vite)',
         });
+      }
+      // Pluggable UIs (AUIS): the UI gateway relays each file request here as
+      // /ui-<uiId>/<path>. One route serves every UI on this host — the '/ui-' prefix is a
+      // prefix match, so 'ui-my-app' and 'ui-other' both land on uiWebPort.
+      //
+      // stripPrefix is FALSE on purpose: the '/ui-<uiId>' segment is how the local server
+      // knows WHICH UI is being asked for. Stripping it would make several UIs on one port
+      // indistinguishable.
+      //
+      // Nothing here grants access. The gateway has already authenticated the viewer,
+      // checked the UI's grant and minted a short-lived view token; this route only lets it
+      // fetch static files that already live on this machine.
+      if (this.options.uiWebPort) {
+        serviceRoutes.push({
+          pathPrefix: '/ui-',
+          port: this.options.uiWebPort,
+          stripPrefix: false,
+          rawPrefix: true, // '/ui-<uiId>' has no segment boundary after the prefix
+          description: 'Pluggable UI host (lmui)',
+        });
+        // The route survives restarts (uiWebPort is persisted) — the UI dev servers behind
+        // it must too, or every reboot silently kills all worker-hosted UIs until the
+        // author remembers to restart them. Respawn every dead-but-respawnable lmui state
+        // file (~/.lmui/dev-*.json); an explicitly stopped page (ui_pages_control) was
+        // parked out of that set and stays stopped. Once per process, not per reconnect.
+        if (!this.uiRespawnDone) {
+          this.uiRespawnDone = true;
+          try {
+            const { respawnDeadPages } = require('../ui-pages/manager');
+            respawnDeadPages((msg: string) => console.log(msg));
+            // Heartbeat: push each page's serving status to the gateway on an interval so
+            // the platform-side status stays fresh — the gateway reads a stale report as
+            // OFFLINE, which is exactly what this node going silent should look like.
+            const { startStatusHeartbeat, syncManagedUis } = require('../ui-pages/reporter');
+            startStatusHeartbeat((msg: string) => console.log(msg));
+            // Managed UIs: re-assert each managed lmui.config.json on the gateway — the
+            // file on disk, not any runtime API call, is the definition of record.
+            syncManagedUis((msg: string) => console.log(msg)).catch(() => {});
+          } catch (e) {
+            console.error('[HubClient] ui-pages respawn failed:', e instanceof Error ? e.message : String(e));
+          }
+        }
       }
 
       // Create API relay handler

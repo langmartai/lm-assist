@@ -85,4 +85,11 @@ export function registerCoreStatusProviders(): void {
     const { getBus } = require('../bus') as typeof import('../bus');
     return getBus().statusReport();
   });
+
+  // Host resources — the machine's own disks + NICs. Registered as `storage` and
+  // `nics` (NOT `network`): `fabric` above is the cross-node transport DATA PLANE
+  // (the peer mesh), so `nics` keeps the host's interfaces unambiguously separate.
+  const { storageReport, nicsReport } = require('./host-resources') as typeof import('./host-resources');
+  registerStatusProvider('storage', () => storageReport());
+  registerStatusProvider('nics', () => nicsReport());
 }

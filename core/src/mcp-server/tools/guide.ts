@@ -296,6 +296,42 @@ Windows-specific (when the generic route isn't enough): \`windows_terminal_*\` (
 CROSS-NODE: pass \`node=B\` to open/capture/drive a terminal on host B, or to send_session_message into a session on host B.
 GOTCHA: driving a WINDOWS session/terminal needs that host's Core in interactive Session 1; "pending/no driver" = nothing delivered.`,
 
+  desktop: `# Guide: control a node's DESKTOP (GUI) — read the screen + drive mouse/keyboard
+WHAT: full desktop control on any node that has a real graphical session — SEE what is on screen, READ it (screenshot, zoom to read small text), and ACT (move/click the mouse, type, press keys, manage windows). This is the GUI counterpart to guide("terminals"): terminals drive a SHELL, desktop_* drive the actual windowed desktop (a browser, an editor, a settings dialog, anything on screen). ONE platform-agnostic tool set works the SAME on Linux (X11) and Windows — coordinates are physical desktop pixels everywhere.
+
+THE FIVE TOOLS
+• \`desktop_status\` — CALL FIRST. platform (linux-x11 | windows | …), whether the desktop is driveable (ready), display size, active window, cursor, and warnings. If ready:false the reason says what to fix (no display / Wayland / Windows session-0).
+• \`desktop_windows\` — every open window: id, title, app, pid, geometry, state (active/minimized/maximized/normal). Take a window id from here to target the other tools.
+• \`desktop_screenshot\` — SEE the screen. No args = full-screen overview (downscaled to fit). To READ small text or inspect detail, pass \`region:[x1,y1,x2,y2]\` to ZOOM that rectangle at NATIVE resolution — overview first, then zoom the part you care about (that is how you "scroll"/read a display too large to send whole). Returns a real image PLUS a text line stating the exact image→desktop pixel mapping, so the coordinates you read off the image map correctly to where you click. Optional \`window\` (capture one window), \`max_px\`, \`format\`.
+• \`desktop_window\` — manage one window: activate | close | minimize | maximize | restore | move | resize (move needs x,y; resize needs width,height). Re-queries after and reports VERIFIED vs UNVERIFIED — a window manager that constrains the request (e.g. a terminal's min size) shows UNVERIFIED honestly, it is not a silent success. \`close\` is a polite window close, never a process kill.
+• \`desktop_input\` — pointer + keyboard, in Anthropic's computer-use vocabulary: left_click / right_click / middle_click / double_click / triple_click / left_click_drag / mouse_move / scroll / type / key / hold_key / cursor_position. Clicks/move/scroll take \`coordinate:[x,y]\` (desktop pixels — get them from a desktop_screenshot). \`type\` takes text; \`key\`/\`hold_key\` take an xdotool-style combo ("ctrl+s","Return","Page_Down","alt+Tab", "super"=Win/Cmd) — this is how you press MENU accelerators and SHORTCUTS (Alt opens the menu bar, then arrows; ctrl+s saves; alt+F4 closes); a click may hold a modifier via \`text\` ("shift"). type/key go to the FOCUSED window — pass \`window\` to activate it first, or click there. \`screenshot_after_ms\` returns a fresh screenshot after the action so you can VERIFY it landed without a second call.
+• \`desktop_clipboard\` — get/set the system clipboard. For long or special text, PREFER \`set\` then a \`ctrl+v\` (desktop_input key) over \`type\` — it is exact and avoids per-keystroke glitches; \`get\` reads copied content back out.
+• \`desktop_process\` — list running processes (pid, name, cpu%, memory, user), heaviest first, optional name filter. "What is running / is X open / find the chrome process." Read-only (does not kill).
+• \`desktop_wait_for\` — block until a window matching a title/app (optional state) appears, or a timeout. Use after launching or switching an app instead of guessing a sleep. Works on every platform (it just polls the window list).
+• \`desktop_find_text\` / \`desktop_click_text\` — CLICK BY LABEL, not by pixel. find_text OCRs the screen (or a region/window) and returns each visible line with its click-center in desktop pixels; click_text re-OCRs fresh and clicks the line whose text matches (index to disambiguate, match:"exact" for a whole-line match). This is the robust way to hit a BUTTON / MENU ITEM / LINK by its visible text without pixel-hunting. Needs \`tesseract\` on the node (else TOOL_MISSING). LANGUAGE is AUTOMATIC: lang defaults to "auto" — it detects the on-screen script (Chinese/Japanese/Cyrillic/…) and auto-installs the tesseract language pack (downloaded to a user dir, no admin), so non-English UIs just work; force one with lang:"chi_sim" etc. Text-only — for an icon with no label, fall back to screenshot + coordinate click.
+
+APP SWITCHING + MENUS + SHORTCUTS: switch apps with \`desktop_window\` \`activate <id>\` (deterministic — pick the id from desktop_windows; better than a blind alt+Tab). Minimize/maximize/restore/move/resize are \`desktop_window\` actions. Drive MENUS by screenshot→coordinate-click, or by keyboard via \`desktop_input\` \`key\` (Alt then arrows); SHORTCUTS are just \`key\` combos.
+
+THE READ→ACT LOOP: desktop_status (ready?) → desktop_screenshot (see) → find your target's pixel from the image (zoom a region if the text is small) → desktop_input (click/type) with screenshot_after_ms → confirm from the returned image. Never click blind: screenshot, locate, act, verify.
+
+CROSS-NODE — this is REMOTE desktop control: pass \`node=<host>\` (after list_nodes) to read/drive ANOTHER machine's desktop. A Linux node reports platform:linux-x11, a Windows node platform:windows, SAME tools + SAME response shapes — so "screenshot my Windows box and click the button" is desktop_screenshot(node=WINDOWS) then desktop_input(node=WINDOWS, action:left_click, coordinate:[…]). Omit node for the default host.
+
+PLATFORM NOTES + SAFETY
+• Linux needs an X11 session; a Wayland session is refused LOUDLY (DESKTOP_UNSUPPORTED) rather than returning black frames. Windows needs that host's Core in the interactive session (Session 1) — else WINDOWS_SESSION0.
+• Coordinates are PHYSICAL desktop pixels, top-left origin (a Windows multi-monitor virtual screen can have NEGATIVE origins). The screenshot result's mapping line is authoritative — trust it over guessing, and on a high-DPI/scaled display do NOT assume logical pixels.
+• 🔴 The desktop is SHARED with the human operator and with any browser-connector (Gmail/LinkedIn drive a real Chrome on the SAME display) — desktop_status.warnings names them. Synthesized input steals focus and moves the real cursor, so it can interrupt the operator or a connector (one-writer rule). Prefer a quiet moment; input is serialized per node but NOT coordinated with the CDP connectors.
+• Reads are \`read\`-scoped; window/input are \`write\`-scoped (approval-gated on claude.ai). No destructive verbs — no process kill, no logoff.
+
+FLOW
+\`\`\`mermaid
+flowchart LR
+  S["desktop_status (ready? which platform?)"] --> W["desktop_windows / desktop_screenshot (SEE)"]
+  W -->|"small text?"| Z["desktop_screenshot region=[…] (ZOOM native-res)"]
+  W & Z --> A["desktop_input click/type/scroll (+screenshot_after_ms)"]
+  A --> V["verify from the returned image"]
+  S -.->|"another machine"| N["same tools + node=<host> (Linux or Windows)"]
+\`\`\``,
+
   ccr: `# Guide: CCR — view or DRIVE a Claude Code session from claude.ai/code
 WHAT: bridge a Claude Code session on a node to the claude.ai/code web UI so you can watch it or drive it remotely. Three modes — each spawns a detached bridge and returns a https://claude.ai/code/session_… web URL:
 • ccr_load(session_id | jsonl) — READ-ONLY replay: load a session's transcript into a fresh claude.ai/code session (disconnected). Works on ANY session (live or finished). No side effects on the session — the safe default for "just show me".
@@ -308,11 +344,11 @@ OPERATE FLOW
 3. PICK the mode by intent + the verdict's allowedModes: look at any session → ccr_load · watch a running one → ccr_mirror · DRIVE it → ccr_connect (only when allowedModes includes "connect").
 4. ccr_connect brings a session under two-way control based on the verdict's connectStrategy: create-tmux (nothing live owns the storage) → spawns a NEW \`claude --resume\` tmux + bridge; a LIVE session (attach-existing = running in a tmux, or refuse = a live non-tmux/headless process owns it) → injects the \`/remote-control\` slash command to connect it IN PLACE, preserving the running process and its context. If the terminal is reachable (a tmux pane, or a driveable Windows console) the inject connects it; if it is headless/unreachable, ccr_connect kill-and-resumes it ONLY when it is idle (no update for ≥ the idle threshold) OR you pass force:true — otherwise it returns CONFLICT (needs-force) rather than resume over a running process (which would corrupt the append-only .jsonl). Prefer load/mirror (read-only) if you only want to watch, not drive.
 5. OPEN the returned webUrl to view/drive in the browser.
-6. MANAGE bridges: ccr_bridge_registry (formerly ccr_remote_list) → DIAGNOSTIC view of the bridge REGISTRATIONS on one node (id, mode, webUrl, alive, bridgeAlive, unverified, searched:{node,cluster}); ccr_remote_stop(id) → tear one down (stops the bridge; only kills a tmux WE created, never the user's existing one).
-   ⚠️ ccr_bridge_registry is NOT "what is running" and NOT how you list CCR sessions — it lists bridges, not sessions, and only on ONE node. To LIST CCR sessions use ccr_live_list (step 7). To answer "what sessions are running" use cc_sessions (this host) or session_footprints(scope:'fleet'). \`alive\` = the session is live; \`bridgeAlive\` = the relay helper is up — a live session with a dead bridge just needs reconnecting, it is not gone. An empty list means empty ON THAT NODE, not fleet-wide: check searched.node/searched.cluster and widen with node=<host> (list_nodes / cluster_list) before concluding nothing is running.
+6. MANAGE bridges: ccr_local_bridges (formerly ccr_remote_list, then ccr_bridge_registry) → NODE-LOCAL DIAGNOSTIC view of the bridge REGISTRATIONS on one node (id, mode, webUrl, alive, bridgeAlive, unverified, searched:{node,cluster}); ccr_remote_stop(id) → tear one down (stops the bridge; only kills a tmux WE created, never the user's existing one).
+   ⚠️ ccr_local_bridges is NOT "what is running" and NOT how you list CCR sessions — it lists bridges, not sessions, and only on ONE node. To LIST CCR sessions use ccr_live_list (step 7). To answer "what sessions are running" use cc_sessions (this host) or session_footprints(scope:'fleet'). \`alive\` = the session is live; \`bridgeAlive\` = the relay helper is up — a live session with a dead bridge just needs reconnecting, it is not gone. An empty list means empty ON THAT NODE, not fleet-wide: check searched.node/searched.cluster and widen with node=<host> (list_nodes / cluster_list) before concluding nothing is running.
 7. LIST CCR SESSIONS / WHAT IS CONNECTED TO claude.ai RIGHT NOW: ccr_live_list → the SOURCE OF TRUTH, read from the ACCOUNT (\`GET /v1/sessions\`) rather than any local store, so it is account-wide, not node-scoped.
    ⚠️ THE TWO LIST TOOLS ANSWER DIFFERENT QUESTIONS — pick by what you actually want:
-     • ccr_bridge_registry = the LOCAL BRIDGE REGISTRY — only bridges lm-assist itself spawned (ccr_load/mirror/connect), on ONE node. A session connected by a native \`/remote-control\` inject was never registered, so this returns EMPTY for it even while that session is live and web-reachable.
+     • ccr_local_bridges = the LOCAL BRIDGE REGISTRY — only bridges lm-assist itself spawned (ccr_load/mirror/connect), on ONE node. A session connected by a native \`/remote-control\` inject was never registered, so this returns EMPTY for it even while that session is live and web-reachable.
      • ccr_live_list = THE ACCOUNT'S OWN LIST — sees every remote-control + cloud session regardless of who started it, including native injects.
    Each row: \`kind\` (local-remote-control = a real machine's Claude Code driven from the web | cloud = an Anthropic-run container) and \`via\` (native-inject | lm-assist-bridge).
    🔴 \`live\` combines BOTH liveness axes and is the field to trust. An ARCHIVED session very often still reports \`connection: connected\` (measured: 67 such rows in one page), so reading \`connection\` alone reports finished work as running.
@@ -331,7 +367,7 @@ NAMING: \`<node-ip-last-octet>-<repo>-ccr[-N]\` — e.g. \`117-lm-assist-ccr\`, 
 
 GOTCHAS ON THIS PATH — each one cost a real session
 • \`ccr_connect\` can fail with an opaque **"MCP tool call failed"** EVEN WHEN \`ccr_preflight\` returned \`allowedModes\` including \`connect\` and \`connectStrategy: attach-existing\`. A green preflight is not a working connect — fall back to the native \`/remote-control\` inject above rather than re-running the preflight.
-• It will NOT appear in \`ccr_bridge_registry\` — no bridge was registered for it. Use \`ccr_live_list\` (step 7), which reads the ACCOUNT and so does see native injects.
+• It will NOT appear in \`ccr_local_bridges\` — no bridge was registered for it. Use \`ccr_live_list\` (step 7), which reads the ACCOUNT and so does see native injects.
 • \`send_session_message\` BY sessionId returns \`TARGET_UNREACHABLE\` with drivers \`remote-control\` AND \`cc-session\` both reporting unavailable. Pass the raw **tmux session name** instead — the tmux-send-keys fallback delivers.
 • 🔴 \`status:"received"\` IS NOT PROOF OF ACTION. \`send_session_message\` can ack a message the session NEVER acts on — a large paste can land without being submitted or read. ALWAYS confirm with \`terminal_capture\` that the session actually STARTED the task, and prefer \`terminal_prompt\` for the real instruction.
 • A freshly opened \`claude\` in a repo may AUTO-LOAD a pre-existing handoff brief (e.g. \`.claude/briefs/*.md\`) and start working on THAT — then sit on an AskUserQuestion menu. \`terminal_capture\` FIRST, Escape to cancel the menu, and only then give your own task.
@@ -676,6 +712,29 @@ MANAGE (on the node itself — loopback-only, not over this connector):
 - \`POST /machine-access/import\` — parse this node's \`~/.ssh/config\` into DRAFT profiles. DRY-RUN by default (writes nothing); \`{apply:true}\` writes them \`enabled:false\` tagged \`imported\`, never clobbering a curated id.
 
 GATHER RECIPE (populate a node): (1) \`POST /machine-access/import\` dry-run to see candidates; (2) \`{apply:true}\` to write drafts; (3) add each machine's operational notes (the gotchas import can't know — pull from memory/CLAUDE.md); (4) \`.../check\` to verify reachability; (5) enable (\`enabled:true\`) the ones that work. Curated, hand-written profiles are equally valid — import is just a head start.`,
+
+  'ui-pages': `# Guide: pluggable UI pages (register + serve + manage, all over MCP)
+
+WHAT: an agent can author a WEB PAGE, register it on the platform UI gateway, and serve it FROM A NODE'S OWN DISK as a real internet URL (the gateway mints it and hands it back; \`ui_register\`/\`ui_list\` report it) — with standard OIDC sign-in, owner-only access, and a scoped data plane. Nothing is uploaded: the gateway relays each request over this node's existing hub WebSocket to a small local dev server. The open spec + SDK live in the public \`agentic-ui-spec\` repo (\`lmui\` CLI: init/login/register/dev/start/stop/status).
+
+FULL LIFECYCLE, NO BROWSER, NO CLI:
+1. \`ui_register {uiId}\` — claims the uiId inside YOUR account (ids are unique per owner, so a name someone else took is still free for you; ≤51 chars), binds it to your account, and auto-wires THIS node's worker id so the gateway relays here. Optional \`grant\` = declared data-plane access. Returns the public URL plus the \`uiKey\` (\`<ownerSlug>-<uiId>\`) the gateway addresses it by; no DNS step exists.
+2. Serve the files: put the app in the preferred apps dir (\`ui_pages\` reports it, default \`~/.lmui/apps/<uiId>/\`) and run \`node <spec-clone>/sdk/lmui.js start\` there with PORT = this node's uiWebPort. The state file \`~/.lmui/dev-<uiId>.json\` is the contract; lmui is its only writer.
+3. \`ui_pages\` — per-page serving status: alive (pid), serving (HTTP probe), reachableViaHub (port must equal uiWebPort), stale + why. \`ui_list\` merges gateway registrations with local state — "registered AND alive?" in one call.
+4. \`ui_grants {uiId}\` / \`ui_grant_release\` — see declared vs runtime-approved access; release what the page no longer needs.
+5. \`ui_pages_control {uiId, start|stop|autostart-on|autostart-off}\` — local lifecycle + boot policy. Stop PARKS the page (a Core restart does not resurrect it); \`start\` un-parks. \`autostart-off\` keeps a running page running but a reboot leaves it down; \`autostart-on\` (default) restores respawn-on-boot.
+6. \`ui_enable {uiId, enabled}\` — platform-wide on/off switch for the REGISTRATION: disabled = the public URL refuses for everyone while registration, grants and files are kept.
+7. \`ui_unregister {uiId}\` — remove the registration (local files untouched).
+
+RESPAWN-ON-BOOT: when the Core starts with uiWebPort configured, every dead-but-respawnable page auto-respawns — a host reboot brings the UIs back with the agent. Pages whose app dir or lmui.config.json vanished are reported \`stale\` by \`ui_pages\` instead (never silently dropped).
+
+PLATFORM-SIDE STATUS + SCREENSHOTS: the Core heartbeats each page's serving status to the gateway (every 2 min + on every \`ui_pages\` read), so the management pages show it with "last updated" — and derive OFFLINE when the report goes stale (node crashed/rebooted/offline = its pages read offline, automatically). \`ui_screenshot {uiId, path}\` uploads a local capture; the gateway auto-resizes (≤1280px, webp) and stores it per UI as the preview on /manage and the assist UI Pages page.
+
+🔴 TRAPS:
+- No /ui-* route (\`ui_pages\` says uiWebPort NOT SET) → set \`uiWebPort\` in \`~/.lm-assist/hub.json\` and restart the Core; the route + port persist from then on.
+- A page serving on a port ≠ uiWebPort is invisible through the hub — \`ui_pages\` flags the mismatch; restart the page with the right PORT.
+- Owner-only serving: only the OWNER's signed-in browser can open the URL; anyone else gets a no-access page. That owner = the account whose API key this node holds.
+- \`ui_register\` needs this node's stored platform API key; \`ui_list\` failing with a gateway refusal usually means that key is invalid/absent (hub.json).`,
 };
 
 /** Synonyms + every tool name → its topic, so guide("data_get") or guide("storage") both resolve. */
@@ -707,6 +766,7 @@ const ALIASES: Record<string, string> = {
   auth: 'account', usage: 'account', oauth: 'account',
   gh: 'github', git: 'github',
   file: 'files', fs: 'files', transfer: 'files',
+  'ui-pages': 'ui-pages', 'ui-page': 'ui-pages', ui: 'ui-pages', 'pluggable-ui': 'ui-pages', 'pluggable ui': 'ui-pages', webpage: 'ui-pages', 'web-page': 'ui-pages', 'ui-gateway': 'ui-pages', auis: 'ui-pages', lmui: 'ui-pages', subdomain: 'ui-pages',
 };
 for (const [topic, tools] of Object.entries(TOPIC_TOOLS)) for (const t of tools) ALIASES[t] = topic;
 
@@ -724,6 +784,7 @@ const BLURB: Record<string, string> = {
   knowledge: 'search the knowledge base + cross-project/cross-host memory; read + WRITE memory files (hash-guarded); give feedback',
   agents: 'run / resume / monitor a Claude Code agent remotely (incl. browser control)',
   terminals: 'drive a terminal or inject a prompt into a running session (Linux/mac/Windows)',
+  desktop: 'control a node\'s DESKTOP GUI — read the screen (screenshot + native-res zoom) and drive mouse/keyboard/windows; ONE tool set for Linux (X11) + Windows, cross-node so you can remote-control another machine\'s desktop',
   ccr: 'CCR — view/drive a Claude Code session from claude.ai/code (load=replay, mirror=live view, connect=two-way; safety-gated) + how to find and resume what a REBOOT killed (the ~/.claude/sessions registry survives it; resume keeps both the name and the web URL)',
   nodes: 'list hosts, target a specific machine, port-forward — why a DISPLAY NAME is not an identity (hostIds are the only targetable set; names repeat and carry `(dev)` suffixes), and how to RECOVER a node that vanished from list_nodes (its lm-assist is stopped, the host is usually alive and one ssh away)',
   'claude-ai': "read/operate the user's claude.ai web account + manage this connector's tools",
@@ -731,6 +792,7 @@ const BLURB: Record<string, string> = {
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node) — incl. why `auth_status(allNodes)` is a smell test, not an inventory, and how a node picks an ACCOUNT rather than a set of conversations',
   github: 'query/mutate GitHub via the user gh auth',
   files: 'list/stat/read files + transfer files between hosts',
+  'ui-pages': 'register + serve agent-authored web UIs from this node as real OIDC-secured URLs the gateway mints — full lifecycle over MCP: register, serve, status, grants, respawn-on-boot',
   missions: 'durable cross-project goals — the fleet-elected Mission Controller binds an executor (cloud or native worktree), adapts + drives it to done, never auto-approves gates/pivots. Born `waiting`; `active` = already running. `env.repo` must be ABSOLUTE, `env.isolation` defaults to `cloud`',
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
   clusters: 'isolated fleet partitions — concept, shared-vs-within table, cluster_list/assign/unassign/describe, build one cluster at a time, respect-other-clusters scope norm',
@@ -803,7 +865,7 @@ function buildIndex(lookup?: ContentLookup | null): string {
 
 /** Bootstrap section order — `mission-controller` is DELIBERATELY absent (the controller
  *  contract loads via guide only, not into every bootstrapped session). */
-export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speaking', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
+export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speaking', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'desktop', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'ui-pages', 'clusters'];
 
 /** The bootstrap preamble — content doc `bootstrap.header`. */
 export const BOOTSTRAP_HEADER_DEFAULT = [
@@ -1048,7 +1110,7 @@ export const GUIDE_TOOL_DEFS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        topic: { type: 'string' as const, description: 'A use-case (cross-node|workflows|sessions|knowledge|data|agents|terminals|ccr|nodes|claude-ai|account|github|files|roles), a tool name, or "index". Omit for the index.' },
+        topic: { type: 'string' as const, description: 'A use-case (cross-node|workflows|sessions|knowledge|data|agents|terminals|desktop|ccr|nodes|claude-ai|account|github|files|roles), a tool name, or "index". Omit for the index.' },
       },
       required: [] as string[],
     },

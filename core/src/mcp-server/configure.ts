@@ -225,7 +225,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // ccr — Claude Code remote support
   cc_sessions: 'read',
   ccr_preflight: 'read',
-  ccr_bridge_registry: 'read',
+  ccr_local_bridges: 'read',
+  ccr_bridge_registry: 'read', // compat alias (pre-rename)
   ccr_remote_list: 'read', // compat alias for ccr_bridge_registry (pre-rename name, not advertised)
   ccr_live_list: 'read',
   ccr_load: 'write',
@@ -268,6 +269,15 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   fs_list: 'read',
   fs_stat: 'read',
   fs_read: 'read',
+  ui_pages: 'read',
+  ui_pages_control: 'write',
+  ui_register: 'write',
+  ui_list: 'read',
+  ui_grants: 'read',
+  ui_grant_release: 'write',
+  ui_unregister: 'write',
+  ui_screenshot: 'write',
+  ui_enable: 'write',
   auth_status: 'read',
   claude_code_account: 'read',
   claudeai_account: 'read',
@@ -444,6 +454,20 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   backup_remove: 'admin',
   // cowork task creation (write — starts a real background session)
   cowork_create_task: 'write',
+  // desktop automation: reads observe the screen; window/input synthesize real
+  // pointer/keyboard events on the operator's live desktop (write).
+  desktop_status: 'read',
+  desktop_windows: 'read',
+  desktop_screenshot: 'read',
+  desktop_window: 'write',
+  desktop_input: 'write',
+  desktop_process: 'read',
+  desktop_wait_for: 'read',
+  desktop_find_text: 'read',
+  desktop_click_text: 'write',
+  // clipboard get is a read but set mutates + can carry sensitive text, so the
+  // tool is write-scoped (approval-gated) like the other desktop writes.
+  desktop_clipboard: 'write',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */

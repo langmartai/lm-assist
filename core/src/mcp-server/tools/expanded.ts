@@ -38,6 +38,7 @@ import { GITHUB_TOOL_DEFS, GITHUB_HANDLERS } from './github';
 import { PORT_FORWARD_TOOL_DEFS, PORT_FORWARD_HANDLERS } from './port-forward';
 import { TRANSFER_TOOL_DEFS, TRANSFER_HANDLERS } from './transfer';
 import { FS_INSPECT_TOOL_DEFS, FS_INSPECT_HANDLERS } from './fs-inspect';
+import { UI_PAGES_TOOL_DEFS, UI_PAGES_HANDLERS } from './ui-pages';
 import { SESSION_MESSAGING_TOOL_DEFS, SESSION_MESSAGING_HANDLERS } from './session-messaging';
 import { DATA_TOOL_DEFS, DATA_HANDLERS } from './data-tools';
 import { AUTH_STATUS_TOOL_DEFS, AUTH_STATUS_HANDLERS } from './auth-status';
@@ -73,6 +74,7 @@ import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
 import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
 import { LINKEDIN_TOOL_DEFS, LINKEDIN_HANDLERS } from './linkedin';
 import { GMAIL_TOOL_DEFS, GMAIL_HANDLERS } from './gmail';
+import { DESKTOP_TOOL_DEFS, DESKTOP_HANDLERS } from './desktop';
 import { BACKUP_TOOL_DEFS, BACKUP_HANDLERS } from './backup';
 import { ELEVATED_TOOL_DEFS, ELEVATED_HANDLERS } from './elevated';
 import { VM_TOOL_DEFS, VM_HANDLERS } from './vm';
@@ -618,10 +620,10 @@ export const ccrPreflightToolDef = {
     required: ['session_id'],
   },
 };
-export const ccrBridgeRegistryToolDef = {
-  name: 'ccr_bridge_registry',
+export const ccrLocalBridgesToolDef = {
+  name: 'ccr_local_bridges',
   description:
-    'DIAGNOSTIC: inspect the local bridge REGISTRY on ONE node — bookkeeping rows for bridges lm-assist ' +
+    'DIAGNOSTIC — NODE-LOCAL: the local CCR bridge list for ONE node (NOT account-wide, NOT "what sessions exist"). Inspects the local bridge REGISTRY — bookkeeping rows for bridges lm-assist ' +
     'itself spawned via ccr_load/ccr_mirror/ccr_connect. To LIST CCR sessions use ccr_live_list (the ' +
     'account-wide source of truth); to answer "what sessions are running" use cc_sessions (this host) or ' +
     'session_footprints (cross-fleet). This registry exists so ccr_drive/ccr_restart/ccr_remote_stop can ' +
@@ -630,7 +632,7 @@ export const ccrBridgeRegistryToolDef = {
     'live, `bridgeAlive` = the relay helper process is up (a live session with a dead bridge just needs ' +
     'reconnecting), and `unverified` marks an entry nothing could be checked against — never read it as ' +
     'proof the session is gone. The result also reports which node/cluster it searched; an empty list ' +
-    'means empty ON THAT NODE only. (Formerly named ccr_remote_list.)',
+    'means empty ON THAT NODE only. (Formerly ccr_remote_list / ccr_bridge_registry.)',
   inputSchema: { type: 'object' as const, properties: {} },
 };
 export const ccrLiveListToolDef = {
@@ -722,7 +724,7 @@ export const ccrDriveToolDef = {
 };
 export const ccrRemoteStopToolDef = {
   name: 'ccr_remote_stop',
-  description: 'Stop a running CCR remote by id (from ccr_bridge_registry or a ccr_* result).',
+  description: 'Stop a running CCR remote by id (from ccr_local_bridges or a ccr_* result).',
   inputSchema: {
     type: 'object' as const,
     properties: { id: { type: 'string', description: 'CCR remote id, e.g. ccr-xxxxxxxx.' } },
@@ -1201,7 +1203,7 @@ export const EXPANDED_TOOL_DEFS = [
   // ccr — Claude Code remote support
   ccSessionsToolDef,
   ccrPreflightToolDef,
-  ccrBridgeRegistryToolDef,
+  ccrLocalBridgesToolDef,
   ccrLiveListToolDef,
   ccrLoadToolDef,
   ccrMirrorToolDef,
@@ -1223,9 +1225,12 @@ export const EXPANDED_TOOL_DEFS = [
   ...WHATSAPP_TOOL_DEFS,
   ...LINKEDIN_TOOL_DEFS,
   ...GMAIL_TOOL_DEFS,
+  ...DESKTOP_TOOL_DEFS,
   ...BACKUP_TOOL_DEFS,
   ...TRANSFER_TOOL_DEFS,
   ...FS_INSPECT_TOOL_DEFS,
+  // pluggable-UI pages (status/list/grants: read; register/control/release/unregister: write)
+  ...UI_PAGES_TOOL_DEFS,
   // session-to-session messaging (send: write/admin; list+status: read)
   ...SESSION_MESSAGING_TOOL_DEFS,
   // data service (read: catalog/request_access/get/query; write: put/delete)
@@ -2426,7 +2431,8 @@ export const EXPANDED_HANDLERS: Record<
   // ccr — Claude Code remote support
   cc_sessions: (a) => handleCcSessions(a),
   ccr_preflight: handleCcrPreflight,
-  ccr_bridge_registry: () => handleCcrRemoteList(),
+  ccr_local_bridges: () => handleCcrRemoteList(),
+  ccr_bridge_registry: () => handleCcrRemoteList(), // compat alias (pre-rename)
   // compat alias: pre-rename name, still accepted (NOT advertised) so a connector
   // holding a cached tools/list keeps working until it refreshes
   ccr_remote_list: () => handleCcrRemoteList(),
@@ -2451,9 +2457,12 @@ export const EXPANDED_HANDLERS: Record<
   ...WHATSAPP_HANDLERS,
   ...LINKEDIN_HANDLERS,
   ...GMAIL_HANDLERS,
+  ...DESKTOP_HANDLERS,
   ...BACKUP_HANDLERS,
   ...TRANSFER_HANDLERS,
   ...FS_INSPECT_HANDLERS,
+  // pluggable-UI pages
+  ...UI_PAGES_HANDLERS,
   // session-to-session messaging
   ...SESSION_MESSAGING_HANDLERS,
   // data service

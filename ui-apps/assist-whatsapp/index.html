@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WhatsApp — Assist</title>
+<style>
+  :root{--bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;--green:#25d366;--mine:#065f46;--theirs:#1e293b}
+  *{box-sizing:border-box}
+  body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
+  /* Embedded: the shell already draws identity + nav, so drop own chrome and background.
+     Standalone: the header below is the only identity affordance, so it must stay. */
+  body.embed{background:transparent;overflow:hidden}
+  body.embed header{display:none}
+  header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
+  header h1{font-size:1rem;margin:0}
+  .chip{font-family:ui-monospace,monospace;font-size:.72rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}
+  #who{display:flex;align-items:center;gap:.4rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.28rem .75rem;font-size:.8rem}
+  #who .dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--green)}
+  main{max-width:70rem;margin:.8rem auto;padding:0 1rem}
+  .bar{display:flex;align-items:center;gap:.5rem;margin-bottom:.6rem;flex-wrap:wrap}
+  .pill{display:inline-block;border-radius:999px;padding:.08rem .55rem;font-size:.72rem;border:1px solid var(--line);color:var(--dim)}
+  .pill.ok{color:var(--green);border-color:#14532d}.pill.bad{color:#f87171;border-color:#7f1d1d}
+  button{border:0;border-radius:6px;padding:.35rem .7rem;font-size:.78rem;cursor:pointer;background:#334155;color:var(--txt)}
+  button.primary{background:var(--green);color:#052e16;font-weight:600}
+  button:disabled{opacity:.45;cursor:default}
+  .split{display:grid;grid-template-columns:16rem 1fr;gap:.8rem;align-items:start}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .card h2{font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin:0;padding:.55rem .8rem;border-bottom:1px solid var(--line)}
+  #chats{max-height:26rem;overflow:auto}
+  .chat{display:flex;gap:.55rem;align-items:center;padding:.5rem .7rem;cursor:pointer;border-bottom:1px solid rgba(51,65,85,.5)}
+  .chat:hover{background:rgba(148,163,184,.08)}
+  .chat.sel{background:rgba(37,211,102,.10)}
+  .av{width:2rem;height:2rem;border-radius:50%;background:#334155;display:flex;align-items:center;justify-content:center;font-size:.7rem;color:var(--dim);flex:0 0 auto}
+  .cname{font-size:.82rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cmeta{font-size:.68rem;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .unread{margin-left:auto;background:var(--green);color:#052e16;border-radius:999px;font-size:.62rem;padding:.02rem .38rem;font-weight:700}
+  #msgs{height:22rem;overflow:auto;padding:.7rem;display:flex;flex-direction:column;gap:.4rem;background:var(--panel2)}
+  .msg{max-width:78%;padding:.4rem .6rem;border-radius:9px;font-size:.82rem;line-height:1.35;white-space:pre-wrap;word-break:break-word}
+  .msg.me{align-self:flex-end;background:var(--mine)}
+  .msg.them{align-self:flex-start;background:var(--theirs);border:1px solid var(--line)}
+  .msg .t{display:block;font-size:.62rem;color:rgba(226,232,240,.55);margin-top:.15rem}
+  .compose{display:flex;gap:.45rem;padding:.55rem;border-top:1px solid var(--line)}
+  .compose input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--txt);padding:.45rem .6rem;font-size:.85rem;font-family:inherit}
+  .empty{color:var(--dim);font-size:.82rem;padding:1.2rem .8rem;text-align:center}
+  #err{font-family:ui-monospace,monospace;font-size:.74rem;color:#fca5a5;padding:.5rem .8rem;display:none}
+  .grants{font-family:ui-monospace,monospace;font-size:.7rem;color:var(--dim)}
+
+  /* Embedded panes inherit the shell's theme via ?theme=. A dark pane inside a light
+     shell reads as foreign content pasted into the page; these overrides make the pane
+     look like the shell's own body. */
+  body.theme-light{--bg:#ffffff;--panel:#f8fafc;--panel2:#f1f5f9;--line:#e2e8f0;--txt:#0f172a;--dim:#64748b}
+  body.theme-light .msg.them{background:#f1f5f9}
+  body.theme-light .msg.me{background:#d1fae5;color:#064e3b}
+  body.theme-light button{background:#e2e8f0;color:#0f172a}
+  body.theme-light button.primary{background:var(--green);color:#052e16}
+  /* Full-bleed when embedded: the pane IS the page body, so it must not re-center itself
+     inside its own max-width column — that produced the wide empty margins. */
+  body.embed main{max-width:none;margin:0;padding:0}
+</style>
+</head>
+<body>
+<header>
+  <h1>WhatsApp<span class="chip">assist-whatsapp</span><span class="chip">scope: lm-assist</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <div class="bar">
+    <span id="status" class="pill">checking…</span>
+    <span class="grants" id="grant">①&nbsp;node:/whatsapp</span>
+    <button id="reload" style="margin-left:auto">refresh</button>
+  </div>
+  <div id="err"></div>
+  <div class="split">
+    <div class="card">
+      <h2>Chats</h2>
+      <div id="chats"><div class="empty">loading…</div></div>
+    </div>
+    <div class="card">
+      <h2 id="chat-title">Messages</h2>
+      <div id="msgs"><div class="empty">Pick a chat on the left.</div></div>
+      <div class="compose">
+        <input id="text" placeholder="Message…" autocomplete="off" disabled>
+        <button class="primary" id="send" disabled>Send</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="assets/lmui.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ── Embedding contract (identical to the other assist panes) ──────────────────────
+  var EMBEDDED = /[?&]embed=1\b/.test(location.search);
+  if (EMBEDDED) document.body.classList.add('embed');
+  // Theme is passed by the shell (?theme=light|dark); standalone defaults to dark.
+  var THEME = (/[?&]theme=light/.test(location.search)) ? 'light' : 'dark';
+  if (THEME === 'light') document.body.classList.add('theme-light');
+
+  function reportHeight() {
+    if (!EMBEDDED || !window.parent || window.parent === window) return;
+    var m = document.querySelector('main');
+    var h = m ? Math.ceil(m.offsetTop + m.offsetHeight + 16) : document.body.scrollHeight;
+    try { window.parent.postMessage({ type: 'lmui:height', uiId: (window.__UI_ID__ || ''), height: h }, '*'); } catch (e) {}
+  }
+  if (EMBEDDED) {
+    window.addEventListener('load', reportHeight);
+    if (window.ResizeObserver) new ResizeObserver(reportHeight).observe(document.body);
+    setInterval(reportHeight, 1500);
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function clock(ts) {
+    if (!ts) return '';
+    var d = new Date(ts < 1e12 ? ts * 1000 : ts);
+    return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  function initials(name) {
+    var s = String(name || '?').replace(/[^A-Za-z0-9 ]/g, ' ').trim().split(/\s+/);
+    return ((s[0] || '?')[0] + (s[1] ? s[1][0] : '')).toUpperCase();
+  }
+  function showErr(msg) {
+    var e = document.getElementById('err');
+    e.style.display = msg ? 'block' : 'none';
+    e.textContent = msg || '';
+    setTimeout(reportHeight, 60);
+  }
+
+  // The node relay wraps the node's own {success,data} in an outer {status,data}; unwrap
+  // both so callers see the node's payload directly.
+  function api(path, opts) {
+    return lmui.call('node', path, opts).then(function (r) {
+      return r.json().catch(function () { return null; }).then(function (b) {
+        var outer = (b && b.data !== undefined && b.status !== undefined) ? b.data : b;
+        var status = (b && b.status !== undefined) ? b.status : r.status;
+        var payload = (outer && outer.success !== undefined) ? outer.data : outer;
+        return { status: status, ok: status >= 200 && status < 300, body: payload, raw: outer };
+      });
+    });
+  }
+
+  fetch('/auth/me', { credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      document.getElementById('who-name').textContent =
+        (d.claims && (d.claims.name || d.claims.email)) || d.userId || '';
+    }).catch(function () {});
+
+  var current = null;
+
+  function paintStatus(st) {
+    var el = document.getElementById('status');
+    if (!st) { el.className = 'pill bad'; el.textContent = 'status unavailable'; return; }
+    var ok = st.configured !== false;
+    el.className = 'pill ' + (ok ? 'ok' : 'bad');
+    el.textContent = (ok ? 'connected' : 'not configured') + (st.backend ? ' · ' + st.backend : '');
+  }
+
+  function paintChats(chats) {
+    var box = document.getElementById('chats');
+    if (!chats || !chats.length) {
+      box.innerHTML = '<div class="empty">No chats yet.<br><span style="font-size:.7rem">Start one on the device and it appears here.</span></div>';
+      return;
+    }
+    box.innerHTML = chats.map(function (c) {
+      var name = c.name || c.chatId || '';
+      return '<div class="chat" data-id="' + esc(c.chatId) + '">' +
+        '<div class="av">' + esc(initials(name)) + '</div>' +
+        '<div style="min-width:0"><div class="cname">' + esc(name) + '</div>' +
+        '<div class="cmeta">' + esc((c.lastMessage && (c.lastMessage.text || c.lastMessage.body)) || c.chatId || '') + '</div></div>' +
+        (c.unreadCount ? '<span class="unread">' + esc(c.unreadCount) + '</span>' : '') +
+        '</div>';
+    }).join('');
+    setTimeout(reportHeight, 60);
+  }
+
+  function paintMessages(msgs) {
+    var box = document.getElementById('msgs');
+    if (!msgs || !msgs.length) { box.innerHTML = '<div class="empty">No messages in this chat.</div>'; return; }
+    box.innerHTML = msgs.map(function (m) {
+      var mine = m.fromMe || m.direction === 'out';
+      var text = m.text || m.body || (m.type ? '[' + m.type + ']' : '');
+      return '<div class="msg ' + (mine ? 'me' : 'them') + '">' + esc(text) +
+        '<span class="t">' + esc(clock(m.timestamp || m.ts)) + '</span></div>';
+    }).join('');
+    box.scrollTop = box.scrollHeight;
+    setTimeout(reportHeight, 60);
+  }
+
+  function loadChats() {
+    return api('/whatsapp/chats?limit=100').then(function (r) {
+      if (!r.ok) { showErr('chats: HTTP ' + r.status + ' ' + JSON.stringify(r.raw || '')); return; }
+      paintChats((r.body && (r.body.chats || r.body)) || []);
+    });
+  }
+
+  function openChat(chatId, name) {
+    current = chatId;
+    document.getElementById('chat-title').textContent = name || chatId;
+    document.getElementById('text').disabled = false;
+    document.getElementById('send').disabled = false;
+    Array.prototype.forEach.call(document.querySelectorAll('.chat'), function (el) {
+      el.classList.toggle('sel', el.dataset.id === chatId);
+    });
+    document.getElementById('msgs').innerHTML = '<div class="empty">loading…</div>';
+    api('/whatsapp/messages?chat=' + encodeURIComponent(chatId) + '&limit=60&markRead=true').then(function (r) {
+      if (!r.ok) { showErr('messages: HTTP ' + r.status); return; }
+      paintMessages((r.body && (r.body.messages || r.body)) || []);
+    });
+  }
+
+  function send() {
+    var input = document.getElementById('text');
+    var text = input.value.trim();
+    if (!text || !current) return;
+    var btn = document.getElementById('send');
+    btn.disabled = true;
+    api('/whatsapp/send', { method: 'POST', body: { to: current, text: text } }).then(function (r) {
+      btn.disabled = false;
+      if (!r.ok) { showErr('send: HTTP ' + r.status + ' ' + JSON.stringify(r.raw || '')); return; }
+      input.value = '';
+      showErr('');
+      openChat(current, document.getElementById('chat-title').textContent);
+    });
+  }
+
+  document.getElementById('chats').addEventListener('click', function (e) {
+    var row = e.target.closest ? e.target.closest('.chat') : null;
+    if (row && row.dataset.id) openChat(row.dataset.id, row.querySelector('.cname').textContent);
+  });
+  document.getElementById('send').addEventListener('click', send);
+  document.getElementById('text').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(); });
+  document.getElementById('reload').addEventListener('click', function () { showErr(''); boot(); });
+
+  function boot() {
+    api('/whatsapp/status').then(function (r) {
+      paintStatus(r.ok ? r.body : null);
+      if (!r.ok) showErr('status: HTTP ' + r.status + ' — is WhatsApp configured on this node?');
+    });
+    loadChats();
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

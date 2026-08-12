@@ -138,7 +138,30 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 // = ~71,600 B, roughly 28% of the whole catalogue. Every conversation pays it up
 // front. Taking that on would fund ~66 tools of growth and is worth far more
 // than any amount of per-tool sanding.
-const CATALOG_BUDGET_BYTES = 284_000;
+//
+// MEASURED 2026-08-05, after the desktop-automation connector landed — a
+// deliberate +6,000 B raise, the arithmetic it is owed:
+//
+//   261 tools, catalogue          284,961 B  (was 279,809 B at 256 tools)
+//   the old 284,000 B budget         961 B OVER  (the guard caught it, as designed)
+//   new 290,000 B budget          -> 5,039 B headroom (~4 tools of slack)
+//
+//   desktop: 5 tools = ~5,150 B, of which its own prose is ~3,600 B (720 B/tool —
+//   above the surface average because desktop_input/desktop_screenshot each carry
+//   an action-vocabulary + coordinate contract a caller MUST get right to click
+//   the correct pixel; the enums live in the schema, not re-listed in prose). The
+//   rest is the injected node-param paragraph. This is real new capability
+//   (cross-platform desktop control), not re-inlined boilerplate, so the guard's
+//   real target — the ~90 KB re-inlining regression — is untouched; the
+//   shared-boilerplate test above still passes.
+//
+// MEASURED 2026-08-06, desktop family grown to 10 tools (added clipboard, process,
+// wait_for, find_text, click_text — utility + OCR text-targeting): 266 tools,
+// catalogue 290,694 B. A deliberate +5,000 B raise (the five new tools ~5,700 B
+// of real capability, descriptions already trimmed to trigger words). New budget
+// 295,000 B -> ~4,300 B headroom. Still additive new tools, not re-inlined
+// boilerplate; the shared-boilerplate guard above still passes.
+const CATALOG_BUDGET_BYTES = 295_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};

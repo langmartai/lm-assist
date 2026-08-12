@@ -35,7 +35,7 @@ export interface ToolCatalogEntry {
 export const CATEGORY_ORDER: string[] = [
   'core', 'session', 'mission', 'backlog', 'worker', 'agent', 'terminal', 'memory', 'data',
   'transfer', 'fleet', 'cluster', 'machine-access', 'ccr', 'claudeai', 'auth',
-  'github', 'whatsapp', 'linkedin', 'gmail', 'backup', 'elevated', 'vm',
+  'github', 'whatsapp', 'linkedin', 'gmail', 'desktop', 'backup', 'elevated', 'vm',
 ];
 
 const T = 'core/src/mcp-server/tools';
@@ -127,7 +127,7 @@ mod('machine-access.ts', 'machine-access', ['machine_access']);
 
 // --- ccr / cloud Claude Code ---
 mod('expanded.ts', 'ccr', [
-  'cc_sessions', 'ccr_preflight', 'ccr_bridge_registry', 'ccr_live_list', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_drive',
+  'cc_sessions', 'ccr_preflight', 'ccr_local_bridges', 'ccr_bridge_registry', 'ccr_live_list', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_drive',
   'ccr_remote_stop', 'ccr_restart', 'ccr_cloud_start', 'ccr_cloud_repos', 'ccr_cloud_drive', 'ccr_cloud_answer',
   'ccr_cloud_read', 'ccr_cloud_stop', 'ccr_cloud_restart', 'ccr_cloud_list',
 ]);
@@ -170,6 +170,12 @@ mod('gmail.ts', 'gmail', [
   'gmail_star', 'gmail_spam', 'gmail_apply_label', 'gmail_remove_label',
   'gmail_create_label', 'gmail_rename_label', 'gmail_delete_label', 'gmail_move_to',
   'gmail_schedule_send', 'gmail_settings', 'gmail_draft_send', 'gmail_draft_delete', 'gmail_schedule_cancel', 'gmail_bulk',
+]);
+
+// --- desktop automation ---
+mod('desktop.ts', 'desktop', [
+  'desktop_status', 'desktop_windows', 'desktop_screenshot', 'desktop_window', 'desktop_input',
+  'desktop_clipboard', 'desktop_process', 'desktop_wait_for', 'desktop_find_text', 'desktop_click_text',
 ]);
 
 // --- backup ---
