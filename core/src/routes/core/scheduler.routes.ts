@@ -111,6 +111,14 @@ export function createSchedulerRoutes(_ctx: RouteContext): RouteHandler[] {
           trigger: b.test === true ? 'test' : 'manual',
         });
         if (!job) return { success: false, error: { code: 'NOT_FOUND', message: `No job "${id}"` } };
+        if (job.disabledByEnv) {
+          // runJob refused (the LM_DISABLE_JOBS kill switch is checked at run time and outranks
+          // even an explicit manual run). Say so — returning the unchanged job view here looked
+          // exactly like a successful trigger, so the caller never learned the run didn't happen.
+          return { success: false, error: { code: 'ENV_DISABLED', message:
+            `Job "${id}" is disabled by LM_DISABLE_JOBS in the Core environment — the run was REFUSED and did not execute. ` +
+            `Remove "${id}" from LM_DISABLE_JOBS (in the environment Core was launched with) to allow it to run.` } };
+        }
         return { success: true, data: job };
       },
     },

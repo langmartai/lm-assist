@@ -197,6 +197,113 @@ test('a job THIS process mutated after the hand-edit keeps the in-process value 
   assert.equal(readStore().find((j) => j.id === 'worktree-gc')!.enabled, true);
 });
 
+// ── Review finding 1: finishRun must not write back a stale pre-run snapshot ──
+
+test('a hand-edit merged MID-RUN survives finishRun (no stale pre-run snapshot write-back)', async () => {
+  const s = freshScheduler();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  s.registerHandler('slow', async () => { await gate; return { result: 'done' }; });
+  s.upsertJob({ id: 'j1', type: 'slow', enabled: true, intervalMinutes: 60 });
+
+  const origLog = console.log; const origErr = console.error;
+  console.log = () => {}; console.error = () => {};
+  try {
+    const p = s.runJob('j1', { force: true }); // the handler is now pending on the gate
+    // Incident response lands MID-RUN: the operator disarms j1 directly in the file…
+    handEdit((arr) => { arr.find((j) => j.id === 'j1')!.enabled = false; });
+    // …and an unrelated persist merges that edit into memory (defect-1 behavior, already shipped).
+    s.upsertJob({ id: 'unrelated', type: 'noop', enabled: false });
+    assert.equal(s.getJob('j1')!.enabled, false, 'precondition: the merge landed while j1 was running');
+    release();
+    const v = await p;
+    assert.equal(v!.lastRun!.result, 'done', 'the run outcome is recorded');
+    assert.equal(v!.enabled, false, 'the returned view reflects the CURRENT job, not the pre-run snapshot');
+    assert.equal(s.getJob('j1')!.enabled, false, 'finishRun must not write back the stale pre-run snapshot');
+    assert.equal(s.getJob('j1')!.lastRun!.result, 'done', 'run state landed on the current job');
+    assert.equal(readStore().find((j) => j.id === 'j1')!.enabled, false, 'the disarm survives on disk');
+  } finally {
+    console.log = origLog; console.error = origErr;
+  }
+});
+
+test('a job deleted MID-RUN stays deleted (finishRun must not resurrect it)', async () => {
+  const s = freshScheduler();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  s.registerHandler('slow', async () => { await gate; return { result: 'done' }; });
+  s.upsertJob({ id: 'doomed', type: 'slow', enabled: true, intervalMinutes: 60 });
+
+  const origLog = console.log; console.log = () => {};
+  try {
+    const p = s.runJob('doomed', { force: true });
+    assert.equal(s.deleteJob('doomed'), true, 'precondition: deleted while running');
+    release();
+    const v = await p;
+    assert.equal(v!.lastRun!.result, 'done', 'the caller still sees the finished run');
+    assert.equal(s.getJob('doomed'), null, 'a job deleted mid-run stays deleted');
+    assert.ok(!readStore().some((j) => j.id === 'doomed'), 'and stays deleted on disk');
+  } finally {
+    console.log = origLog;
+  }
+});
+
+// ── Review finding 2: the tick adopts hand-edits BEFORE selecting due jobs ──
+
+test('a hand-edit disarming a DUE job stops the next tick (merge at tick time, not only at persist)', async () => {
+  const s = freshScheduler();
+  let runs = 0;
+  s.registerHandler('probe2', async () => { runs++; return { result: 'ran' }; });
+  // Disable every seeded built-in in-process so NOTHING else is due: otherwise a due built-in runs
+  // first and its finishRun→persist merges the hand-edit as a side effect, masking the defect.
+  for (const j of s.listJobs()) if (j.enabled) s.upsertJob({ id: j.id, enabled: false });
+  s.upsertJob({ id: 'd1', type: 'probe2', enabled: true, intervalMinutes: 1 }); // never run → due NOW
+  // Incident response: the operator disarms the due job directly in the file. No API call follows —
+  // the only thing between the edit and a destructive run is the next tick.
+  handEdit((arr) => { arr.find((j) => j.id === 'd1')!.enabled = false; });
+
+  (s as any)._started = true; // arm tick() without start()'s real timer/handler registration
+  const origErr = console.error; const origLog = console.log;
+  const errs1: string[] = [];
+  console.error = (...a: unknown[]) => errs1.push(a.map(String).join(' '));
+  console.log = () => {};
+  try { await (s as any).tick(); } finally { console.error = origErr; console.log = origLog; }
+
+  assert.equal(runs, 0, 'the tick must adopt the on-disk disarm BEFORE selecting due jobs');
+  assert.equal(s.getJob('d1')!.enabled, false, 'the hand-edit is in memory now');
+  assert.ok(errs1.some((l) => /hand-edit/i.test(l)), `adoption is logged loudly, got: ${JSON.stringify(errs1)}`);
+
+  // mtime unchanged → the next tick is one cheap fs.stat: no re-read, no re-log.
+  const errs2: string[] = [];
+  console.error = (...a: unknown[]) => errs2.push(a.map(String).join(' '));
+  console.log = () => {};
+  try { await (s as any).tick(); } finally { console.error = origErr; console.log = origLog; }
+  assert.equal(errs2.filter((l) => /hand-edit/i.test(l)).length, 0, 'no re-log when the mtime is unchanged');
+});
+
+// ── Review finding 3: a manual run of an env-disabled job is refused, not silently ignored ──
+
+test('POST /scheduler/jobs/:id/run on an LM_DISABLE_JOBS job returns a structured ENV_DISABLED refusal', async () => {
+  freshScheduler(); // fresh store dir for the route singleton's persist path
+  const routes = createSchedulerRoutes({} as any);
+  const run = routes.find((r) => r.method === 'POST' && String(r.pattern).includes('run'));
+  assert.ok(run, 'POST /scheduler/jobs/:id/run route exists');
+
+  process.env.LM_DISABLE_JOBS = 'stall-monitor';
+  const origLog = console.log; console.log = () => {};
+  try {
+    const res: any = await run!.handler({ params: { id: 'stall-monitor' }, body: {} } as any, {} as any);
+    assert.equal(res.success, false, 'the caller must learn the run did NOT happen');
+    assert.equal(res.error.code, 'ENV_DISABLED');
+    const msg = String(res.error.message);
+    assert.ok(msg.includes('LM_DISABLE_JOBS'), `the refusal must name the env var, got: ${msg}`);
+    assert.ok(msg.includes('stall-monitor'), `the refusal must name the job id, got: ${msg}`);
+  } finally {
+    delete process.env.LM_DISABLE_JOBS;
+    console.log = origLog;
+  }
+});
+
 test('config hand-edits (e.g. flipping dryRun back on) survive too', () => {
   const s = freshScheduler();
   s.upsertJob({ id: 'worktree-gc', config: { dryRun: false } }); // operator armed it earlier

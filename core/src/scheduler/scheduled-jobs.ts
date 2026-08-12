@@ -574,6 +574,8 @@ export class ScheduledJobs {
    * adopt the on-disk enabled/schedule/config fields for every job this process has NOT itself
    * mutated since the last sync — and log the hand-edit loudly. (Run state — lastRun/runLog —
    * stays in-memory: this process's runs are always newer than the edited file's copies.)
+   * Called from persist() (protects the file) AND from the top of every tick() (protects the
+   * RUN: a hand-edit disarming a due job must stop the very next tick).
    */
   private mergeHandEdits(f: string): void {
     let mtimeMs: number;
@@ -584,6 +586,11 @@ export class ScheduledJobs {
       console.error(`[ScheduledJobs] ⚠️ HAND-EDIT DETECTED in ${f} but the file is unparseable (${e?.message || e}) — keeping in-memory state`);
       return;
     }
+    // A successful read = we are synced with this disk state; without this mark a tick-time
+    // merge (no rewrite follows) would re-read and re-log the same edit every minute.
+    // A parse FAILURE deliberately does NOT mark synced: the edit is not being honored, so it
+    // stays loud until the file is fixed or a persist() rewrites it.
+    this.lastDiskMtimeMs = mtimeMs;
     if (!Array.isArray(arr)) return;
     const taken: string[] = [];
     const kept: string[] = [];
@@ -634,6 +641,12 @@ export class ScheduledJobs {
 
   private async tick(): Promise<void> {
     if (!this._started) return;
+    // Adopt hand-edits BEFORE selecting due jobs: an operator disarming a due job directly in
+    // the file (the incident case: enabled:false to stop a destructive job) must stop THIS
+    // tick — merging only inside persist() protects the file but not the run, because the
+    // tick reads in-memory state. Cost: one fs.stat per tick; a full read only when the
+    // mtime moved (mergeHandEdits marks the file synced after adopting).
+    this.mergeHandEdits(jobsFilePath());
     const now = Date.now();
     for (const job of this.jobs.values()) {
       if (this.running.has(job.id)) continue;
@@ -707,14 +720,26 @@ export class ScheduledJobs {
     }
   }
 
-  /** Persist a finished run record onto the job and return a fresh view. */
+  /**
+   * Persist a finished run record and return a fresh view. The job is RE-FETCHED from the map:
+   * the snapshot the runner captured before awaiting the handler may be STALE — a hand-edit
+   * merge or an API upsert can land while the handler runs, and writing the snapshot back
+   * would silently undo it (the incident case: an operator disarming a job mid-run). applyRun
+   * puts only the run-state fields (lastRun/runLog/lastRunAt/lastResult/lastStatus/runCount)
+   * onto whatever the job looks like NOW; the current enabled/schedule/config always win.
+   */
   private finishRun(job: ScheduledJob, record: JobRunRecord): ScheduledJobView {
-    const updated = applyRun(job, record, Date.now());
-    this.jobs.set(job.id, updated);
-    this.persist();
     this.running.delete(job.id); // clear before viewOf so the snapshot isn't stale
     const tag = record.trigger === 'test' ? 'tested' : record.status === 'skipped' ? 'skipped' : 'ran';
     console.log(`[ScheduledJobs] ${tag} "${job.id}": ${record.result}`);
+    const current = this.jobs.get(job.id);
+    if (!current) {
+      // Deleted while running — it stays deleted. Report the outcome to the caller only.
+      return this.viewOf(applyRun(job, record, Date.now()));
+    }
+    const updated = applyRun(current, record, Date.now());
+    this.jobs.set(job.id, updated);
+    this.persist();
     return this.viewOf(updated);
   }
 
