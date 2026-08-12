@@ -78,6 +78,7 @@ import { DESKTOP_TOOL_DEFS, DESKTOP_HANDLERS } from './desktop';
 import { BACKUP_TOOL_DEFS, BACKUP_HANDLERS } from './backup';
 import { ELEVATED_TOOL_DEFS, ELEVATED_HANDLERS } from './elevated';
 import { VM_TOOL_DEFS, VM_HANDLERS } from './vm';
+import { CONTAINER_TOOL_DEFS, CONTAINER_HANDLERS } from './container';
 import { coworkCreateTaskDef, handleCoworkCreateTask } from './cowork';
 
 // ─── Tool definitions ────────────────────────────────────────────
@@ -1200,6 +1201,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...ELEVATED_TOOL_DEFS,
   // vm management (Hyper-V / KVM: status+list read; create/start/stop/snapshot write; delete admin)
   ...VM_TOOL_DEFS,
+  // container management (Docker: status+logs read; run/power write; delete admin)
+  ...CONTAINER_TOOL_DEFS,
   // ccr — Claude Code remote support
   ccSessionsToolDef,
   ccrPreflightToolDef,
@@ -2428,6 +2431,8 @@ export const EXPANDED_HANDLERS: Record<
   ...ELEVATED_HANDLERS,
   // vm management — each wraps a /vm/* loopback route
   ...VM_HANDLERS,
+  // container management — each wraps a /container/* loopback route
+  ...CONTAINER_HANDLERS,
   // ccr — Claude Code remote support
   cc_sessions: (a) => handleCcSessions(a),
   ccr_preflight: handleCcrPreflight,

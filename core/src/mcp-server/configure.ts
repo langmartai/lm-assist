@@ -222,6 +222,13 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   vm_power: 'write',
   vm_snapshot: 'write',
   vm_delete: 'admin',
+  // container management (Docker): reads free; run/power write — power gates
+  // non-managed containers behind force; delete is irreversible → admin
+  container_status: 'read',
+  container_run: 'write',
+  container_power: 'write',
+  container_logs: 'read',
+  container_delete: 'admin',
   // ccr — Claude Code remote support
   cc_sessions: 'read',
   ccr_preflight: 'read',

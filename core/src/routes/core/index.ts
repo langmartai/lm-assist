@@ -79,6 +79,7 @@ import { createDesktopRoutes } from './desktop.routes';
 import { createBackupRoutes } from './backup.routes';
 import { createElevatedRoutes } from './elevated.routes';
 import { createVmRoutes } from './vm.routes';
+import { createContainerRoutes } from './container.routes';
 import { createCoworkRoutes } from './cowork.routes';
 import { createMachineAccessRoutes } from './machine-access.routes';
 import { createVoiceRoutes } from './voice.routes';
@@ -160,6 +161,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createBackupRoutes(ctx),
     ...createElevatedRoutes(ctx),
     ...createVmRoutes(ctx),
+    ...createContainerRoutes(ctx),
     ...createCoworkRoutes(ctx),
     ...createMachineAccessRoutes(ctx),
     ...createVoiceRoutes(ctx),

@@ -161,7 +161,28 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 // of real capability, descriptions already trimmed to trigger words). New budget
 // 295,000 B -> ~4,300 B headroom. Still additive new tools, not re-inlined
 // boilerplate; the shared-boilerplate guard above still passes.
-const CATALOG_BUDGET_BYTES = 295_000;
+//
+// MEASURED 2026-08-12, container (Docker) management landing next to VM
+// management — a deliberate +5,000 B raise, the arithmetic it is owed:
+//
+//   285 tools, catalogue          296,090 B  (was 291,040 B at 280 tools)
+//   the old 295,000 B budget        1,090 B OVER  (the guard caught it, as designed)
+//   new 300,000 B budget         -> 3,910 B headroom (~4 tools of slack)
+//
+//   container: 5 tools = 5,045 B, of which 1,235 B (24%) is the injected
+//   node-param paragraph and ~1,700 B is JSON structure; only ~2,100 B is prose
+//   this feature wrote. The family was already consolidated to fit — list is
+//   absorbed into container_status and start/stop/restart into one
+//   container_power, exactly as vm_* did — so there is no cheap verb to drop;
+//   trimming further would cost the caller the facts that route a call
+//   (which host has a daemon, what force:true protects).
+//
+//   🔴 The real lever remains the shared node paragraph: 247 B x 285 tools =
+//   ~70,400 B, 23.8% of the entire catalogue, paid by every conversation before
+//   a single tool is called. Halving it would fund ~35 tools of growth — more
+//   than every per-tool trim on this surface put together. Until someone takes
+//   that on, each new family costs a raise like this one.
+const CATALOG_BUDGET_BYTES = 300_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};
