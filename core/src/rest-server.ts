@@ -585,9 +585,10 @@ export class TierRestServer {
       // (see core/src/whatsapp/webhook.ts), enforced inside the route handler.
       const whatsappWebhookExempt = authPath === '/whatsapp/webhook';
       if (apiAuthEnabled() && authPath !== '/health' && !exemptLocal && !enrollExempt && !whatsappWebhookExempt) {
-        // Header everywhere; the ?apiKey= query fallback ONLY on the voice WS
-        // paths (browsers can't set WS-upgrade headers) — see api-token.ts.
-        const providedKey = resolveProvidedApiKey(req.headers['x-api-key'], req.url || '');
+        // Header only — query-string credentials are never accepted on the
+        // HTTP gate (the voice WS upgrades authenticate their own ?token=
+        // inside routeUpgrade's handlers, not here) — see api-token.ts.
+        const providedKey = resolveProvidedApiKey(req.headers['x-api-key']);
         // Full ring token first; then the narrow scoped-token fallback (browser
         // chat clients — only the scope's route allow-list, see auth/scoped-token.ts).
         const okAuth = isValidToken(providedKey) || (this.options.apiKey && providedKey === this.options.apiKey)

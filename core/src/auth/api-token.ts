@@ -8,17 +8,28 @@
  *
  * Rotation never cuts anyone off: the worker keeps a RING of the last
  * RING_SIZE tokens (default 3) all valid at once, so a just-retired token
- * stays good for RING_SIZE-1 more rotation windows — a couple of windows of
- * grace for any client to notice the file changed and re-read. A client that
- * still presents an aged-out token gets a 401 and re-reads + retries.
+ * stays good for a GRACE window (default 7 days, LM_TOKEN_GRACE_MS) — long
+ * enough for any client to notice the file changed and re-read. A retired
+ * token past the grace TTL (or aged out of the ring) gets a 401; the client
+ * re-reads the file + retries.
  *
- * Rotation state (lastRotatedAt + the grace ring) persists in a sidecar,
- * `<dataDir>/api-token.meta.json` (0600), so restarts neither restart the
- * rotation window nor drop the grace tokens. The token file itself stays a
+ * Rotation state (lastRotatedAt + the grace ring with per-token retiredAt)
+ * persists in a sidecar, `<dataDir>/api-token.meta.json` (0600, format v2),
+ * so restarts neither restart the rotation window nor drop the grace tokens
+ * — and the TTL holds ACROSS restarts too. The token file itself stays a
  * RAW token string — external consumers (core.sh, bin/lm-assist.js,
  * ccr/ccr-bridge.js, core/hooks/*, core/scripts/lib/loopback-auth.js, the web
- * SSR layout/server-auth, the e2e scripts) cat/trim it as-is. A missing or
- * corrupt sidecar fails open: current file token only, window re-stamped now.
+ * SSR layout/server-auth, the e2e scripts) cat/trim it as-is.
+ *
+ * A missing or corrupt sidecar over an EXISTING token file seeds the rotation
+ * window from the token file's mtime: the file is written only at creation/
+ * rotation, so its mtime is an honest lower bound on the token's age. This is
+ * what makes the FIRST deploy of this code rotate an already-overdue token
+ * (the measured incident: a 49-day-old token vs a 30-day window) instead of
+ * granting it a fresh full window. Only a missing token file (fresh install)
+ * or an unreadable stat stamps the window from `now`. A v1-format sidecar
+ * (grace entries as bare strings, no retiredAt) loads fail-open: entries are
+ * treated as retired at load time.
  *
  * The token is NEVER exposed to the LLM / MCP tool layer: it is read from disk
  * and attached server-side. It is a SEPARATE secret from the langmart hub API
@@ -28,6 +39,7 @@
  *   LM_ASSIST_API_AUTH=0|off|false   disable enforcement (emergency kill-switch)
  *   LM_ASSIST_API_TOKEN_RING=N       ring depth (default 3)
  *   LM_ASSIST_API_TOKEN_ROTATE_MS=N  rotation interval ms (default 30 days)
+ *   LM_TOKEN_GRACE_MS=N              retired-token grace TTL ms (default 7 days)
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -37,6 +49,15 @@ import { networkInterfaces } from 'os';
 
 const RING_SIZE = Math.max(1, Number(process.env.LM_ASSIST_API_TOKEN_RING) || 3);
 const ROTATE_MS = Math.max(1_000, Number(process.env.LM_ASSIST_API_TOKEN_ROTATE_MS) || 30 * 24 * 60 * 60 * 1000);
+// How long a RETIRED token stays valid after rotation. 7 days: every consumer
+// of the token file re-reads it within one page render / relay reconnect /
+// Core restart, and the fleet's slowest re-readers (a web SSR process that
+// cached the token at boot, a long-lived hub relay) all cycle well inside a
+// week — while a whole rotation window (30 days) of grace would let a leaked
+// retired token live for up to two windows. Persisted per-token (retiredAt in
+// the sidecar) so the TTL holds across restarts, enforced at load, at
+// rotation, and on cross-process reseed.
+const GRACE_MS = Math.max(1_000, Number(process.env.LM_TOKEN_GRACE_MS) || 7 * 24 * 60 * 60 * 1000);
 // Node timer delays are a signed 32-bit int of ms (~24.8 days max). A raw delay
 // above this overflows and Node clamps it to 1ms — firing continuously. The
 // 30-day default exceeds it, so rotation must be armed in capped chunks.
@@ -55,8 +76,14 @@ function gen(): string {
   return randomBytes(32).toString('hex');
 }
 
-// index 0 = current token; the rest are still-valid grace tokens.
-let ring: string[] = [];
+// index 0 = current token (retiredAt null); the rest are still-valid grace
+// tokens, each stamped with WHEN it was rotated out so the grace TTL can be
+// enforced at load, at rotation and on reseed — including across restarts.
+interface RingEntry {
+  token: string;
+  retiredAt: number | null; // null = the current token
+}
+let ring: RingEntry[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 // Epoch ms of the last rotation (or of first boot / a fresh stamp when the
 // sidecar was missing/corrupt). Persisted so restarts do NOT restart the window.
@@ -67,23 +94,45 @@ let ringFileMtimeMs = -1;
 // Most recent full countdown armed by startApiTokenRotation (test observability).
 let armedMs: number | null = null;
 
+interface GraceEntry {
+  token: string;
+  retiredAt: number; // epoch ms the token was rotated out (grace TTL anchor)
+}
 interface ApiTokenMeta {
   lastRotatedAt: number;
-  previous: string[]; // grace tokens, newest first (ring minus the current token)
+  previous: GraceEntry[]; // grace tokens, newest first (ring minus the current)
 }
 
-function readMeta(): ApiTokenMeta | null {
+/** Read + normalize the sidecar. Sidecar format v2 stores grace entries as
+ *  `{token, retiredAt}`; a v1 sidecar (bare token strings, no retiredAt) —
+ *  written by the previous build — loads FAIL-OPEN: each entry is treated as
+ *  retired at `now`, so it gets one full grace window from this load rather
+ *  than being cut off (or living forever). Absent/corrupt → null. */
+function readMeta(now: number): ApiTokenMeta | null {
   try {
     const raw = JSON.parse(fs.readFileSync(metaFile(), 'utf8'));
     const last = raw?.lastRotatedAt;
     if (typeof last !== 'number' || !Number.isFinite(last) || last <= 0) return null;
-    const previous = Array.isArray(raw?.previous)
-      ? raw.previous.filter((t: unknown): t is string => typeof t === 'string' && t.length > 0).slice(0, RING_SIZE - 1)
-      : [];
+    const previous: GraceEntry[] = [];
+    if (Array.isArray(raw?.previous)) {
+      for (const e of raw.previous.slice(0, RING_SIZE - 1)) {
+        if (typeof e === 'string' && e.length > 0) {
+          previous.push({ token: e, retiredAt: now }); // v1 entry — fail open
+        } else if (e && typeof e === 'object' && typeof e.token === 'string' && e.token.length > 0) {
+          const at = typeof e.retiredAt === 'number' && Number.isFinite(e.retiredAt) && e.retiredAt > 0 ? e.retiredAt : now;
+          previous.push({ token: e.token, retiredAt: at });
+        }
+      }
+    }
     return { lastRotatedAt: last, previous };
   } catch {
-    return null; // absent/corrupt → caller fails open (fresh stamp, never crash)
+    return null; // absent/corrupt → caller fails open (mtime seed, never crash)
   }
+}
+
+/** A grace entry still inside its TTL at `now`. */
+function inGrace(e: GraceEntry, now: number): boolean {
+  return now - e.retiredAt <= GRACE_MS;
 }
 
 function writeMeta(meta: ApiTokenMeta): void {
@@ -91,7 +140,8 @@ function writeMeta(meta: ApiTokenMeta): void {
   try {
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const tmp = f + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify({ v: 1, ...meta }) + '\n', { mode: 0o600 });
+    const previous = meta.previous.map((e) => ({ token: e.token, retiredAt: e.retiredAt }));
+    fs.writeFileSync(tmp, JSON.stringify({ v: 2, lastRotatedAt: meta.lastRotatedAt, previous }) + '\n', { mode: 0o600 });
     fs.renameSync(tmp, f); // atomic replace
     try {
       fs.chmodSync(f, 0o600);
@@ -99,8 +149,13 @@ function writeMeta(meta: ApiTokenMeta): void {
       /* best effort */
     }
   } catch {
-    /* best effort — the window just re-stamps on the next boot */
+    /* best effort — the window just re-seeds on the next boot */
   }
+}
+
+/** The grace entries currently in the ring (everything but the current token). */
+function graceEntries(): GraceEntry[] {
+  return ring.slice(1).map((e) => ({ token: e.token, retiredAt: e.retiredAt ?? Date.now() }));
 }
 
 function noteTokenFileMtime(): void {
@@ -133,7 +188,7 @@ function writeToken(tok: string): void {
  *  restart keeps BOTH the current token and the persisted grace ring valid,
  *  and keeps counting the same rotation window instead of restarting it. */
 export function initApiToken(now: number = Date.now()): string {
-  if (ring.length) return ring[0];
+  if (ring.length) return ring[0].token;
   let seed: string | null = null;
   try {
     const c = fs.readFileSync(tokenFile(), 'utf8').trim();
@@ -143,38 +198,47 @@ export function initApiToken(now: number = Date.now()): string {
   }
   noteTokenFileMtime();
   if (seed) {
-    const meta = readMeta();
+    const meta = readMeta(now);
     if (meta) {
-      ring = [seed, ...meta.previous.filter((t) => t !== seed)].slice(0, RING_SIZE);
+      ring = [
+        { token: seed, retiredAt: null },
+        ...meta.previous.filter((e) => e.token !== seed && inGrace(e, now)),
+      ].slice(0, RING_SIZE);
       lastRotatedAt = meta.lastRotatedAt;
     } else {
-      // Missing/corrupt sidecar — fail open to the pre-sidecar behavior:
-      // current token only, window starts NOW (stamped so the next boot keeps
-      // counting instead of restarting from zero again).
-      ring = [seed];
-      lastRotatedAt = now;
-      writeMeta({ lastRotatedAt: now, previous: [] });
+      // Missing/corrupt sidecar over an EXISTING token file. Do NOT stamp the
+      // window from `now`: that would hand an already-overdue token a fresh
+      // full window on the very first boot with this code (the measured
+      // incident — a 49-day-old fleet token vs a 30-day window). The token
+      // file is written only at creation/rotation, so its mtime is an honest
+      // lower bound on the token's age: seed the window from it, and
+      // startApiTokenRotation rotates immediately when it is overdue. Only an
+      // unreadable stat fails open to `now`.
+      const seededAt = ringFileMtimeMs > 0 ? ringFileMtimeMs : now;
+      ring = [{ token: seed, retiredAt: null }];
+      lastRotatedAt = seededAt;
+      writeMeta({ lastRotatedAt: seededAt, previous: [] });
     }
   } else {
     const t = gen();
-    ring = [t];
+    ring = [{ token: t, retiredAt: null }];
     lastRotatedAt = now;
     writeToken(t);
     writeMeta({ lastRotatedAt: now, previous: [] });
   }
-  return ring[0];
+  return ring[0].token;
 }
 
 export function currentApiToken(): string {
-  return ring.length ? ring[0] : initApiToken();
+  return ring.length ? ring[0].token : initApiToken();
 }
 
 export function isValidToken(tok: string | string[] | undefined | null): boolean {
   if (!tok) return false;
   const t = Array.isArray(tok) ? tok[0] : String(tok);
   if (!ring.length) initApiToken();
-  if (ring.includes(t)) return true;
-  return reseedIfFileChanged() && ring.includes(t);
+  if (ring.some((e) => e.token === t)) return true;
+  return reseedIfFileChanged() && ring.some((e) => e.token === t);
 }
 
 /** On an auth miss, absorb a rotation performed by ANOTHER core process sharing
@@ -198,9 +262,20 @@ function reseedIfFileChanged(): boolean {
     /* keep current ring */
   }
   if (!fileTok) return false;
-  const meta = readMeta();
-  const merged = [fileTok, ...(meta ? meta.previous : []), ...ring];
-  ring = merged.filter((t, i) => merged.indexOf(t) === i).slice(0, RING_SIZE);
+  const now = Date.now();
+  const meta = readMeta(now);
+  // Our former current token was retired by the OTHER process' rotation; its
+  // sidecar normally carries the honest retiredAt — a missing/corrupt sidecar
+  // fails open to `now`. Grace entries past the TTL never resurrect.
+  const candidates: GraceEntry[] = [
+    ...(meta ? meta.previous : []),
+    ...ring.map((e) => ({ token: e.token, retiredAt: e.retiredAt ?? now })),
+  ];
+  const merged: RingEntry[] = [{ token: fileTok, retiredAt: null }];
+  for (const e of candidates) {
+    if (inGrace(e, now) && !merged.some((m) => m.token === e.token)) merged.push(e);
+  }
+  ring = merged.slice(0, RING_SIZE);
   if (meta) lastRotatedAt = meta.lastRotatedAt;
   return true;
 }
@@ -208,10 +283,16 @@ function reseedIfFileChanged(): boolean {
 export function rotateApiToken(now: number = Date.now()): string {
   if (!ring.length) initApiToken(now);
   const next = gen();
-  ring = [next, ...ring].slice(0, RING_SIZE);
+  // The outgoing current token is retired AT this rotation; grace entries past
+  // their TTL are dropped here (as well as at load), so a retired token never
+  // outlives GRACE_MS just because the ring has spare depth.
+  const retired: RingEntry[] = ring
+    .map((e) => (e.retiredAt === null ? { token: e.token, retiredAt: now } : e))
+    .filter((e) => inGrace(e as GraceEntry, now));
+  ring = [{ token: next, retiredAt: null }, ...retired].slice(0, RING_SIZE);
   lastRotatedAt = now;
   writeToken(next);
-  writeMeta({ lastRotatedAt: now, previous: ring.slice(1) });
+  writeMeta({ lastRotatedAt: now, previous: graceEntries() });
   return next;
 }
 
@@ -277,7 +358,7 @@ function readTokenFromFile(): string | null {
 /** The token to send: the live ring token when called in the worker process,
  *  else the file (for a separate process such as the stdio MCP). */
 export function localApiToken(): string | null {
-  return ring.length ? ring[0] : readTokenFromFile();
+  return ring.length ? ring[0].token : readTokenFromFile();
 }
 
 /** Headers to spread into an outbound loopback request to the worker API. */
@@ -291,30 +372,21 @@ export function apiAuthEnabled(): boolean {
   return v !== '0' && v !== 'off' && v !== 'false';
 }
 
-/** The ONLY paths allowed to authenticate via the `apiKey` query parameter:
- *  the voice WebSocket upgrade paths — a browser cannot set headers on a WS
- *  upgrade, so `web/src/lib/voice-url.ts` rides the token in the query string
- *  (the upgrade handlers themselves validate `?token=`; this list covers the
- *  same paths on the plain-HTTP side). Everywhere else the token must arrive
- *  as `x-api-key`: a query token lands in URLs, access logs, Referer headers
- *  and browser resource-timing entries. */
-const QUERY_APIKEY_PATHS = new Set(['/voice/stt/ws', '/voice/claude/ws']);
-
 /** Resolve the credential a request presents to the rest-server auth gate:
- *  the `x-api-key` header anywhere, or — on the voice WS paths only — the
- *  `?apiKey=` query fallback. Null means "no acceptable credential offered". */
-export function resolveProvidedApiKey(
-  header: string | string[] | undefined,
-  url: string,
-): string | null {
+ *  the `x-api-key` header, ONLY. Null means "no credential offered".
+ *
+ *  Query-string acceptance was removed entirely: a query token lands in URLs,
+ *  access logs, Referer headers and browser resource-timing entries, and the
+ *  one legitimate query-credential case never reaches this gate. Verified: no
+ *  HTTP route exists at /voice/stt/ws or /voice/claude/ws — the voice WS
+ *  upgrades ride `server.on('upgrade')` → routeUpgrade (rest-server.ts) and
+ *  authenticate their own `?token=` INSIDE the upgrade handlers
+ *  (voice-relay.ts / claude-voice-relay.ts), so they never traverse the HTTP
+ *  request path, and no repo consumer sends `?apiKey=` (both voice-url.ts
+ *  builders send `?token=`). */
+export function resolveProvidedApiKey(header: string | string[] | undefined): string | null {
   const h = Array.isArray(header) ? header[0] : header;
-  if (h) return h;
-  if (!QUERY_APIKEY_PATHS.has(url.split('?')[0])) return null;
-  try {
-    return new URL(url, 'http://localhost').searchParams.get('apiKey');
-  } catch {
-    return null;
-  }
+  return h || null;
 }
 
 let _localAddrs: Set<string> | null = null;
