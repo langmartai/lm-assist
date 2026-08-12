@@ -961,9 +961,7 @@ async function evaluateEngagement(
   let readyUnbound: string[] = [];
   if (deps.listAllForSchedule) {
     try {
-      const all = await deps.listAllForSchedule();
-      const byId = new Map(all.map((m) => [m.id, m]));
-      readyUnbound = computeSchedule(all).ready.filter((id) => !byId.get(id)?.binding?.sessionId);
+      readyUnbound = computeReadyUnbound(await deps.listAllForSchedule());
     } catch { /* best-effort — a schedule read failure must never sink the tick */ }
   }
   const starve = advanceStarvation(readyUnbound, eng.unplacedTicks, deps.starvationTicks ?? STARVATION_TICKS);
@@ -1032,6 +1030,16 @@ async function evaluateEngagement(
 }
 
 /**
+ * THE "unplaced work" set: `mission_schedule.ready` minus anything already bound.
+ * One definition for the engagement trigger AND the advisory's live re-validation —
+ * deriving either any other way would recreate the exact disagreement bl_28543c78 fixed.
+ */
+function computeReadyUnbound(all: Mission[]): string[] {
+  const byId = new Map(all.map((m) => [m.id, m]));
+  return computeSchedule(all).ready.filter((id) => !byId.get(id)?.binding?.sessionId);
+}
+
+/**
  * Build the placement block appended to a drive (bl_1c861246 step A).
  *
  * `node_select` shipped reachable-in-principle and unused-in-fact: the pass directive and
@@ -1048,10 +1056,37 @@ async function buildPlacementAdvisory(ids: string[], deps: SupervisorDeps): Prom
   try {
     const all = await deps.listAllForSchedule();
     const byId = new Map(all.map((m) => [m.id, m]));
+    // ── Ghost guard (bl_939f2dd3) ──
+    // `byId.get(id)` alone is a tautology: it re-reads the same raw replica that produced
+    // the candidate ids, so it can drop an id whose doc VANISHED but never a doc the local
+    // store still carries. Observed 2026-08-04/05: two missions deleted from every reachable
+    // store survived in the leader's local replica (the sync engine is pull-only additive —
+    // a missed 'deleted' notify is never healed, and cluster scoping is enforced at pull
+    // time only) and were re-advertised on three consecutive passes. So each candidate is
+    // re-validated against the LIVE universe at emission time:
+    //   • still in `computeReadyUnbound` — the same computeSchedule + unbound predicate
+    //     that defines `mission_schedule.ready` (also drops a mission the starvation net
+    //     placed between the snapshot and this build);
+    //   • owned by THIS cluster — the same `placementAllowed` gate the spawn safety net
+    //     applies before acting, keyed on `env.host` when pinned, else `ownerNode`. A
+    //     stale foreign doc fails it; a legacy doc with neither field passes (fail open).
+    // A cluster-map read failure skips ONLY the ownership check — advice must never go
+    // dark on a transient read error.
+    const live = new Set(computeReadyUnbound(all));
+    let clusterCtx: { records: ClusterRecord[]; selfId: string | null; cluster: string } | null = null;
+    try {
+      clusterCtx = {
+        records: deps.listClusterRecords ? await deps.listClusterRecords() : await getClusterRecords(),
+        selfId: deps.selfId ? deps.selfId() : thisNode(),
+        cluster: deps.myCluster ? deps.myCluster() : getMyCluster(),
+      };
+    } catch { clusterCtx = null; }
     const items: PlacementAdvice[] = [];
     for (const id of ids) {
       const m = byId.get(id);
       if (!m) continue;
+      if (!live.has(id)) continue;
+      if (clusterCtx && !placementAllowed(m.env.host ?? m.ownerNode, clusterCtx.records, clusterCtx.selfId, clusterCtx.cluster)) continue;
       let chosen: { node: string; why: string[] } | null = null;
       let error: string | undefined;
       if (!m.env.host && deps.selectNode) {
