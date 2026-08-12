@@ -454,7 +454,10 @@ export class DockerBackend implements ContainerBackend {
     const rows = jsonLines(
       await docker(['images', '--format', '{{json .}}'], IMAGES_TIMEOUT_MS, 'image list'),
     );
-    return rows.slice(0, MAX_IMAGES_LISTED).map((r) => ({
+    // No slice here — the service owns the cap, so `imagesTotal` can be the
+    // REAL count rather than the capped one (a cap that hides the total reads
+    // as completeness; see the bounded-is-not-honest rule in service.ts).
+    return rows.map((r) => ({
       repository: String(r.Repository || ''),
       tag: String(r.Tag || ''),
       id: String(r.ID || ''),

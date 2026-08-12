@@ -33,6 +33,7 @@ import {
   ENV_KEY_RE,
   IMAGE_REF_RE,
   MAX_CONTAINERS_LISTED,
+  MAX_IMAGES_LISTED,
   MAX_ENV_VALUE_CHARS,
   MAX_LOG_LINES,
   MAX_NOTES_CHARS,
@@ -397,7 +398,12 @@ export async function containerList(): Promise<{ containers: ContainerInfo[]; to
 
 export async function containerImages(): Promise<{ images: ContainerImage[]; imagesTotal: number; imagesTruncated: boolean }> {
   const all = await containerBackend().images();
-  return { images: all, imagesTotal: all.length, imagesTruncated: all.length >= 100 };
+  const imagesTruncated = all.length > MAX_IMAGES_LISTED;
+  return {
+    images: imagesTruncated ? all.slice(0, MAX_IMAGES_LISTED) : all,
+    imagesTotal: all.length, // the REAL count, not the capped one
+    imagesTruncated,
+  };
 }
 
 export async function containerLogs(
