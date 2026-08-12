@@ -12,6 +12,14 @@
  * grace for any client to notice the file changed and re-read. A client that
  * still presents an aged-out token gets a 401 and re-reads + retries.
  *
+ * Rotation state (lastRotatedAt + the grace ring) persists in a sidecar,
+ * `<dataDir>/api-token.meta.json` (0600), so restarts neither restart the
+ * rotation window nor drop the grace tokens. The token file itself stays a
+ * RAW token string — external consumers (core.sh, bin/lm-assist.js,
+ * ccr/ccr-bridge.js, core/hooks/*, core/scripts/lib/loopback-auth.js, the web
+ * SSR layout/server-auth, the e2e scripts) cat/trim it as-is. A missing or
+ * corrupt sidecar fails open: current file token only, window re-stamped now.
+ *
  * The token is NEVER exposed to the LLM / MCP tool layer: it is read from disk
  * and attached server-side. It is a SEPARATE secret from the langmart hub API
  * key, with its own blast radius.
@@ -37,6 +45,12 @@ const MAX_TIMER_MS = 2_147_483_647;
 function tokenFile(): string {
   return path.join(getDataDir(), 'api-token');
 }
+// Rotation state sidecar. The token file itself stays a RAW token string —
+// core.sh, bin/lm-assist.js, ccr-bridge, the hooks and the web SSR all cat/trim
+// it as-is, so persisted state lives NEXT TO it, never inside it.
+function metaFile(): string {
+  return tokenFile() + '.meta.json';
+}
 function gen(): string {
   return randomBytes(32).toString('hex');
 }
@@ -44,6 +58,58 @@ function gen(): string {
 // index 0 = current token; the rest are still-valid grace tokens.
 let ring: string[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
+// Epoch ms of the last rotation (or of first boot / a fresh stamp when the
+// sidecar was missing/corrupt). Persisted so restarts do NOT restart the window.
+let lastRotatedAt = 0;
+// mtime of the token file when the ring was last seeded/written — lets an auth
+// miss detect a rotation performed by ANOTHER core process sharing <dataDir>.
+let ringFileMtimeMs = -1;
+// Most recent full countdown armed by startApiTokenRotation (test observability).
+let armedMs: number | null = null;
+
+interface ApiTokenMeta {
+  lastRotatedAt: number;
+  previous: string[]; // grace tokens, newest first (ring minus the current token)
+}
+
+function readMeta(): ApiTokenMeta | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(metaFile(), 'utf8'));
+    const last = raw?.lastRotatedAt;
+    if (typeof last !== 'number' || !Number.isFinite(last) || last <= 0) return null;
+    const previous = Array.isArray(raw?.previous)
+      ? raw.previous.filter((t: unknown): t is string => typeof t === 'string' && t.length > 0).slice(0, RING_SIZE - 1)
+      : [];
+    return { lastRotatedAt: last, previous };
+  } catch {
+    return null; // absent/corrupt → caller fails open (fresh stamp, never crash)
+  }
+}
+
+function writeMeta(meta: ApiTokenMeta): void {
+  const f = metaFile();
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    const tmp = f + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ v: 1, ...meta }) + '\n', { mode: 0o600 });
+    fs.renameSync(tmp, f); // atomic replace
+    try {
+      fs.chmodSync(f, 0o600);
+    } catch {
+      /* best effort */
+    }
+  } catch {
+    /* best effort — the window just re-stamps on the next boot */
+  }
+}
+
+function noteTokenFileMtime(): void {
+  try {
+    ringFileMtimeMs = fs.statSync(tokenFile()).mtimeMs;
+  } catch {
+    ringFileMtimeMs = -1;
+  }
+}
 
 function writeToken(tok: string): void {
   const f = tokenFile();
@@ -57,14 +123,16 @@ function writeToken(tok: string): void {
     } catch {
       /* best effort */
     }
+    noteTokenFileMtime();
   } catch {
     /* best effort — in-process auth still works via the ring */
   }
 }
 
-/** Initialize the ring. Seeds from the file if present so a restart keeps the
- *  token that clients already read still valid. */
-export function initApiToken(): string {
+/** Initialize the ring. Seeds from the token file + sidecar if present so a
+ *  restart keeps BOTH the current token and the persisted grace ring valid,
+ *  and keeps counting the same rotation window instead of restarting it. */
+export function initApiToken(now: number = Date.now()): string {
   if (ring.length) return ring[0];
   let seed: string | null = null;
   try {
@@ -73,12 +141,26 @@ export function initApiToken(): string {
   } catch {
     /* no file yet */
   }
+  noteTokenFileMtime();
   if (seed) {
-    ring = [seed];
+    const meta = readMeta();
+    if (meta) {
+      ring = [seed, ...meta.previous.filter((t) => t !== seed)].slice(0, RING_SIZE);
+      lastRotatedAt = meta.lastRotatedAt;
+    } else {
+      // Missing/corrupt sidecar — fail open to the pre-sidecar behavior:
+      // current token only, window starts NOW (stamped so the next boot keeps
+      // counting instead of restarting from zero again).
+      ring = [seed];
+      lastRotatedAt = now;
+      writeMeta({ lastRotatedAt: now, previous: [] });
+    }
   } else {
     const t = gen();
     ring = [t];
+    lastRotatedAt = now;
     writeToken(t);
+    writeMeta({ lastRotatedAt: now, previous: [] });
   }
   return ring[0];
 }
@@ -91,41 +173,90 @@ export function isValidToken(tok: string | string[] | undefined | null): boolean
   if (!tok) return false;
   const t = Array.isArray(tok) ? tok[0] : String(tok);
   if (!ring.length) initApiToken();
-  return ring.includes(t);
+  if (ring.includes(t)) return true;
+  return reseedIfFileChanged() && ring.includes(t);
 }
 
-export function rotateApiToken(): string {
-  if (!ring.length) initApiToken();
+/** On an auth miss, absorb a rotation performed by ANOTHER core process sharing
+ *  <dataDir> (dev :3200 and prod :3100 share one api-token file): if the token
+ *  file changed since this process last seeded/wrote it, fold the file's
+ *  current token and the sidecar's grace ring into ours. Costs one statSync
+ *  per MISS — ring hits stay free. */
+function reseedIfFileChanged(): boolean {
+  let mtime: number;
+  try {
+    mtime = fs.statSync(tokenFile()).mtimeMs;
+  } catch {
+    return false;
+  }
+  if (mtime === ringFileMtimeMs) return false;
+  ringFileMtimeMs = mtime;
+  let fileTok: string | null = null;
+  try {
+    fileTok = fs.readFileSync(tokenFile(), 'utf8').trim() || null;
+  } catch {
+    /* keep current ring */
+  }
+  if (!fileTok) return false;
+  const meta = readMeta();
+  const merged = [fileTok, ...(meta ? meta.previous : []), ...ring];
+  ring = merged.filter((t, i) => merged.indexOf(t) === i).slice(0, RING_SIZE);
+  if (meta) lastRotatedAt = meta.lastRotatedAt;
+  return true;
+}
+
+export function rotateApiToken(now: number = Date.now()): string {
+  if (!ring.length) initApiToken(now);
   const next = gen();
   ring = [next, ...ring].slice(0, RING_SIZE);
+  lastRotatedAt = now;
   writeToken(next);
+  writeMeta({ lastRotatedAt: now, previous: ring.slice(1) });
   return next;
 }
 
-export function startApiTokenRotation(): void {
-  initApiToken();
+export function startApiTokenRotation(now: number = Date.now()): void {
+  initApiToken(now);
   if (timer) return;
-  // Count down to the next rotation in <= MAX_TIMER_MS chunks so a long
-  // ROTATE_MS (e.g. 30 days) never overflows Node's timer cap. Rotate only
-  // once the full window has elapsed, then re-arm for the next window.
-  const arm = (remainingMs: number): void => {
-    const step = Math.min(MAX_TIMER_MS, remainingMs);
-    timer = setTimeout(() => {
-      const left = remainingMs - step;
-      if (left > 0) {
-        arm(left);
-      } else {
-        try {
-          rotateApiToken();
-        } catch {
-          /* keep prior token on failure */
-        }
-        arm(ROTATE_MS);
+  // The deadline is persisted (sidecar), not per-process: a fleet that restarts
+  // Core more often than ROTATE_MS still rotates. Overdue at boot → rotate
+  // immediately; otherwise arm only the REMAINING window, never a fresh one.
+  const elapsed = Math.max(0, now - lastRotatedAt);
+  if (elapsed >= ROTATE_MS) {
+    try {
+      rotateApiToken(now);
+    } catch {
+      /* keep prior token on failure */
+    }
+    armRotation(ROTATE_MS);
+  } else {
+    armRotation(ROTATE_MS - elapsed);
+  }
+}
+
+// Count down in <= MAX_TIMER_MS chunks so a long window (e.g. 30 days) never
+// overflows Node's timer cap. Rotate only once the full window has elapsed,
+// then re-arm for the next full window.
+function armRotation(totalMs: number): void {
+  armedMs = totalMs;
+  armChunk(totalMs);
+}
+function armChunk(remainingMs: number): void {
+  const step = Math.min(MAX_TIMER_MS, remainingMs);
+  timer = setTimeout(() => {
+    const left = remainingMs - step;
+    if (left > 0) {
+      armChunk(left);
+    } else {
+      try {
+        rotateApiToken();
+      } catch {
+        /* keep prior token on failure */
       }
-    }, step);
-    timer.unref?.();
-  };
-  arm(ROTATE_MS);
+      armRotation(ROTATE_MS);
+    }
+  }, step);
+  timer.unref?.();
 }
 
 // --- client side: token to attach to an outbound loopback call to the worker ---
@@ -160,6 +291,32 @@ export function apiAuthEnabled(): boolean {
   return v !== '0' && v !== 'off' && v !== 'false';
 }
 
+/** The ONLY paths allowed to authenticate via the `apiKey` query parameter:
+ *  the voice WebSocket upgrade paths — a browser cannot set headers on a WS
+ *  upgrade, so `web/src/lib/voice-url.ts` rides the token in the query string
+ *  (the upgrade handlers themselves validate `?token=`; this list covers the
+ *  same paths on the plain-HTTP side). Everywhere else the token must arrive
+ *  as `x-api-key`: a query token lands in URLs, access logs, Referer headers
+ *  and browser resource-timing entries. */
+const QUERY_APIKEY_PATHS = new Set(['/voice/stt/ws', '/voice/claude/ws']);
+
+/** Resolve the credential a request presents to the rest-server auth gate:
+ *  the `x-api-key` header anywhere, or — on the voice WS paths only — the
+ *  `?apiKey=` query fallback. Null means "no acceptable credential offered". */
+export function resolveProvidedApiKey(
+  header: string | string[] | undefined,
+  url: string,
+): string | null {
+  const h = Array.isArray(header) ? header[0] : header;
+  if (h) return h;
+  if (!QUERY_APIKEY_PATHS.has(url.split('?')[0])) return null;
+  try {
+    return new URL(url, 'http://localhost').searchParams.get('apiKey');
+  } catch {
+    return null;
+  }
+}
+
 let _localAddrs: Set<string> | null = null;
 /** True when the remote address is this machine itself (loopback or one of its
  *  own interface IPs) — mirrors /auth/is-local. Used for the optional
@@ -186,4 +343,28 @@ export function isLocalAddress(ip: string | undefined | null): boolean {
 
 export function apiTokenFilePath(): string {
   return tokenFile();
+}
+
+export function apiTokenMetaFilePath(): string {
+  return metaFile();
+}
+
+// --- test hooks -------------------------------------------------------------
+
+/** Drop all module state (ring, timer, clock stamps, file caches). */
+export function __resetApiTokenState(): void {
+  ring = [];
+  lastRotatedAt = 0;
+  ringFileMtimeMs = -1;
+  armedMs = null;
+  fileCache = null;
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+}
+
+/** The most recent full countdown armed by startApiTokenRotation, in ms. */
+export function __armedRotationMs(): number | null {
+  return armedMs;
 }

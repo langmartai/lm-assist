@@ -6,7 +6,7 @@
 
 import * as http from 'http';
 import { getEventLoopMonitor } from './diagnostics/event-loop-monitor';
-import { startApiTokenRotation, isValidToken, apiAuthEnabled, isLocalAddress } from './auth/api-token';
+import { startApiTokenRotation, isValidToken, apiAuthEnabled, isLocalAddress, resolveProvidedApiKey } from './auth/api-token';
 import { validateScopedRequest } from './auth/scoped-token';
 import { isEnrollExempt } from './auth/enroll-exempt';
 import * as fs from 'fs';
@@ -585,8 +585,9 @@ export class TierRestServer {
       // (see core/src/whatsapp/webhook.ts), enforced inside the route handler.
       const whatsappWebhookExempt = authPath === '/whatsapp/webhook';
       if (apiAuthEnabled() && authPath !== '/health' && !exemptLocal && !enrollExempt && !whatsappWebhookExempt) {
-        const rawKey = req.headers['x-api-key'];
-        const providedKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey) || this.getQueryParam(req.url || '', 'apiKey');
+        // Header everywhere; the ?apiKey= query fallback ONLY on the voice WS
+        // paths (browsers can't set WS-upgrade headers) — see api-token.ts.
+        const providedKey = resolveProvidedApiKey(req.headers['x-api-key'], req.url || '');
         // Full ring token first; then the narrow scoped-token fallback (browser
         // chat clients — only the scope's route allow-list, see auth/scoped-token.ts).
         const okAuth = isValidToken(providedKey) || (this.options.apiKey && providedKey === this.options.apiKey)
@@ -764,15 +765,6 @@ export class TierRestServer {
   private sendJson(res: http.ServerResponse, status: number, data: any): void {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data, null, 2));
-  }
-
-  private getQueryParam(url: string, param: string): string | null {
-    try {
-      const parsed = new URL(url, 'http://localhost');
-      return parsed.searchParams.get(param);
-    } catch {
-      return null;
-    }
   }
 
   // --------------------------------------------------------------------------
