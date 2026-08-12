@@ -170,7 +170,7 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
     'only per-row width (titles/tags/edges) moves this — 1.34x headroom, in line with the other paged entries. ' +
     'Pinned offline by backlog-output-size.test.ts.' },
   session_footprints: { measuredBytes: 19547, budgetBytes: 27000, bound: 'NOTHING', verdict: 'NEEDS-CAP' },
-  backlog_graph: { measuredBytes: 19928, budgetBytes: 32000, bound: 'PAGINATED', verdict: 'SAFE', note:
+  backlog_graph: { measuredBytes: 20179, budgetBytes: 32000, bound: 'PAGINATED', verdict: 'SAFE', note:
     'GREW 13,146 -> 25,461 -> 47,843 B (2026-08-06 -> 08-12; the fleet backlog only accumulates) — on the ' +
     'backlog_list slope toward the ceiling. Now paged at the MCP layer (the /backlog web page keeps the full ' +
     'route): nodes sorted updatedAt-desc, default limit 50, slimmed to id/title/type/status/priority/tags ' +
