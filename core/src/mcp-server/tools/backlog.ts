@@ -6,10 +6,11 @@ import type { McpToolResult } from '../configure';
 import { ok, err, workerGet, workerPost } from './_passthrough';
 import { currentMcpContext } from '../principal-context';
 import { withActorHint } from './mission-query';
-import { compactBacklogWrite, intArg, paginate } from './projections';
+import { compactActor, compactBacklogWrite, intArg, paginate } from './projections';
 
 const S = { type: 'string' as const };
 const B = { type: 'boolean' as const };
+const N = { type: 'number' as const };
 const obj = (props: Record<string, unknown>, required: string[] = []) => ({ type: 'object' as const, properties: props, required });
 const pretty = (v: unknown): McpToolResult => ok(JSON.stringify(v, null, 2));
 
@@ -40,8 +41,77 @@ function hinted(a: Record<string, unknown>): Record<string, unknown> {
   return withActorHint(a, currentMcpContext()?.toolUseId);
 }
 
+// ── collection projections (MCP layer only — the /backlog web page keeps the full routes) ──
+//
+// Measured 2026-08-12: the routine no-arg backlog_list was 65,833 B — past the
+// 65,536 B enforced ceiling in result-cap.ts, i.e. silently TRUNCATED on every
+// routine call — and backlog_graph was 47,843 B and climbing (the fleet backlog
+// only accumulates; +22 KB in the prior 6 days). Sized so the DEFAULT call sits
+// under the 25 KiB soft budget: a full list row was ~800 B, 30% of it the
+// lastUpdatedBy actor (kind/id/node/channel/label-as-absolute-path/toolUseId),
+// which compactActor collapses to `kind:id8`; a slim row is ~640 B incl.
+// envelope, so 30 rows ≈ 19.1 KB. A slim graph node is ~274 B, so 50 nodes plus
+// their within-page edges ≈ 19.9 KB on the 90-node/66-edge fleet.
+// Pinned by backlog-output-size.test.ts; budgets in tool-output-budget.ts.
+
+export const BACKLOG_LIST_DEFAULT_LIMIT = 30;
+export const BACKLOG_GRAPH_DEFAULT_NODES = 50;
+
+/** One list row, slimmed: the route's toListRow minus the full actor object
+ *  (→ `by: kind:id8`), the duplicated `version` (rev survives), and the
+ *  `removed:false` noise (removed rows still say so). */
+function slimListRow(r: Record<string, unknown>): Record<string, unknown> {
+  const { lastUpdatedBy, version, removed, ...rest } = r;
+  void version;
+  const by = compactActor(lastUpdatedBy);
+  return { ...rest, ...(removed ? { removed: true } : {}), ...(by ? { by } : {}) };
+}
+
+/** Page + slim the GET /backlog response. Meta stays total/shown/offset/hasMore
+ *  (paginate) and the route's counts (incl. removed) survive, so a page never
+ *  reads as the whole set. */
+export function projectBacklogList(res: Record<string, unknown>, args: Record<string, unknown>): Record<string, unknown> {
+  const all = Array.isArray(res?.items) ? res.items as Array<Record<string, unknown>> : [];
+  const { rows, meta } = paginate(all, intArg(args.limit, BACKLOG_LIST_DEFAULT_LIMIT), intArg(args.offset, 0));
+  return {
+    ...res,
+    ...meta,
+    hint: 'Paged summary, most recently updated first. Narrow with {status,type,tag}, page with {limit,offset}; full item = backlog_get({id}).',
+    items: rows.map(slimListRow),
+  };
+}
+
+/** One graph node, slimmed to drawable identity: counts are list detail,
+ *  updatedAt only served the sort, removed carries only when true. */
+function slimGraphNode(n: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: n.id, title: n.title, type: n.type, status: n.status, priority: n.priority, tags: n.tags,
+    ...(n.removed ? { removed: true } : {}),
+  };
+}
+
+/** Page the GET /backlog/graph response: nodes sorted updatedAt-desc then paged;
+ *  edges are those WITHIN the shown page, with edgesTotal/edgesShown reported so
+ *  the omission is explicit — a raised {limit} reaches the whole graph. */
+export function projectBacklogGraph(g: Record<string, unknown>, args: Record<string, unknown>): Record<string, unknown> {
+  const allNodes = Array.isArray(g?.nodes) ? g.nodes as Array<Record<string, unknown>> : [];
+  const allEdges = Array.isArray(g?.edges) ? g.edges as Array<Record<string, unknown>> : [];
+  const sorted = [...allNodes].sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+  const { rows, meta } = paginate(sorted, intArg(args.limit, BACKLOG_GRAPH_DEFAULT_NODES), intArg(args.offset, 0));
+  const shown = new Set(rows.map((n) => String(n.id)));
+  const edges = allEdges.filter((e) => shown.has(String(e.from)) && shown.has(String(e.to)));
+  return {
+    ...meta,
+    edgesTotal: allEdges.length,
+    edgesShown: edges.length,
+    hint: 'Node page (most recently updated first); edges shown are those within the page. Raise {limit} or page with {offset} for the rest.',
+    nodes: rows.map(slimGraphNode),
+    edges,
+  };
+}
+
 export const BACKLOG_TOOL_DEFS = [
-  { name: 'backlog_list', description: 'List backlog items (the fleet-synced idea/feature/issue/bug/task graph — things NOT yet turned into missions). Filters: {status?, type?, tag?, includeRemoved?}. Returns compact rows with edge/discussion/review counts.', annotations: { readOnlyHint: true }, inputSchema: obj({ status: { ...S, enum: STATUSES }, type: { ...S, enum: TYPES }, tag: S, includeRemoved: B }) },
+  { name: 'backlog_list', description: 'List backlog items (the fleet-synced idea/feature/issue/bug/task graph — things NOT yet turned into missions). Filters: {status?, type?, tag?, includeRemoved?}. Returns a paged set of compact rows with edge/discussion/review counts.', annotations: { readOnlyHint: true }, inputSchema: obj({ status: { ...S, enum: STATUSES }, type: { ...S, enum: TYPES }, tag: S, includeRemoved: B, limit: { ...N, description: 'Page size (default 30).' }, offset: N }) },
   { name: 'backlog_get', description: 'Get ONE backlog item by id (bl_…): full markdown description, edges, discussion, reviews, and version history (every write is a numbered rev).', annotations: { readOnlyHint: true }, inputSchema: obj({ id: S }, ['id']) },
   {
     name: 'backlog_create',
@@ -63,22 +133,21 @@ export const BACKLOG_TOOL_DEFS = [
   { name: 'backlog_review', description: 'Attach a review to a backlog item: {id, verdict: approve|reject|concerns, note?, by?}. `by` defaults to the calling session/conversation id.', inputSchema: obj({ id: S, verdict: { ...S, enum: ['approve', 'reject', 'concerns'] }, note: S, by: S }, ['id', 'verdict']) },
   { name: 'backlog_discuss', description: 'Attach a discussion note to a backlog item: {id, note}. The CALLER session is auto-attached (Claude Code sessions are pinned by tool-call id; claude.ai conversations by recency). Remote/CCR sessions should self-declare with {sessionId, sessionKind:"remote"}.', inputSchema: obj({ id: S, note: S, sessionId: S, sessionKind: { ...S, enum: ['conversation', 'code', 'remote'] } }, ['id', 'note']) },
   { name: 'backlog_remove', description: 'Soft-remove a backlog item (kept in history, excluded from list/graph): {id}. {id, restore:true} brings it back. Rev-tracked like every write.', inputSchema: obj({ id: S, restore: B }, ['id']) },
-  { name: 'backlog_graph', description: 'The drawable backlog graph: {nodes (id/title/type/status/priority/tags/counts), edges:[{from,to,kind}]}. Same data the /backlog web page renders. {includeRemoved?}.', annotations: { readOnlyHint: true }, inputSchema: obj({ includeRemoved: B }) },
+  { name: 'backlog_graph', description: 'The drawable backlog graph: {nodes (id/title/type/status/priority/tags), edges:[{from,to,kind}]}. Nodes are paged recent-first and edges are those within the page (edgesTotal reports the rest). {includeRemoved?, limit?, offset?}.', annotations: { readOnlyHint: true }, inputSchema: obj({ includeRemoved: B, limit: { ...N, description: 'Node page size (default 50).' }, offset: N }) },
 ] as const;
 
 export const BACKLOG_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   // Rows are already a projection server-side (no description/discussion/reviews/history),
-  // but the collection itself was unbounded — it only ever grows. Paged here so it cannot
-  // become the next mission_list.
+  // but the collection itself was unbounded — it only ever grows, and by 2026-08-12 the
+  // no-arg call rode the 64 KiB result cap. Paged + slimmed here (projectBacklogList) so
+  // it cannot become the next mission_list.
   backlog_list: async (a) => {
     try {
       const qs = new URLSearchParams();
       for (const k of ['status', 'type', 'tag'] as const) if (typeof a[k] === 'string' && a[k]) qs.set(k, String(a[k]));
       if (flag(a.includeRemoved)) qs.set('includeRemoved', 'true');
       const res = await workerGet(`/backlog${qs.toString() ? `?${qs}` : ''}`) as Record<string, unknown>;
-      const all = Array.isArray(res?.items) ? res.items as Array<Record<string, unknown>> : [];
-      const { rows, meta } = paginate(all, intArg(a.limit, 100), intArg(a.offset, 0));
-      return pretty({ ...res, ...meta, items: rows });
+      return pretty(projectBacklogList(res, a));
     } catch (e) { return err((e as Error).message); }
   },
   backlog_get: async (a) => {
@@ -155,7 +224,8 @@ export const BACKLOG_HANDLERS: Record<string, (args: Record<string, unknown>) =>
   backlog_graph: async (a) => {
     try {
       const qs = flag(a.includeRemoved) ? '?includeRemoved=true' : '';
-      return pretty(await workerGet(`/backlog/graph${qs}`));
+      const g = await workerGet(`/backlog/graph${qs}`) as Record<string, unknown>;
+      return pretty(projectBacklogGraph(g, a));
     } catch (e) { return err((e as Error).message); }
   },
 };

@@ -159,13 +159,26 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   windows_terminal_list: { measuredBytes: 52395, budgetBytes: 73000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY', note: '~950 B per terminal x 55.' },
   mission_graph: { measuredBytes: 42771, budgetBytes: 60000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Nodes+edges for every mission.' },
   ccr_cloud_list: { measuredBytes: 41480, budgetBytes: 58000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: '~829 B per cloud session x 50.' },
-  backlog_list: { measuredBytes: 46625, budgetBytes: 60000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note:
-    '~895 B per item. GREW 24,015 -> 46,625 B (2026-08-05, +94%) purely from the backlog accumulating on the live ' +
-    'fleet — an unrelated drift the desktop-automation full-build test run was the first live sweep to observe. ' +
-    'Budget bumped deliberately to 60,000 (still under the 64 KiB cap); the standing NEEDS-CAP debt is unchanged — ' +
-    'it is still a bare NOTHING-bound collection and wants detail/limit/offset like backlog_graph got.' },
+  backlog_list: { measuredBytes: 22351, budgetBytes: 30000, bound: 'PAGINATED', verdict: 'SAFE', note:
+    'WAS 65,833 B on 2026-08-12 (90 visible items x ~800 B full rows; 24,015 -> 46,625 -> 65,833 in under three ' +
+    'weeks) — past both its 60,000 budget AND the 65,536 enforced ceiling, so the ROUTINE no-arg call was being ' +
+    'silently TRUNCATED, the exact failure the cap must never shape. Fixed by bounding the page, not the budget ' +
+    '(bl_9df7c6d4): default limit 30 (was 100), rows slimmed (the lastUpdatedBy actor — ~240 B/row of addressing ' +
+    'detail — collapses to a kind:id8 `by`; dup `version` and `removed:false` dropped), meta stays ' +
+    'total/shown/offset/hasMore + the route counts so a page never reads as the whole set. 30 slim rows + result ' +
+    'footers measured 22,351 B e2e on the same 90-item fleet data. Budget 30,000: the page COUNT is fixed, so ' +
+    'only per-row width (titles/tags/edges) moves this — 1.34x headroom, in line with the other paged entries. ' +
+    'Pinned offline by backlog-output-size.test.ts.' },
   session_footprints: { measuredBytes: 19547, budgetBytes: 27000, bound: 'NOTHING', verdict: 'NEEDS-CAP' },
-  backlog_graph: { measuredBytes: 25461, budgetBytes: 40000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'GREW 13,146 -> 25,461 B (2026-08-06) purely from the backlog graph accumulating on the live fleet — unrelated drift caught by the live sweep. Bumped to 40,000 (still under the 64 KiB cap); it is a bare NOTHING-bound graph and wants detail/limit like backlog_list/mission_graph.' },
+  backlog_graph: { measuredBytes: 19928, budgetBytes: 32000, bound: 'PAGINATED', verdict: 'SAFE', note:
+    'GREW 13,146 -> 25,461 -> 47,843 B (2026-08-06 -> 08-12; the fleet backlog only accumulates) — on the ' +
+    'backlog_list slope toward the ceiling. Now paged at the MCP layer (the /backlog web page keeps the full ' +
+    'route): nodes sorted updatedAt-desc, default limit 50, slimmed to id/title/type/status/priority/tags ' +
+    '(counts/updatedAt dropped, removed only when true, ~274 B each); edges are those WITHIN the shown page ' +
+    'with edgesTotal/edgesShown reported so the omission is explicit — a raised {limit} reaches the whole ' +
+    'graph. 50 nodes + within-page edges + result footers measured 20,179 B e2e on the 90-node/66-edge fleet ' +
+    'data. Budget 32,000 = 1.59x headroom for node width + within-page edge density. Pinned offline by ' +
+    'backlog-output-size.test.ts.' },
   list_session_messages: {
     measuredBytes: 65865, budgetBytes: 66000, bound: 'NOTHING', verdict: 'NEEDS-CAP',
     note: 'GREW 19,362 -> 27,840 B (+44%) DURING the audit session, and the guard caught it — the ' +
@@ -193,6 +206,25 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   desktop_process: { measuredBytes: 3600, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE', note: '~65 B per row, hard-capped at MAX_PROCESS_ROWS=50.' },
   desktop_wait_for: { measuredBytes: 200, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE', note: 'One matched-window line or a timeout line.' },
   desktop_find_text: { measuredBytes: 5000, budgetBytes: 25000, bound: 'HARD_LIMIT', verdict: 'SAFE', note: '~80 B per OCR line, hard-capped at MAX_TEXT_MATCHES=60.' },
+  // VM + container doctors (loopback to /vm/status and /container/status). Both
+  // return a fixed status block plus an inventory the service HARD-CAPS and
+  // reports honestly: vm_status at MAX_VMS_LISTED=100 (vm/service.ts),
+  // container_status at MAX_CONTAINERS_LISTED=100 (docker-backend list), each
+  // with {total, truncated}; images are also capped at 100 and only fetched
+  // when images=true. Env VALUES and secret-shaped argv tokens are redacted on
+  // the container read path, which also keeps rows narrow. Measured 2026-08-12
+  // on 117 (KVM doctor, empty VM inventory; Docker Engine 27.5.1 with the
+  // node's production containers).
+  vm_status: { measuredBytes: 390, budgetBytes: 25000, bound: 'HARD_LIMIT', verdict: 'SAFE', note: 'Doctor + inventory capped at MAX_VMS_LISTED=100 with total/truncated; name= returns ONE VM in full.' },
+  container_status: { measuredBytes: 2285, budgetBytes: 25000, bound: 'HARD_LIMIT', verdict: 'SAFE', note: 'Doctor + inventory capped at MAX_CONTAINERS_LISTED=100 with total/truncated; env keys only, secret argv redacted; name=/images= widen deliberately.' },
+  // Pluggable-UI reads. ui_pages renders one block per LOCAL lmui state file
+  // (~/.lmui/dev-*.json) — bounded by how many dev servers a human runs on ONE
+  // node, not by fleet data; ui_list is the gateway's registration list for
+  // THIS owner (~230 B per UI) merged with the same local state. Honestly
+  // NOTHING-bound (no cap, no paging) — the machine_access precedent. Measured
+  // 2026-08-12 on 117 (9 local pages / 5 registrations).
+  ui_pages: { measuredBytes: 1672, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
+  ui_list: { measuredBytes: 1185, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   // Honestly 'NOTHING': both serialise a whole collection with no caller limit (the
   // machine_access precedent). SAFE only because the collection is the IN-CLUSTER NODE
   // LIST — one row per node, a handful of tokens plus <=4KB of notes — not user data.
@@ -392,6 +424,38 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
   // windows_terminal_* lifecycle tools; kills + relaunches a terminal.
   ...['windows_terminal_restart',
   ].map((n) => [n, 'destructive/lifecycle: restarts a Windows Terminal session']),
+  // VM + container lifecycle writes (docs/vm-management.md, container-management.md).
+  // Same class as the desktop writes: they allocate/power/destroy real host
+  // resources — and this fleet serves production from containers — so the guard
+  // must never auto-invoke them. vm_snapshot's `list` action is a read, but the
+  // guard cannot choose the safe action, so the tool classifies by its worst one.
+  // Echoes are a single VmInfo/ContainerInfo or an ack — route-bounded + 64 KiB capped.
+  ...['vm_create', 'vm_power', 'vm_snapshot', 'vm_delete',
+  ].map((n) => [n, 'write: creates/powers/snapshots/destroys a real VM on the host hypervisor']),
+  ...['container_run', 'container_power', 'container_delete',
+  ].map((n) => [n, 'write: runs/stops/removes a real container (this fleet serves production from containers)']),
+  // container_logs is read-only but needs a container name the guard cannot
+  // synthesise. Its output IS bounded: lines default 100 / max 1000 plus a hard
+  // MAX_LOG_BYTES=100,000 keeping the TAIL with `truncated` reported — note
+  // that 100,000 exceeds the 64 KiB result cap, so a max-size tail is trimmed
+  // by the cap; `lines`/`since` are the narrowing arguments.
+  ...['container_logs',
+  ].map((n) => [n, 'read-only but needs a container name; tail bounded at lines<=1000 / MAX_LOG_BYTES=100,000']),
+  // Pluggable-UI tools (docs -> ui-pages/manager.ts + /ui-pages/* routes).
+  // ui_grants is the one id-scoped read: one UI's scope catalog + declared +
+  // runtime grants as the gateway returns them — bounded by that UI's grant
+  // list, small. The writes mutate gateway registration state or this node's
+  // local lmui serving processes; every echo is a few fixed lines. ui_screenshot
+  // UPLOADS a local image file to the platform — its RESULT is a one-line text
+  // ack, NOT an image block, so the image-token accounting above never applies.
+  ...['ui_grants',
+  ].map((n) => [n, 'read-only but needs a uiId; one UI\'s scope catalog + grant list from the gateway']),
+  ...['ui_register', 'ui_unregister', 'ui_enable', 'ui_grant_release',
+  ].map((n) => [n, 'write: mutates a pluggable-UI registration/grant on the platform gateway']),
+  ...['ui_pages_control',
+  ].map((n) => [n, 'write: starts/stops a local lmui server process or its boot-respawn policy']),
+  ...['ui_screenshot',
+  ].map((n) => [n, 'write: uploads a screenshot file to the platform gateway (returns a short text ack, no image block)']),
 ]);
 
 /**
