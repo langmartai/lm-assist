@@ -968,6 +968,42 @@ export async function cloudListEnriched(limit = 50): Promise<CloudSessionInfo[]>
   return items.sort((a, b) => ts(b) - ts(a));
 }
 
+/**
+ * Apply a title to every registry entry that maps to the given bridge cse.
+ * The registry is keyed by the sid a session was CREATED under (`session_…`
+ * for cloud creates, `cse_…` for bridge records) — the SAME code session in
+ * two spellings — so matching must go through toBridgeCse on both the key and
+ * the record's own sid. Pure (mutates `reg` in place); returns whether
+ * anything changed so the caller can skip a no-op save.
+ */
+export function applyRegistryTitleForCse(reg: Record<string, CloudRecord>, cse: string, title: string): boolean {
+  let changed = false;
+  for (const [key, rec] of Object.entries(reg)) {
+    if (!rec) continue;
+    if (toBridgeCse(rec.sid || key) !== cse && toBridgeCse(key) !== cse) continue;
+    if (rec.title !== title) {
+      rec.title = title;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/**
+ * Best-effort local-registry title sync for a rename addressed by cse — used
+ * by the cowork rename path (cowork-tasks.ts), which hits the SAME upstream
+ * PUT as cloudRename below but has no sid-keyed entry to hand. Without this,
+ * the /ccr page kept showing the stale registry title after a cse_-form
+ * rename. Callers treat it as best-effort: a failure here must never fail a
+ * rename the upstream already accepted.
+ */
+export function syncRegistryTitleForCse(cse: string, title: string): boolean {
+  const reg = loadRegistry();
+  if (!applyRegistryTitleForCse(reg, cse, title)) return false;
+  saveRegistry(reg);
+  return true;
+}
+
 /** Rename a cloud/bridge session (PUT /v1/code/sessions/{cse} {title}). */
 export async function cloudRename(sid: string, title: string): Promise<{ renamed: boolean; sid: string; title: string }> {
   if (!isCloudOrBridge(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');

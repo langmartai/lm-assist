@@ -233,6 +233,15 @@ export async function driveCoworkTask(opts: { cse: string; text: string; attachm
 export async function renameCoworkTask(cse: string, title: string): Promise<{ ok: true; title: string }> {
   const res = await anthropicOAuthPut(`/v1/code/sessions/${cse}`, { title }, await ccOpts());
   if (res.status < 200 || res.status >= 300) throw new CoworkTaskError('COWORK_RENAME_FAILED', `rename failed (${res.status})`, 502);
+  // Consistency: this is the SAME upstream PUT as ccr-cloud's cloudRename, which
+  // also retitles the local CCR registry (the /ccr page reads it) — without the
+  // sync a cse_-form rename left /ccr showing the stale title. Best-effort by
+  // design: the upstream already accepted the rename, so a registry hiccup must
+  // never fail it. (Lazy require mirrors ccr-cloud's own cowork-read require.)
+  try {
+    const { syncRegistryTitleForCse } = require('../terminal/ccr-cloud') as typeof import('../terminal/ccr-cloud');
+    syncRegistryTitleForCse(cse, title);
+  } catch { /* best-effort — never fail a landed rename over the local registry */ }
   return { ok: true, title };
 }
 

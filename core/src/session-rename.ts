@@ -22,6 +22,16 @@
  * limitation that remains: a LIVE session's terminal keeps showing its old
  * title until the next resume — callers report that, never hide it.
  *
+ * Torn-tail rule (data safety): a file that does not end in '\n' is either a
+ * CRASHED writer's torn tail (safe to heal) or a LIVE CLI MID-FLUSH of a
+ * chunked multi-part write (healing + appending would split its in-flight
+ * record into two corrupt lines). The two are indistinguishable from the
+ * bytes alone, so liveness decides: LIVE + torn → refuse with the retryable
+ * MID_WRITE error; non-live + torn → heal. LIVE + clean tail appends as
+ * today — the residual sub-ms race is acceptable by construction: O_APPEND
+ * single-write records make interleaving safe, and a torn tail is the ONLY
+ * observable evidence of an in-flight multi-chunk write.
+ *
  * Honesty contract: the title is RE-READ from the transcript after the
  * append (`verified`), and the previous title is reported, so a caller can
  * both confirm the rename landed and rename back.
@@ -95,27 +105,10 @@ async function scanLastCustomTitle(jsonlPath: string): Promise<string | null> {
   return title;
 }
 
-/** Re-read the tail (the append just landed there) for verification. */
-function readTailTitle(jsonlPath: string, tailBytes = 64 * 1024): string | null {
-  const fd = fs.openSync(jsonlPath, 'r');
-  try {
-    const size = fs.fstatSync(fd).size;
-    const len = Math.min(size, tailBytes);
-    const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, size - len);
-    const lines = buf.toString('utf8').split('\n');
-    // A mid-file start cuts the first line — drop it unless we read from 0.
-    if (size > len) lines.shift();
-    return lastCustomTitle(lines);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 export interface AppendTitleResult {
   /** Last custom-title present BEFORE this append (null when never renamed). */
   previousTitle: string | null;
-  /** The title re-read from the transcript AFTER the append. */
+  /** The title re-read from the transcript AFTER the append (full-file scan). */
   readBack: string | null;
   /** readBack === the requested title — the rename is proven, not assumed. */
   verified: boolean;
@@ -127,20 +120,31 @@ export interface AppendTitleResult {
  * Append the CLI's own custom-title record to an EXISTING transcript and
  * verify by reading the title back. Never creates the file — a transcript
  * that does not exist is a session this host does not have.
+ *
+ * `opts.live` is the caller's liveness verdict for the session that owns this
+ * transcript (renameLocalSession passes sessionVerdict().live). It gates the
+ * torn-tail path: LIVE + torn refuses with MID_WRITE (see module header).
  */
 export async function appendCustomTitle(
   jsonlPath: string,
   sessionId: string,
   title: string,
+  opts?: { live?: boolean },
 ): Promise<AppendTitleResult> {
   // fails with ENOENT before we scan — never fabricate a transcript
   const stat = await fs.promises.stat(jsonlPath);
 
   const previousTitle = await scanLastCustomTitle(jsonlPath);
 
-  // If the last write was torn (no trailing \n), gluing our record onto it
-  // would corrupt BOTH lines. Heal with a leading newline in the SAME write
-  // so the repair and the record land in one atomic O_APPEND.
+  // A last write with no trailing \n is a torn tail: gluing our record onto it
+  // would corrupt BOTH lines. Who tore it decides what is safe:
+  //   LIVE owner  → the CLI may be MID-FLUSH of a chunked multi-part write;
+  //                 "healing" would split its in-flight record into two corrupt
+  //                 lines (while we'd still report verified:true). REFUSE with
+  //                 a retryable error — the flush completes within moments.
+  //   dead owner  → a crashed writer's torn tail. Heal with a leading newline
+  //                 in the SAME write so repair + record land in one atomic
+  //                 O_APPEND.
   let repairedNewline = false;
   if (stat.size > 0) {
     const fd = fs.openSync(jsonlPath, 'r');
@@ -151,13 +155,26 @@ export async function appendCustomTitle(
     } finally {
       fs.closeSync(fd);
     }
+    if (repairedNewline && opts?.live) {
+      throw new SessionRenameError(
+        'MID_WRITE',
+        `transcript for session ${sessionId} has a torn tail while its owner is LIVE — ` +
+        'the CLI is likely mid-flush of a multi-part write, and appending now would corrupt it. ' +
+        'Nothing was written; retry shortly.',
+        503,
+      );
+    }
   }
 
   // Field order matches the CLI's own record byte-for-byte.
   const record = JSON.stringify({ type: 'custom-title', customTitle: title, sessionId });
   await fs.promises.appendFile(jsonlPath, `${repairedNewline ? '\n' : ''}${record}\n`, 'utf8');
 
-  const readBack = readTailTitle(jsonlPath);
+  // Verify with a FULL-FILE scan, not a tail window: a large CLI append landing
+  // between our write and the read would push our record out of any fixed
+  // window and fake a failure for a rename that landed. The full scan's cost is
+  // precedented — previousTitle above already full-scans the same file.
+  const readBack = await scanLastCustomTitle(jsonlPath);
   return { previousTitle, readBack, verified: readBack === title, repairedNewline };
 }
 
@@ -193,7 +210,7 @@ export async function renameLocalSession(sessionId: string, rawTitle: unknown): 
     throw new SessionRenameError('SESSION_NOT_FOUND', `no transcript for session ${sid} under ~/.claude/projects on this host`, 404);
   }
 
-  const res = await appendCustomTitle(verdict.jsonl, sid, title);
+  const res = await appendCustomTitle(verdict.jsonl, sid, title, { live: verdict.live });
   return {
     renamed: res.verified,
     sessionId: sid,

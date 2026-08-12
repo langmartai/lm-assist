@@ -511,6 +511,12 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
     // Appends the CLI's own custom-title record to the transcript (the record
     // /rename writes) and verifies by re-reading — no TUI driving. See
     // session-rename.ts for the live-session safety argument.
+    //
+    // Honesty: a rename that could not be VERIFIED is an ERROR envelope
+    // (non-2xx), not success:true — a REST caller must never be told a rename
+    // succeeded when the transcript read-back disproved it. The observed
+    // payload (renamed/verified/previousTitle/readBack…) rides along as `data`
+    // so callers can still see exactly what happened.
     {
       method: 'POST',
       pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/rename$/,
@@ -518,9 +524,23 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         try {
           const title = (req.body as { title?: unknown } | undefined)?.title;
-          return wrapResponse(await renameLocalSession(req.params.sessionId, title), start);
+          const result = await renameLocalSession(req.params.sessionId, title);
+          if (!result.verified) {
+            return {
+              ...wrapError(
+                'RENAME_UNVERIFIED',
+                `rename not verified: the transcript read back "${result.readBack ?? '(nothing)'}" instead of ` +
+                `"${result.title}" — treat the rename as NOT applied`,
+                start,
+              ),
+              data: result,
+              httpStatus: 500,
+            };
+          }
+          return wrapResponse(result, start);
         } catch (e) {
           if (e instanceof SessionRenameError) {
+            // includes the retryable MID_WRITE refusal (503) — see session-rename.ts
             return { ...wrapError(e.code, e.message, start), httpStatus: e.httpStatus };
           }
           return { ...wrapError('RENAME_FAILED', e instanceof Error ? e.message : String(e), start), httpStatus: 500 };
