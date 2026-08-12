@@ -102,7 +102,10 @@ export class DataService {
     const a = await this.authorize(ctx, datasetId, 'read');
     if (!a.ok) return a;
     const local = await a.value.backend!.get(datasetId, id);
-    if (local) return { ok: true, value: redactRecord(local) };
+    // A tombstone reads as absent — but for partial datasets it still falls through to the
+    // remote fetch: a peer may hold a NEWER legitimate re-create, and importBatch's LWW
+    // decides (a stale live copy loses to the tombstone; a newer re-create wins).
+    if (local && !local.deleted) return { ok: true, value: redactRecord(local) };
     const d = this.deps.datasets.get(datasetId)!;
     if (d.syncMode === 'partial' && this.deps.peers) {
       let peers: NodeInfo[] = [];
@@ -113,8 +116,12 @@ export class DataService {
           if (rec) {
             const origin = rec.origin ?? { machineId: peer.node, hostname: peer.hostname, os: peer.platform };
             const stamped = { ...rec, origin };
-            await a.value.backend!.importBatch(datasetId, [stamped], origin); // lazy-cache locally
-            return { ok: true, value: redactRecord(stamped) };
+            await a.value.backend!.importBatch(datasetId, [stamped], origin); // lazy-cache locally, LWW-guarded
+            // Serve the post-import state, not the raw peer answer: if the local tombstone
+            // out-LWWed the fetched copy the record is still deleted, and returning the
+            // peer's stale copy would resurrect it for this caller only.
+            const after = await a.value.backend!.get(datasetId, id);
+            if (after && !after.deleted) return { ok: true, value: redactRecord(after) };
           }
         } catch { /* try next peer */ }
       }
@@ -130,7 +137,14 @@ export class DataService {
     // `applyQuery` alone would miss the sql backend, which pages natively and never
     // calls it. See MAX_QUERY_ROWS for why the number is what it is.
     const r = await a.value.backend!.query(datasetId, boundQuerySpec(q));
-    return { ok: true, value: { records: r.records.map(redactRecord), total: r.total } };
+    // Hide tombstones from every consumer at THE seam all backends/callers pass through.
+    // Filtered on the TOP-LEVEL flag in code — NOT via a QueryFilter on 'deleted', because
+    // getField() prefers fields.* and a user record carrying a `deleted` field would vanish.
+    const live = r.records.filter((rec) => rec.deleted !== true);
+    // total is best-effort under pagination: subtract the tombstones seen in this page
+    // (tombstones outside the page can't be counted without a second scan).
+    const total = r.total !== undefined ? r.total - (r.records.length - live.length) : undefined;
+    return { ok: true, value: { records: live.map(redactRecord), total } };
   }
 
   async search(ctx: CallCtx, datasetId: string, spec: SearchSpec): Promise<DataResult<Array<DataRecord & { score: number }>>> {
@@ -139,7 +153,7 @@ export class DataService {
     const backend = a.value.backend!;
     if (!backend.search) return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${backend.kind}" does not support search` };
     const results = await backend.search(datasetId, spec);
-    return { ok: true, value: results.map((r) => ({ ...redactRecord(r), score: r.score })) };
+    return { ok: true, value: results.filter((r) => r.deleted !== true).map((r) => ({ ...redactRecord(r), score: r.score })) };
   }
 
   async admin(ctx: CallCtx, datasetId: string, op: string, args?: Record<string, unknown>): Promise<DataResult<unknown>> {
@@ -173,8 +187,12 @@ export class DataService {
     // plain put can never slip between a concurrent CAS put's read and write.
     return this.withKeyLock(`${datasetId}:${record.id}`, async () => {
       const existing = await backend.get(datasetId, record.id);
+      // A tombstoned record is logically ABSENT for CAS (ifVersion:0 = create-if-absent must
+      // work after a delete) — but its version still seeds the counter below, so the
+      // re-create out-LWWs the tombstone on every replica.
+      const existingLive = existing && !existing.deleted ? existing : null;
       if (opts?.ifVersion !== undefined) {
-        const cur = existing?.version ?? 0;
+        const cur = existingLive?.version ?? 0;
         if (cur !== opts.ifVersion) {
           return { ok: false, code: 'CONFLICT', reason: `version mismatch on "${datasetId}/${record.id}": stored ${cur} != ifVersion ${opts.ifVersion}` };
         }
@@ -183,9 +201,10 @@ export class DataService {
       const versioned: DataRecord = {
         ...record,
         version: (existing?.version ?? 0) + 1,
-        createdAt: existing?.createdAt ?? now,
+        createdAt: existingLive?.createdAt ?? now,
         updatedAt: now,
         origin: undefined, // local-owned record (origin is stamped only on replicas)
+        deleted: undefined, // put always writes a LIVE record — only del() mints tombstones
       };
       const r = await backend.put(datasetId, versioned);
       this.notifyChange(d, 'changed', [record.id]);
@@ -216,9 +235,38 @@ export class DataService {
     if (!a.ok) return a;
     const d = this.deps.datasets.get(datasetId)!;
     if ((d as any).origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" is a remote replica (read-only)` };
-    const deleted = await a.value.backend!.delete(datasetId, id);
-    if (deleted) this.notifyChange(d, 'deleted', [id]);
-    return { ok: true, value: deleted };
+    const backend = a.value.backend!;
+    // Tombstone deletes only where the deletion has to TRAVEL: non-sensitive synced datasets
+    // (the same predicate notifyChange uses). A local-only or sensitive dataset never
+    // replicates, so a durable marker would be pure residue — hard-delete as before.
+    const synced = !(d as any).sensitive && !!d.syncMode && d.syncMode !== 'none';
+    if (!synced) {
+      const deleted = await backend.delete(datasetId, id);
+      if (deleted) this.notifyChange(d, 'deleted', [id]);
+      return { ok: true, value: deleted };
+    }
+    // Deletion reconciliation (bl_bad31392): replace the record with a tombstone instead of
+    // removing it, so the delete propagates through the same exportSince/importBatch LWW pull
+    // as writes — a peer that misses the bus notify converges on its next reconcile. Runs
+    // under the same per-key lock as put() so a concurrent put can't interleave with the
+    // read-bump-write below. Payload is dropped: a tombstone carries no data.
+    return this.withKeyLock(`${datasetId}:${id}`, async () => {
+      const existing = await backend.get(datasetId, id);
+      if (!existing || existing.deleted) return { ok: true, value: false }; // idempotent: already gone
+      const now = new Date().toISOString();
+      const tombstone: DataRecord = {
+        id,
+        version: existing.version + 1, // out-LWWs the live record on every replica
+        fields: {},
+        deleted: true,
+        createdAt: existing.createdAt || now,
+        updatedAt: now,
+        origin: undefined, // local-owned marker (origin is stamped only on replicas)
+      };
+      await backend.put(datasetId, tombstone);
+      this.notifyChange(d, 'deleted', [id]);
+      return { ok: true, value: true };
+    });
   }
 
   /** Allocate a dataset's backend storage (local-only). Replaces the route's put/del __init__ hack. */
@@ -313,6 +361,8 @@ export class DataService {
    * Peer-facing single-record read — authorizes 'read' and returns the LOCAL record
    * (redacted) WITHOUT the partial remote-fallback that `get` uses. The peer-facing
    * fetch must serve THIS node's record only; recursing to other peers would cycle.
+   * Tombstones ARE served (unlike `get`) — this and exportDataset are the channel a
+   * deletion propagates through; the caller's importBatch LWW decides what applies.
    */
   async getRecordRaw(ctx: CallCtx, datasetId: string, id: string): Promise<DataResult<DataRecord | null>> {
     const a = await this.authorize(ctx, datasetId, 'read');

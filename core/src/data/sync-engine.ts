@@ -25,6 +25,24 @@ export function shouldPullDataset(
   return clusterOf(peerNode, records, selfId, selfCluster) === selfCluster;
 }
 
+/**
+ * Tombstone retention (deletion reconciliation, bl_bad31392).
+ *
+ * A tombstone must outlive the longest realistic window in which a node can still be
+ * carrying the pre-delete live record — once every tombstone for a doc is GC'd fleet-wide,
+ * a straggler that slept through the whole retention window re-serves the stale live copy
+ * and it re-imports everywhere (`isNewer(stale, null)` is true). 14 days ≈ 4000× the 300s
+ * reconcile interval and comfortably covers this fleet's observed offline spans
+ * (laptops/Windows boxes off for days, not weeks).
+ *
+ * The FLOOR guards against a misconfigured/typo'd TTL turning GC into an instant purge —
+ * a tombstone collected before peers' next reconcile never propagates, which silently
+ * reintroduces the exact ghost-record defect this exists to fix. 1h = 12× the default
+ * reconcile interval.
+ */
+export const TOMBSTONE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+export const TOMBSTONE_GC_FLOOR_MS = 60 * 60 * 1000;
+
 export class SyncEngine {
   private _status: SyncStatus = {
     lastRun: null,
@@ -40,7 +58,13 @@ export class SyncEngine {
     backends: BackendRegistry;
     peers: PeerClient;
     nodeId: string;
+    /** Tombstone retention override — clamped to TOMBSTONE_GC_FLOOR_MS, never below. */
+    tombstoneTtlMs?: number;
   }) {}
+
+  private tombstoneTtlMs(): number {
+    return Math.max(TOMBSTONE_GC_FLOOR_MS, this.deps.tombstoneTtlMs ?? TOMBSTONE_TTL_MS);
+  }
 
   status(): SyncStatus {
     return { ...this._status, errors: [...this._status.errors] };
@@ -128,8 +152,46 @@ export class SyncEngine {
       }
     }
 
+    // Age-based tombstone GC — bounds what the tombstone design adds to the store.
+    // Local-only sweep: it deletes nothing on the basis of any peer's answer, so a failed
+    // reconcile above never widens what gets purged here.
+    s.tombstonesPurged = await this.gcTombstones(s);
+
     this._status = s;
     return this.status();
+  }
+
+  /**
+   * Purge tombstones older than the retention TTL from every synced local dataset.
+   * The QueryFilter is only a PREFILTER — getField() prefers `fields.*`, so a user record
+   * whose payload happens to carry `deleted: true` can match it. The top-level checks in
+   * code below are the authority: only a real tombstone (`rec.deleted === true` at the
+   * record level) that is verifiably old is ever removed. Per-dataset failures are
+   * reported in `errors`, never fatal to the run.
+   */
+  private async gcTombstones(s: SyncStatus): Promise<number> {
+    const cutoff = new Date(Date.now() - this.tombstoneTtlMs()).toISOString();
+    let purged = 0;
+    for (const d of this.deps.datasets.list()) {
+      if (!d.syncMode || d.syncMode === 'none') continue; // tombstones only exist on synced datasets
+      const backend = this.deps.backends.get(d.backend);
+      if (!backend) continue;
+      try {
+        const r = await backend.query(d.id, {
+          filter: [{ field: 'deleted', op: 'eq', value: true }],
+          limit: 10000,
+        });
+        for (const rec of r.records) {
+          if (rec.deleted !== true) continue;                                   // fields.deleted shadow — NOT a tombstone
+          if (typeof rec.updatedAt !== 'string' || !rec.updatedAt) continue;    // unknown age — keep
+          if (rec.updatedAt >= cutoff) continue;                                // still within retention
+          if (await backend.delete(d.id, rec.id)) purged++;
+        }
+      } catch (e) {
+        s.errors.push(`gc ${d.id}: ` + (e instanceof Error ? e.message : String(e)));
+      }
+    }
+    return purged;
   }
 
   /**

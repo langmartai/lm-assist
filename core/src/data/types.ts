@@ -66,6 +66,14 @@ export interface DataRecord {
   text?: string;
   metadata?: Record<string, unknown>;
   origin?: NodeOrigin;        // stamped on sync landing (M5); absent = local
+  /** Tombstone marker (deletion reconciliation, bl_bad31392). A delete on a SYNCED dataset
+   *  writes the record back as `{deleted:true, fields:{}}` with a bumped version instead of
+   *  removing it, so the deletion rides the same exportSince/importBatch LWW pull channel as
+   *  writes and converges on peers that missed the bus notify. Consumer surfaces
+   *  (DataService.get/query/search) treat a tombstoned record as absent; the peer-facing
+   *  export/fetch paths keep it visible so it propagates. Purged by the sync engine's
+   *  age-based GC. TOP-LEVEL on purpose: `fields.deleted` is user data and means nothing. */
+  deleted?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -147,6 +155,8 @@ export interface SyncStatus {
   datasetsReplicated: number;
   recordsApplied: number;
   recordsSkipped: number;
+  /** Tombstones purged by the age-based GC in this run (absent on statuses from older builds). */
+  tombstonesPurged?: number;
   errors: string[];
 }
 
