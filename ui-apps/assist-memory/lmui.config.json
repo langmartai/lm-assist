@@ -1,0 +1,27 @@
+{
+  "uiId": "assist-memory",
+  "name": "Memory & Rules",
+  "scope": "lm-assist",
+  "grant": [
+    {
+      "service": "node",
+      "pathPrefix": "/memory",
+      "verbs": [
+        "GET"
+      ]
+    },
+    {
+      "service": "node",
+      "pathPrefix": "/rules",
+      "verbs": [
+        "GET"
+      ]
+    }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-memory",
+  "category": "knowledge",
+  "sortOrder": 45
+}
