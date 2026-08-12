@@ -69,9 +69,20 @@ Effective value = **env > config file > default**, resolved per call — a confi
   refused `UNSAFE_PATH`, because a mount reaches out of the sandbox into the host filesystem and a
   container process is frequently root — it equals handing out that path with write access. With
   roots set, each source must resolve under one: decided in TS (case-insensitive on Windows), never
-  by the engine.
-- **Env VALUES are never returned by a read.** `ContainerInfo.envKeys` carries names only: container
-  env routinely holds credentials. Values go in, they do not come back out.
+  by the engine. 🔴 **Containment runs on `realpath`, both sides.** Lexical containment is not
+  containment: `path.resolve` normalizes `..` but never follows a link, so a symlink under a
+  configured root — one an earlier, entirely legal container could create through its own mount —
+  would pass a string test while the daemon followed it to the real target.
+- **`network:"host"` is refused** (and `container`). It is a magic mode, not a network: it drops the
+  container into the host's network namespace, which defeats the published-port model and exposes
+  every loopback-bound service on the node (Core's own API, the elevated worker on `127.0.0.1:3110`,
+  a local database). Use a named network, or `network:null` for none.
+- **Env VALUES are never returned by a read**, and neither are secret-shaped argv tokens.
+  `ContainerInfo.envKeys` carries names only, because container env routinely holds credentials —
+  and a command line carries the same class of secret (`mysqld --password=…`), so `--password=`,
+  `--api-key=`, `--token=`, `--secret=`, `--auth=` values are redacted to `***` on both read paths.
+  This matters most for containers lm-assist did NOT create: `docker ps --no-trunc` would otherwise
+  hand their full command lines to any read-scope caller.
 - **Managed-label gate:** containers lm-assist creates carry `lm-assist=managed`; `delete`, `stop` and
   `restart` refuse one without it (`CONTAINER_NOT_MANAGED`) unless `force:true`. `start` is
   deliberately ungated — starting a stopped container is not destructive. Stop/restart ARE gated (VM
@@ -109,13 +120,21 @@ Effective value = **env > config file > default**, resolved per call — a confi
   (missing scope CRASHES Core on `tools/list`), `registry/catalog.ts`. Catalogue budget raised
   295,000 → 300,000 B (285 tools = 296,090 B, ~3,910 B headroom; the family costs 5,045 B, 1,235 B
   of it the injected node paragraph).
+- **A FAILED `container_run` cleans up after itself.** `docker run -d` creates the container before
+  starting it, so a start-time failure (a taken host port, usually) leaves a dead container squatting
+  the NAME — and the obvious retry then fails `CONTAINER_EXISTS`, blaming the name instead of the
+  port. The half-created container is removed; a genuine `CONTAINER_EXISTS` is never touched, because
+  there the container holding the name predates the call.
 - **Verified 2026-08-12, both paths.** Full lifecycle through the MCP tools on node **117** (Ubuntu,
-  Docker Engine 27.5.1, privilege `direct`): 16/16 steps — run → status → logs → managed-gate refusals
-  → stop/start/restart → delete (+ `remove_image`) → absence, with the node's production containers
-  (`langmart-postgres`, `npm`) asserted still running before and after. Graceful-degradation path on
-  **107** (Windows, CLI 29.1.2 present, Docker Desktop down): 5/5 — `available:false` with a fixing
-  `reason`, `clientVersion` set but `version` null, writes refused `DOCKER_UNAVAILABLE`, and validation
-  still refusing bad input before the daemon is ever probed. Unit tests:
-  `core/src/__tests__/container-service-validation.test.ts` (20 pure validation/containment tests).
-  E2e recipe: sandboxed Core (`LM_ASSIST_DATA_DIR` scratch dir + `--port 3211`), MCP StreamableHTTP on
-  `/mcp` with `x-api-key` from the sandbox `api-token`, provenance footer stripped before `JSON.parse`.
+  Docker Engine 27.5.1, privilege `direct`): **21/21 steps** — run → status → logs → managed-gate
+  refusals → injection/`network:host`/bind-mount refusals → unpause → port-collision classification →
+  failed-run cleanup → config type refusal → stop/start/restart → delete (+ `remove_image`) → absence,
+  with the node's production containers (`langmart-postgres`, `npm`) asserted still running before and
+  after and the pulled image removed. Graceful-degradation path on **107** (Windows, CLI 29.1.2
+  present, Docker Desktop down): **5/5** — `available:false` with a fixing `reason`, `clientVersion`
+  set but `version` null, writes refused `DOCKER_UNAVAILABLE`, and validation still refusing bad input
+  before the daemon is ever probed. Unit tests: `container-service-validation.test.ts` (20 pure
+  validation/containment tests) + `container-hardening.test.ts` (12 regression guards, each naming the
+  defect it pins). E2e recipe: sandboxed Core (`LM_ASSIST_DATA_DIR` scratch dir + `--port 3211`), MCP
+  StreamableHTTP on `/mcp` with `x-api-key` from the sandbox `api-token`, provenance footer stripped
+  before `JSON.parse`.
