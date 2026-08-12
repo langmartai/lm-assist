@@ -27,8 +27,9 @@
  * emission time — the same `computeSchedule(all).ready` + unbound predicate that
  * defines `mission_schedule.ready` (one shared definition, no parallel reimplementation)
  * — plus the SAME `placementAllowed` cluster gate the spawn safety net uses, keyed on
- * `env.host ?? ownerNode`. Cluster-map read failures fail OPEN (advice must never be
- * silenced by a transient read error).
+ * `env.host ?? ownerNode`. Cluster-map read failures split by consequence: the ADVISORY
+ * fails open (advice must never be silenced by a transient read error), the spawn NET
+ * fails closed (an action with cross-cluster side effects waits for the next tick).
  */
 import { test } from 'node:test';
 import assert from 'node:assert';
@@ -287,16 +288,16 @@ test('an explicit in-cluster env.host outranks a foreign ownerNode on the ACTION
   _resetNotMonitorStreak();
 });
 
-test('a cluster-map read failure skips ONLY the ownership check — the net still places (same posture as the advisory)', async () => {
+test('a cluster-map read failure makes the net SKIP the mission this tick — act fails closed where advise fails open', async () => {
   _resetNotMonitorStreak();
-  const mine = readyMission('mission_net_failopen');
+  const mine = readyMission('mission_net_failclosed');
   const { deps, spawned } = starvedDeps([mine], {
     listClusterRecords: async () => { throw new Error('cluster map not warmed'); },
   });
 
   await runSupervisorTick(deps);
 
-  assert.deepStrictEqual(spawned, ['mission_net_failopen'],
-    'the net exists to guarantee eventual placement — a transient read error must not starve an in-cluster mission');
+  assert.deepStrictEqual(spawned, [],
+    'placement is an action with cross-cluster side effects — on a read error it must wait for the next tick, never place unchecked');
   _resetNotMonitorStreak();
 });

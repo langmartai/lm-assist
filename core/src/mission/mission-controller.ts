@@ -1139,15 +1139,18 @@ async function placeStarvedMissions(starved: string[], deps: SupervisorDeps): Pr
     // alone let an UNHOSTED foreign-owned ghost — which `placementAllowed(undefined)` waves
     // through — ride readyUnbound → advanceStarvation into a LOCAL spawn on the wrong
     // cluster, doing silently what the advisory refuses to advertise. Failure posture is
-    // fail-OPEN, also matching the advisory: a cluster-map read failure skips ONLY the
-    // ownership check (the net exists to guarantee eventual placement — a transient read
-    // error must not starve an in-cluster mission); a legacy doc with no ownerNode passes.
+    // where the symmetry deliberately ENDS: the advisory fails OPEN (advice is cheap, and
+    // hiding it on a read error masks work), but this is an ACTION with cross-cluster side
+    // effects — on a cluster-map read failure we skip the mission THIS TICK. The net runs
+    // every tick, so a transient error only delays placement; placing unchecked could spawn
+    // a foreign mission locally, the exact incident class this gate exists to stop. A legacy
+    // doc with no ownerNode still passes the gate itself.
     const self = deps.selfId ? deps.selfId() : thisNode();
     try {
       const records = deps.listClusterRecords ? await deps.listClusterRecords() : await getClusterRecords();
       const cluster = deps.myCluster ? deps.myCluster() : getMyCluster();
       if (!placementAllowed(m.env.host ?? m.ownerNode, records, self, cluster)) continue;
-    } catch { /* fail open — ownership check only */ }
+    } catch { continue; }
 
     // ── Where does this belong? (bl_1c861246) ──
     // `notes` prose is excluded from this ranking by construction — a node's free text must
