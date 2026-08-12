@@ -209,6 +209,8 @@ export interface ContainerBackend {
   images(): Promise<ContainerImage[]>;
   run(spec: ContainerRunSpec): Promise<ContainerInfo>;
   start(name: string): Promise<ContainerInfo>;
+  /** Resume a PAUSED container — `docker start` refuses one. */
+  unpause(name: string): Promise<ContainerInfo>;
   stop(name: string, opts: { force: boolean; timeoutSec: number }): Promise<ContainerInfo>;
   restart(name: string, opts: { timeoutSec: number }): Promise<ContainerInfo>;
   logs(name: string, opts: { lines: number; since?: string; timestamps: boolean }): Promise<ContainerLogsResult>;

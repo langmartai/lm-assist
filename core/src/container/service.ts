@@ -23,6 +23,7 @@
  * appear in the backend.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import {
   CONTAINER_NAME_RE,
@@ -36,6 +37,7 @@ import {
   MAX_IMAGES_LISTED,
   MAX_ENV_VALUE_CHARS,
   MAX_LOG_LINES,
+  MAX_STOP_TIMEOUT_SEC,
   MAX_NOTES_CHARS,
   MUTEX_WAIT_MS,
   NETWORK_NAME_RE,
@@ -82,13 +84,26 @@ let writeChain: Promise<unknown> = Promise.resolve();
 async function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
   const prior = writeChain;
   let release!: () => void;
-  writeChain = new Promise<void>((r) => (release = r));
+  const slot = new Promise<void>((r) => (release = r));
+  // 🔴 Chain the new slot BEHIND `prior` rather than replacing it. Replacing it
+  // means a caller that gives up on the wait (BUSY) resolves the chain while
+  // the operation it was waiting for is STILL RUNNING — and the next caller
+  // then acquires instantly and runs concurrently with it. One 30s timeout
+  // would silently unserialize every write after it, which is the opposite of
+  // what a BUSY refusal promises. Any `docker run` that pulls for >30s reaches
+  // this, because RUN_TIMEOUT_MS (110s) is far longer than MUTEX_WAIT_MS.
+  writeChain = prior.then(() => slot).catch(() => slot);
+  let timer: NodeJS.Timeout | undefined;
   const waited = await Promise.race([
     prior.then(() => true).catch(() => true),
-    new Promise<false>((r) => setTimeout(() => r(false), MUTEX_WAIT_MS)),
+    new Promise<false>((r) => {
+      timer = setTimeout(() => r(false), MUTEX_WAIT_MS);
+      timer.unref?.();
+    }),
   ]);
+  if (timer) clearTimeout(timer); // the losing race timer must not keep a handle alive
   if (!waited) {
-    release();
+    release(); // our slot never ran; the chain still waits on `prior` first
     throw new ContainerError('BUSY', `another container operation is in progress (waited ${MUTEX_WAIT_MS}ms). Retry shortly.`);
   }
   try {
@@ -198,14 +213,50 @@ function validatePorts(v: unknown, max: number): PortMapping[] {
       contStr = m[3];
       proto = m[4] || 'tcp';
     }
-    const host = intInRange(hostStr, -1, 1, 65535, 'port host');
-    const container = intInRange(contStr, -1, 1, 65535, 'port container');
+    // Both sides are REQUIRED. Passing a default to intInRange would let an
+    // omitted `host` fall through as the sentinel and reach docker as
+    // `--publish -1:80/tcp` — an opaque engine error instead of the typed
+    // BAD_ARGS that names the missing field.
+    if (!String(hostStr).trim() || !String(contStr).trim()) {
+      throw new ContainerError('BAD_ARGS', `a port mapping needs both a host and a container port — got host="${hostStr}", container="${contStr}"`);
+    }
+    const host = intInRange(hostStr, NaN, 1, 65535, 'port host');
+    const container = intInRange(contStr, NaN, 1, 65535, 'port container');
     if (proto !== 'tcp' && proto !== 'udp') throw new ContainerError('BAD_ARGS', `port protocol must be tcp or udp — got "${proto}"`);
     if (hostIp !== undefined && !/^\d{1,3}(\.\d{1,3}){3}$/.test(hostIp)) {
       throw new ContainerError('BAD_ARGS', `port hostIp must be an IPv4 address — got "${hostIp.slice(0, 40)}"`);
     }
     return { host, container, protocol: proto as 'tcp' | 'udp', ...(hostIp ? { hostIp } : {}) };
   });
+}
+
+/**
+ * Resolve SYMLINKS before a containment decision.
+ *
+ * 🔴 Lexical containment is not containment. `path.resolve` normalizes `..`
+ * and separators but never follows a link, so a symlink sitting inside a
+ * configured volumeRoot — `/srv/data/current -> /` — passes an
+ * `isUnderRoot('/srv/data', …)` string test while the DAEMON follows it and
+ * bind-mounts the host root into the container. A container can even create
+ * that link itself through an earlier, entirely legal mount. The check must
+ * therefore run on the real path, on BOTH sides (a root may itself be a link).
+ *
+ * A path that does not exist yet resolves as far as it can and keeps the
+ * remainder: the containment test still sees through any link on the existing
+ * prefix, which is the part an attacker controls.
+ */
+function realpathForContainment(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    const parent = path.dirname(p);
+    if (parent === p) return p; // reached the root without resolving
+    try {
+      return path.join(realpathForContainment(parent), path.basename(p));
+    } catch {
+      return p;
+    }
+  }
 }
 
 /** `"/srv/data:/data"`, `"/srv/data:/data:ro"`, or `{source,target,readOnly}`.
@@ -243,8 +294,8 @@ function validateVolumes(v: unknown, max: number): VolumeMount[] {
       target = body.slice(i + 1);
       readOnly = !!mode && mode[1].toLowerCase() === 'ro';
     }
-    const src = validateHostPath(source, 'volume source');
-    if (!roots.some((r) => isUnderRoot(r, src) || path.resolve(r) === src)) {
+    const src = realpathForContainment(validateHostPath(source, 'volume source'));
+    if (!roots.some((r) => isUnderRoot(realpathForContainment(r), src))) {
       throw new ContainerError(
         'UNSAFE_PATH',
         `volume source "${src}" is outside the configured volumeRoots (${roots.join(', ')}) — mounts are contained to those roots.`,
@@ -292,6 +343,9 @@ function validateCommand(v: unknown, max: number): string[] {
   });
 }
 
+/** Docker modes that LOOK like network names but are not. See validateRunArgs. */
+const RESERVED_NETWORKS = ['host', 'container'];
+
 const RESTART_POLICIES: RestartPolicy[] = ['no', 'always', 'unless-stopped', 'on-failure'];
 const PULL_POLICIES: PullPolicy[] = ['missing', 'always', 'never'];
 
@@ -329,10 +383,30 @@ export function validateRunArgs(args: ContainerRunArgs): ContainerRunSpec {
   else if (args.network !== undefined && args.network !== '') {
     const n = String(args.network).trim();
     if (!NETWORK_NAME_RE.test(n)) throw new ContainerError('BAD_ARGS', `network must match ${String(NETWORK_NAME_RE)} — got "${n.slice(0, 80)}"`);
+    // 🔴 `host` is a MAGIC value, not a network: it drops the container into
+    // the host's network namespace, which defeats the published-port model
+    // entirely and exposes every loopback-bound service on the node (Core's own
+    // API, the elevated worker on 127.0.0.1:3110, a local database) to the
+    // container. That is the same "reaches back out of the sandbox" hazard that
+    // keeps bind mounts off by default, so it is refused here too. Use
+    // network:null for no networking.
+    if (RESERVED_NETWORKS.includes(n.toLowerCase())) {
+      throw new ContainerError(
+        'BAD_ARGS',
+        `network "${n}" is a reserved Docker mode, not a network. "host" would put the container in the host's network namespace (every 127.0.0.1 service on this node becomes reachable) — lm-assist does not hand that out. Use a named network, or network:null for none.`,
+      );
+    }
     network = n;
   } else {
     const d = defaultNetwork();
     network = d === null ? undefined : d;
+  }
+  const autoRemove = args.autoRemove === true;
+  // Docker itself refuses `--restart` with `--rm`. Dropping one of them in the
+  // backend would hand back a container that quietly does not match what was
+  // asked for — the same silent-drop the config route refuses by name.
+  if (autoRemove && restart !== 'no') {
+    throw new ContainerError('BAD_ARGS', `restart:"${restart}" and autoRemove are mutually exclusive — Docker refuses --restart together with --rm. Pick one.`);
   }
   return {
     name,
@@ -342,23 +416,32 @@ export function validateRunArgs(args: ContainerRunArgs): ContainerRunSpec {
     ports: validatePorts(args.ports, limits.maxPorts),
     volumes: validateVolumes(args.volumes, limits.maxVolumes),
     restart: restart as RestartPolicy,
-    memoryMB: args.memoryMB === undefined || args.memoryMB === null ? null : intInRange(args.memoryMB, 0, 6, limits.maxMemoryMB, 'memoryMB'),
-    cpus: args.cpus === undefined || args.cpus === null ? null : validateCpus(args.cpus, limits.maxCpus),
+    // `''` counts as "unset" here, not as a value: letting it through to
+    // intInRange would return the default (0) and emit `--memory 0m`.
+    memoryMB:
+      args.memoryMB === undefined || args.memoryMB === null || args.memoryMB === ''
+        ? null
+        : intInRange(args.memoryMB, NaN, 6, limits.maxMemoryMB, 'memoryMB'),
+    cpus: args.cpus === undefined || args.cpus === null || args.cpus === '' ? null : validateCpus(args.cpus, limits.maxCpus),
     network,
     workdir: args.workdir === undefined || args.workdir === null || args.workdir === '' ? undefined : validateContainerPath(args.workdir, 'workdir'),
-    autoRemove: args.autoRemove === true,
+    autoRemove,
     pull: pull as PullPolicy,
     notes: sanitizeNotes(args.notes),
   };
 }
 
-/** CPU quota may be fractional (0.5 = half a core). */
+/** CPU quota may be fractional (0.5 = half a core).
+ *  Round FIRST, then range-check: rounding afterwards turns cpus:0.004 into
+ *  exactly 0, and `--cpus 0` means "no limit" to the engine — silently removing
+ *  the cap the caller asked for. */
 function validateCpus(v: unknown, max: number): number {
   const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0 || n > max) {
-    throw new ContainerError('BAD_ARGS', `cpus must be a number in (0, ${max}] — got ${String(v)}`);
+  const r = Math.round(n * 100) / 100;
+  if (!Number.isFinite(r) || r <= 0 || r > max) {
+    throw new ContainerError('BAD_ARGS', `cpus must be a number in (0, ${max}] with at most 2 decimals — got ${String(v)}`);
   }
-  return Math.round(n * 100) / 100;
+  return r;
 }
 
 // ─── reads ───────────────────────────────────────────────────────────────────
@@ -379,7 +462,11 @@ export async function containerStatus(
   const status = await containerBackend().status();
   if (name !== undefined && name !== null && name !== '') {
     const container = await containerBackend().get(validateContainerName(name));
-    return { status, container };
+    // `images` is an independent modifier, as the tool description says — so
+    // honour it here too rather than silently dropping it when a name is given.
+    if (opts.images !== true) return { status, container };
+    const imgs = await containerImages().catch(() => null);
+    return imgs ? { status, container, ...imgs } : { status, container };
   }
   if (!status.available) return { status };
   // No name → doctor + bounded inventory (the MCP surface's list view).
@@ -455,12 +542,20 @@ export async function containerPower(
   }
   const n = validateContainerName(name);
   const force = opts.force === true;
-  const timeoutSec = intInRange(opts.timeoutSec, STOP_DEFAULT_TIMEOUT_SEC, 1, 600, 'timeoutSec');
+  // The accepted range is what the spawn budget can actually HONOUR. Accepting
+  // 600s while the backend kills the CLI at STOP_MAX_TIMEOUT_MS would report a
+  // perfectly normal graceful shutdown as CONTAINER_TIMEOUT while the daemon
+  // quietly finished it.
+  const timeoutSec = intInRange(opts.timeoutSec, STOP_DEFAULT_TIMEOUT_SEC, 1, MAX_STOP_TIMEOUT_SEC, 'timeoutSec');
   return withWriteLock(async () => {
     const b = containerBackend();
     const cur = await b.get(n); // CONTAINER_NOT_FOUND propagates before any action
     if (act === 'start') {
       if (cur.state === 'running') return cur; // idempotent
+      // A paused container cannot be started — the daemon says "try unpause
+      // instead", which would surface as an opaque CONTAINER_OP_FAILED and
+      // leave a paused container unrecoverable through this surface.
+      if (cur.state === 'paused') return b.unpause(n);
       return b.start(n);
     }
     // stop/restart interrupt a service — refuse on containers lm-assist does

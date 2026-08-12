@@ -245,14 +245,17 @@ test('port parsing rejects out-of-range, bad protocol and malformed shapes', () 
   throwsCode('BAD_ARGS', () => ports(new Array(21).fill('8080:80')), 'maxPorts is 20');
 });
 
-test('🔴 KNOWN DEFECT: an object port with a MISSING host/container yields -1', () => {
-  // intInRange() treats '' as "absent" and returns its `def`, and validatePorts
-  // passes def = -1 as a sentinel it never re-checks. So an object form that
-  // omits a side produces port -1 instead of BAD_ARGS. Asserted as-is so the
-  // behaviour is pinned and visible; see the report accompanying this file.
-  assert.deepEqual(ports({ container: 80 }), [{ host: -1, container: 80, protocol: 'tcp' }]);
-  assert.deepEqual(ports({ host: 8080 }), [{ host: 8080, container: -1, protocol: 'tcp' }]);
-  assert.deepEqual(ports({}), [{ host: -1, container: -1, protocol: 'tcp' }]);
+test('an object port with a MISSING host or container side is BAD_ARGS, not a -1 sentinel', () => {
+  // Regression guard. This once produced {host:-1,...} because intInRange treats
+  // '' as "absent" and returned the sentinel default, which nothing re-checked —
+  // so `--publish -1:80/tcp` reached docker and the caller got an opaque engine
+  // parse error instead of an argument error naming the missing field.
+  throwsCode('BAD_ARGS', () => ports({ container: 80 }), 'host omitted');
+  throwsCode('BAD_ARGS', () => ports({ host: 8080 }), 'container omitted');
+  throwsCode('BAD_ARGS', () => ports({}), 'both omitted');
+  throwsCode('BAD_ARGS', () => ports({ host: null, container: 80 }), 'host null');
+  // The valid object form still works.
+  assert.deepEqual(ports({ host: 8080, container: 80 }), [{ host: 8080, container: 80, protocol: 'tcp' }]);
 });
 
 // ─── env ─────────────────────────────────────────────────────────────────────
@@ -383,10 +386,14 @@ test('notes are sanitized for embedding in a docker label', () => {
 
 // ─── containment primitive ───────────────────────────────────────────────────
 
-test('isUnderRoot containment: the root itself and sibling prefixes are OUT', () => {
+test('isUnderRoot containment: the root itself is IN, sibling prefixes are OUT', () => {
   assert.equal(isUnderRoot('/srv/data', '/srv/data/x'), true);
   assert.equal(isUnderRoot('/srv/data', '/srv/data/a/b/c'), true);
-  assert.equal(isUnderRoot('/srv/data', '/srv/data'), false, 'the root itself is not "under" the root');
+  // A mount of EXACTLY the configured root is legitimate — it is the root the
+  // operator opted into. (It used to be handled by a separate case-SENSITIVE
+  // `===` in the caller, which refused `c:\srv` against `C:\srv` on Windows
+  // while allowing every subdirectory of it.)
+  assert.equal(isUnderRoot('/srv/data', '/srv/data'), true, 'the root itself is inside the root');
   // 🔴 The textual-prefix trap: /srv/data-evil starts with /srv/data.
   assert.equal(isUnderRoot('/srv/data', '/srv/data-evil'), false, 'sibling prefix must not match');
   assert.equal(isUnderRoot('/srv/data', '/srv/data-evil/x'), false);
@@ -399,7 +406,8 @@ test('isUnderRoot containment: the root itself and sibling prefixes are OUT', ()
     assert.equal(isUnderRoot('C:\\srv\\data', 'C:\\srv\\data\\x'), true);
     assert.equal(isUnderRoot('C:\\srv\\data', 'c:\\SRV\\DATA\\x'), true, 'case-insensitive on Windows');
     assert.equal(isUnderRoot('C:\\srv\\data', 'C:\\srv\\data-evil\\x'), false);
-    assert.equal(isUnderRoot('C:\\srv\\data', 'C:\\srv\\data'), false);
+    assert.equal(isUnderRoot('C:\\srv\\data', 'C:\\srv\\data'), true);
+    assert.equal(isUnderRoot('C:\\srv\\data', 'c:\\srv\\data'), true, 'exact root, different drive-letter case');
     assert.equal(isUnderRoot('C:\\srv\\data', 'D:\\srv\\data\\x'), false, 'a different drive is never under the root');
     assert.equal(isUnderRoot('C:\\srv\\data', 'C:\\Windows\\System32'), false);
   }

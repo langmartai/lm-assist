@@ -111,6 +111,45 @@ function runArgv(argv: string[], timeoutMs: number): Promise<Run> {
   });
 }
 
+/** Like runArgv, but keeps ONE combined buffer in arrival order (plus stderr
+ *  separately, so a CLI error can still be reported). Used for `docker logs`,
+ *  where stdout and stderr are two halves of one chronological stream. */
+function runLogs(argv: string[], timeoutMs: number): Promise<{ exitCode: number | null; combined: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const host = dockerHost();
+    const env = host ? { ...process.env, DOCKER_HOST: host } : process.env;
+    const child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'], env });
+    let combined = '';
+    let stderr = '';
+    let done = false;
+    const CAP = 4 * 1024 * 1024;
+    const onData = (d: Buffer, isErr: boolean) => {
+      const s = d.toString('utf8');
+      if (combined.length < CAP) combined += s;
+      if (isErr && stderr.length < CAP) stderr += s;
+    };
+    child.stdout.on('data', (d: Buffer) => onData(d, false));
+    child.stderr.on('data', (d: Buffer) => onData(d, true));
+    const finish = (exitCode: number | null, extra = '') => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ exitCode, combined, stderr: `${stderr}${extra}` });
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* gone */
+      }
+      finish(null, `\n[killed after ${timeoutMs}ms]`);
+    }, timeoutMs);
+    timer.unref?.();
+    child.on('error', (e) => finish(null, `\n${e.message}`));
+    child.on('close', (code) => finish(code));
+  });
+}
+
 type Prefix = 'root' | 'direct' | 'sudo' | 'unavailable';
 let cachedPrefix: Prefix | null = null;
 /** Why the probe failed, kept for status()'s `reason`. */
@@ -171,7 +210,13 @@ function unavailableReason(): string {
 }
 
 const NOT_FOUND_RE = /no such (container|object)|no such image/i;
-const CONFLICT_RE = /already in use|conflict\./i;
+/** Docker's NAME conflict, specifically. It must NOT be the loose
+ *  /already in use/ — a host PORT collision says "bind: address already in
+ *  use", and reporting that as CONTAINER_EXISTS tells a caller the name is
+ *  taken when the name is fine and the PORT is not. */
+const CONFLICT_RE = /conflict\.\s*the container name|is already in use by container/i;
+/** Checked BEFORE the conflict rule for exactly that reason. */
+const PORT_TAKEN_RE = /port is already allocated|bind: address already in use|ports are not available|address already in use/i;
 const IMAGE_MISSING_RE = /no such image|manifest unknown|not found: manifest|pull access denied|unable to find image/i;
 
 async function docker(args: string[], timeoutMs: number, op: string): Promise<string> {
@@ -179,12 +224,32 @@ async function docker(args: string[], timeoutMs: number, op: string): Promise<st
   if (r.exitCode !== 0) {
     const msg = (r.stderr || r.stdout).trim().split('\n').slice(0, 3).join(' ').slice(0, 400);
     if (r.exitCode === null) throw new ContainerError('CONTAINER_TIMEOUT', `${op} timed out: ${msg}`);
+    if (PORT_TAKEN_RE.test(msg)) throw new ContainerError('CONTAINER_OP_FAILED', `${op} failed — a published host port is already taken: ${msg}`);
     if (CONFLICT_RE.test(msg)) throw new ContainerError('CONTAINER_EXISTS', msg);
     if (IMAGE_MISSING_RE.test(msg)) throw new ContainerError('IMAGE_NOT_FOUND', msg);
     if (NOT_FOUND_RE.test(msg)) throw new ContainerError('CONTAINER_NOT_FOUND', msg);
     throw new ContainerError('CONTAINER_OP_FAILED', `${op} failed: ${msg}`);
   }
   return r.stdout;
+}
+
+/** Redact secret-shaped argv tokens in a container's command line.
+ *
+ *  Reads drop env VALUES because container env routinely carries credentials —
+ *  and a command line carries exactly the same class of secret
+ *  (`mysqld --password=…`, `--api-key=…`). `docker ps --no-trunc` would hand
+ *  those to any read-scope caller for containers lm-assist never created, so
+ *  the same rule applies here. */
+const SECRET_FLAG_RE = /^(--?[A-Za-z0-9._-]*(?:password|passwd|pwd|secret|token|apikey|api[-_]?key|credential|auth)[A-Za-z0-9._-]*)=(.+)$/i;
+export function redactCommand(cmd: string | null): string | null {
+  if (!cmd) return cmd;
+  return cmd
+    .split(' ')
+    .map((tok) => {
+      const m = tok.match(SECRET_FLAG_RE);
+      return m ? `${m[1]}=***` : tok;
+    })
+    .join(' ');
 }
 
 // ─── parsing helpers ─────────────────────────────────────────────────────────
@@ -239,22 +304,36 @@ function parseLabelCsv(v: unknown): Record<string, string> {
   return out;
 }
 
-/** `0.0.0.0:8080->80/tcp, [::]:8080->80/tcp` (ps) → structured mappings. */
-function parsePortsSummary(v: unknown): PortMapping[] {
+/** `0.0.0.0:8080->80/tcp, [::]:8080->80/tcp` (ps) → structured mappings.
+ *  Contiguous publications are COLLAPSED BY DOCKER into a range
+ *  (`0.0.0.0:8000-8002->8000-8002/tcp`); a parser that only accepts single
+ *  ports drops them silently, and then `list()` and `get()` disagree about the
+ *  same container's ports. Ranges are expanded here. */
+export function parsePortsSummary(v: unknown): PortMapping[] {
   const out: PortMapping[] = [];
   const seen = new Set<string>();
   for (const part of String(v || '').split(',')) {
-    const m = part.trim().match(/^(?:(.+):)?(\d+)->(\d+)\/(tcp|udp)$/);
+    const m = part.trim().match(/^(?:(.+):)?(\d+)(?:-(\d+))?->(\d+)(?:-(\d+))?\/(tcp|udp)$/);
     if (!m) continue;
-    const key = `${m[2]}:${m[3]}/${m[4]}`;
-    if (seen.has(key)) continue; // v4 + v6 rows describe one mapping
-    seen.add(key);
-    out.push({
-      host: Number(m[2]),
-      container: Number(m[3]),
-      protocol: m[4] as 'tcp' | 'udp',
-      ...(m[1] && m[1] !== '0.0.0.0' ? { hostIp: m[1] } : {}),
-    });
+    const hostLo = Number(m[2]);
+    const hostHi = m[3] ? Number(m[3]) : hostLo;
+    const ctrLo = Number(m[4]);
+    const ctrHi = m[5] ? Number(m[5]) : ctrLo;
+    const span = Math.min(hostHi - hostLo, ctrHi - ctrLo);
+    if (span < 0 || span > 1024) continue; // malformed or absurd — do not expand
+    for (let i = 0; i <= span; i++) {
+      const host = hostLo + i;
+      const container = ctrLo + i;
+      const key = `${host}:${container}/${m[6]}`;
+      if (seen.has(key)) continue; // v4 + v6 rows describe one mapping
+      seen.add(key);
+      out.push({
+        host,
+        container,
+        protocol: m[6] as 'tcp' | 'udp',
+        ...(m[1] && m[1] !== '0.0.0.0' ? { hostIp: m[1] } : {}),
+      });
+    }
   }
   return out;
 }
@@ -369,7 +448,12 @@ export class DockerBackend implements ContainerBackend {
       await docker(['ps', '-a', '--no-trunc', '--format', '{{json .}}'], LIST_TIMEOUT_MS, 'container list'),
     );
     // Authoritative managed set — a label-filtered id query, not CSV parsing.
+    // 🔴 If that query fails, we must NOT report every container as unmanaged:
+    // a caller reading "lm-assist owns nothing here" starts passing force:true,
+    // which is precisely the gate this label exists to hold. Fall back to the
+    // (ambiguous but present) CSV instead.
     const managedIds = new Set<string>();
+    let managedQueryOk = false;
     try {
       const ids = await docker(
         ['ps', '-aq', '--no-trunc', '--filter', `label=${MANAGED_LABEL}=${MANAGED_LABEL_VALUE}`],
@@ -377,6 +461,7 @@ export class DockerBackend implements ContainerBackend {
         'managed filter',
       );
       for (const id of ids.split('\n').map((l) => l.trim()).filter(Boolean)) managedIds.add(id);
+      managedQueryOk = true;
     } catch {
       /* fall back to the CSV hint below */
     }
@@ -392,7 +477,7 @@ export class DockerBackend implements ContainerBackend {
         state,
         ...(stateRaw ? { stateRaw } : {}),
         status: str(r.Status),
-        command: str(r.Command),
+        command: redactCommand(str(r.Command)),
         created: str(r.CreatedAt),
         startedAt: null,
         finishedAt: null,
@@ -403,7 +488,7 @@ export class DockerBackend implements ContainerBackend {
         restartPolicy: null,
         mounts: [],
         envKeys: [],
-        managed: id ? managedIds.has(id) : labels[MANAGED_LABEL] === MANAGED_LABEL_VALUE,
+        managed: managedQueryOk && id ? managedIds.has(id) : labels[MANAGED_LABEL] === MANAGED_LABEL_VALUE,
         notes: labels[NOTES_LABEL] || null,
       };
     });
@@ -431,7 +516,7 @@ export class DockerBackend implements ContainerBackend {
       state: mapped.state,
       ...(mapped.stateRaw ? { stateRaw: mapped.stateRaw } : {}),
       status: str(state.Status),
-      command: [d.Path, ...(Array.isArray(d.Args) ? d.Args : [])].filter(Boolean).join(' ') || null,
+      command: redactCommand([d.Path, ...(Array.isArray(d.Args) ? d.Args : [])].filter(Boolean).join(' ') || null),
       created: str(d.Created),
       startedAt: str(state.StartedAt),
       finishedAt: str(state.FinishedAt),
@@ -484,24 +569,31 @@ export class DockerBackend implements ContainerBackend {
     args.push('--pull', spec.pull);
     args.push(spec.image, ...spec.command);
     await docker(args, RUN_TIMEOUT_MS, `container run ${spec.name}`);
-    if (spec.autoRemove) {
-      // An --rm container may already be gone (hello-world exits instantly);
-      // report what we can rather than failing a successful run.
-      try {
-        return await this.get(spec.name);
-      } catch (e) {
-        if (e instanceof ContainerError && e.code === 'CONTAINER_NOT_FOUND') {
-          return autoRemovedInfo(spec);
-        }
-        throw e;
-      }
+    return this.getAfterWrite(spec.name, spec);
+  }
+
+  /** `get()` for the tail of a WRITE. A container created with `--rm` is
+   *  deleted by the daemon the instant it exits, so the read that confirms a
+   *  successful stop/run can legitimately find nothing — reporting
+   *  CONTAINER_NOT_FOUND there would tell the caller an operation FAILED that
+   *  in fact completed. */
+  private async getAfterWrite(name: string, spec?: ContainerRunSpec): Promise<ContainerInfo> {
+    try {
+      return await this.get(name);
+    } catch (e) {
+      if (e instanceof ContainerError && e.code === 'CONTAINER_NOT_FOUND') return autoRemovedInfo(name, spec);
+      throw e;
     }
-    return this.get(spec.name);
   }
 
   async start(name: string): Promise<ContainerInfo> {
     await docker(['start', name], START_TIMEOUT_MS, `container start ${name}`);
-    return this.get(name);
+    return this.getAfterWrite(name);
+  }
+
+  async unpause(name: string): Promise<ContainerInfo> {
+    await docker(['unpause', name], START_TIMEOUT_MS, `container unpause ${name}`);
+    return this.getAfterWrite(name);
   }
 
   async stop(name: string, opts: { force: boolean; timeoutSec: number }): Promise<ContainerInfo> {
@@ -510,13 +602,13 @@ export class DockerBackend implements ContainerBackend {
     // `docker stop -t N` already escalates to SIGKILL after N seconds, so the
     // graceful path never hangs the way a VM ACPI shutdown can.
     else await docker(['stop', '-t', String(opts.timeoutSec), name], budget, `container stop ${name}`);
-    return this.get(name);
+    return this.getAfterWrite(name);
   }
 
   async restart(name: string, opts: { timeoutSec: number }): Promise<ContainerInfo> {
     const budget = Math.min(STOP_BASE_TIMEOUT_MS + opts.timeoutSec * 1000, STOP_MAX_TIMEOUT_MS);
     await docker(['restart', '-t', String(opts.timeoutSec), name], budget, `container restart ${name}`);
-    return this.get(name);
+    return this.getAfterWrite(name);
   }
 
   async logs(name: string, opts: { lines: number; since?: string; timestamps: boolean }): Promise<ContainerLogsResult> {
@@ -524,26 +616,36 @@ export class DockerBackend implements ContainerBackend {
     if (opts.timestamps) args.push('--timestamps');
     if (opts.since) args.push('--since', opts.since);
     args.push(name);
-    // Docker writes container stdout to our stdout and stderr to our stderr;
-    // both are the container's log, so both are kept, stdout first.
-    const r = await runArgv(await dockerArgv(args), LOGS_TIMEOUT_MS);
+    // Docker writes container stdout to our stdout and stderr to our stderr —
+    // both are the container's log. Concatenating stdout-then-stderr would put
+    // every stderr line after every stdout line regardless of when it was
+    // written, so a build that logs progress to stderr and its RESULT to stdout
+    // would lose the result to the tail cap. runLogs() appends both streams to
+    // ONE buffer in arrival order instead, which keeps them interleaved.
+    const r = await runLogs(await dockerArgv(args), LOGS_TIMEOUT_MS);
     if (r.exitCode !== 0) {
-      const msg = (r.stderr || r.stdout).trim().split('\n').slice(0, 3).join(' ').slice(0, 400);
+      const msg = (r.stderr || r.combined).trim().split('\n').slice(0, 3).join(' ').slice(0, 400);
       if (r.exitCode === null) throw new ContainerError('CONTAINER_TIMEOUT', `container logs ${name} timed out: ${msg}`);
       if (NOT_FOUND_RE.test(msg)) throw new ContainerError('CONTAINER_NOT_FOUND', msg);
       throw new ContainerError('CONTAINER_OP_FAILED', `container logs ${name} failed: ${msg}`);
     }
-    const combined = `${r.stdout}${r.stdout && r.stderr ? '\n' : ''}${r.stderr}`;
-    const bytes = Buffer.byteLength(combined, 'utf8');
-    let text = combined;
+    const buf = Buffer.from(r.combined, 'utf8');
+    const bytes = buf.length;
     let truncated = false;
+    let text = r.combined;
+    let cutMidLine = false;
     if (bytes > MAX_LOG_BYTES) {
       // Keep the TAIL — the end of a log is the part that explains a failure.
-      text = combined.slice(-MAX_LOG_BYTES);
+      // Cut on the BUFFER, not the string: String.slice counts UTF-16 units, so
+      // a CJK or emoji log would blow straight through a byte ceiling.
+      const tail = buf.subarray(bytes - MAX_LOG_BYTES);
+      text = tail.toString('utf8');
       truncated = true;
+      // Only a cut that landed INSIDE a line leaves a fragment to drop.
+      cutMidLine = buf[bytes - MAX_LOG_BYTES - 1] !== 0x0a;
     }
     let lines = text.split('\n');
-    if (truncated) lines = lines.slice(1); // drop the half-line the cut created
+    if (cutMidLine) lines = lines.slice(1);
     while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
     if (lines.length > opts.lines) {
       lines = lines.slice(-opts.lines);
@@ -559,7 +661,13 @@ export class DockerBackend implements ContainerBackend {
       // Stop it first so an unforced delete never needs SIGKILL.
       await docker(['stop', '-t', '10', name], STOP_MAX_TIMEOUT_MS, `container stop ${name}`);
     }
-    await docker(running && opts.force ? ['rm', '-f', name] : ['rm', name], DELETE_TIMEOUT_MS, `container delete ${name}`);
+    try {
+      await docker(running && opts.force ? ['rm', '-f', name] : ['rm', name], DELETE_TIMEOUT_MS, `container delete ${name}`);
+    } catch (e) {
+      // An --rm container auto-removes the moment the stop above lands, so
+      // "no such container" here means the delete already happened.
+      if (!(e instanceof ContainerError && e.code === 'CONTAINER_NOT_FOUND')) throw e;
+    }
     let removedImage: string | null = null;
     let imageKeptReason: string | null = opts.removeImage ? null : 'not requested';
     if (opts.removeImage && info.image) {
@@ -585,17 +693,22 @@ function parseSize(v: unknown): number | null {
   return f ? Math.round(Number(m[1]) * f) : null;
 }
 
-/** Shape returned for an --rm container that exited before we could inspect it. */
-function autoRemovedInfo(spec: ContainerRunSpec): ContainerInfo {
+/** Shape returned for an --rm container that exited before we could inspect it.
+ *
+ *  `state` is 'exited' because that is TRUE — the container ran and finished;
+ *  it is not mid-removal, and a consumer branching on 'removing' would poll for
+ *  it forever. The explanation belongs in `status`, the human status line,
+ *  never in `stateRaw`, which types.ts reserves for the engine's own state
+ *  string. */
+function autoRemovedInfo(name: string, spec?: ContainerRunSpec): ContainerInfo {
   return {
-    name: spec.name,
+    name,
     id: null,
-    image: spec.image,
+    image: spec?.image || '',
     imageId: null,
-    state: 'removing',
-    stateRaw: 'auto-removed (--rm): the container exited and Docker deleted it',
-    status: null,
-    command: spec.command.join(' ') || null,
+    state: 'exited',
+    status: 'auto-removed (--rm): the container exited and Docker deleted it',
+    command: spec ? spec.command.join(' ') || null : null,
     created: new Date().toISOString(),
     startedAt: null,
     finishedAt: null,
@@ -605,18 +718,24 @@ function autoRemovedInfo(spec: ContainerRunSpec): ContainerInfo {
     networks: [],
     restartPolicy: null,
     mounts: [],
-    envKeys: Object.keys(spec.env),
+    envKeys: spec ? Object.keys(spec.env) : [],
     managed: true,
-    notes: spec.notes || null,
+    notes: spec?.notes || null,
   };
 }
 
 /** True when `p` resolves to a location inside `root` (case-insensitive on
  *  Windows, where two spellings of one path are the same path). */
 export function isUnderRoot(root: string, p: string): boolean {
-  let rel = path.relative(path.resolve(root), path.resolve(p));
-  if (process.platform === 'win32') rel = rel.toLowerCase();
-  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  const a = path.resolve(root);
+  const b = path.resolve(p);
+  // The root ITSELF is inside the root. path.relative gives '' there, and
+  // falling back to a raw === would compare case-SENSITIVELY on Windows —
+  // where every subdirectory of the same root already compares
+  // case-insensitively, so `c:\srv` would be refused while `c:\srv\x` passed.
+  if (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b) return true;
+  const rel = path.relative(a, b);
+  return !!rel && !rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel);
 }
 
 /** Test hook — forget the cached privilege probe. */

@@ -152,9 +152,10 @@ export function elevationMode(cfg: ContainerConfig = readContainerConfig()): 'au
 
 /** Absolute roots bind mounts must sit under. Empty ⇒ bind mounts refused. */
 export function volumeRoots(cfg: ContainerConfig = readContainerConfig()): string[] {
+  const fromCfg = Array.isArray(cfg.volumeRoots) ? cfg.volumeRoots : []; // a hand-edited file may hold anything
   const raw = process.env.LM_CONTAINER_VOLUME_ROOTS
     ? process.env.LM_CONTAINER_VOLUME_ROOTS.split(path.delimiter)
-    : cfg.volumeRoots || [];
+    : fromCfg;
   return raw
     .map((r) => String(r).trim())
     .filter(Boolean)
@@ -200,6 +201,12 @@ export const DELETE_TIMEOUT_MS = 60_000;
 
 /** Default graceful-stop wait before the engine escalates to SIGKILL. */
 export const STOP_DEFAULT_TIMEOUT_SEC = 10;
+
+/** Largest graceful wait a caller may ask for. Derived from the spawn budget,
+ *  not picked: `docker stop -t N` is killed at STOP_MAX_TIMEOUT_MS, so anything
+ *  beyond this would be reported as a timeout while the daemon was still
+ *  shutting the container down perfectly normally. */
+export const MAX_STOP_TIMEOUT_SEC = Math.floor((STOP_MAX_TIMEOUT_MS - STOP_BASE_TIMEOUT_MS) / 1000);
 
 /** Bounded wait for the write mutex before BUSY (vm/desktop service pattern). */
 export const MUTEX_WAIT_MS = 30_000;

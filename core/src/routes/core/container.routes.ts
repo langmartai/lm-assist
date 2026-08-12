@@ -51,6 +51,37 @@ function truthy(v: unknown): boolean {
   return v === true || v === '1' || v === 'true' || v === 'yes';
 }
 
+/** Shape-check a config patch. Returns an error message, or null when it is
+ *  safe to persist. Every field is optional; only what was SENT is checked. */
+function validateConfigTypes(b: Record<string, unknown>): string | null {
+  const isAbs = (s: string) => /^([A-Za-z]:[\\/]|\/)/.test(s);
+  if ('volumeRoots' in b) {
+    const v = b.volumeRoots;
+    if (!Array.isArray(v) || v.some((r) => typeof r !== 'string' || !r.trim() || !isAbs(r))) {
+      return `volumeRoots must be an ARRAY of absolute paths (e.g. ["/srv/data"]) — got ${JSON.stringify(v)?.slice(0, 160)}`;
+    }
+  }
+  if ('elevation' in b && !['auto', 'always', 'never'].includes(String(b.elevation))) {
+    return `elevation must be auto|always|never — got ${JSON.stringify(b.elevation)?.slice(0, 80)}`;
+  }
+  for (const k of ['dockerBin', 'dockerHost'] as const) {
+    if (k in b && (typeof b[k] !== 'string' || !String(b[k]).trim())) {
+      return `${k} must be a non-empty string — got ${JSON.stringify(b[k])?.slice(0, 80)}`;
+    }
+  }
+  if ('defaultNetwork' in b && b.defaultNetwork !== null && typeof b.defaultNetwork !== 'string') {
+    return `defaultNetwork must be a string or null — got ${JSON.stringify(b.defaultNetwork)?.slice(0, 80)}`;
+  }
+  if ('limits' in b) {
+    const l = b.limits;
+    if (!l || typeof l !== 'object' || Array.isArray(l)) return `limits must be an object of numbers — got ${JSON.stringify(l)?.slice(0, 120)}`;
+    for (const [k, v] of Object.entries(l as Record<string, unknown>)) {
+      if (!Number.isInteger(v) || (v as number) < 1) return `limits.${k} must be a positive integer — got ${JSON.stringify(v)?.slice(0, 40)}`;
+    }
+  }
+  return null;
+}
+
 export function createContainerRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
     {
@@ -145,6 +176,13 @@ export function createContainerRoutes(_ctx: RouteContext): RouteHandler[] {
               },
             };
           }
+          // Whitelisting NAMES is not enough — the TYPES have to hold too.
+          // `{"volumeRoots":"/srv/data"}` is a plausible single-root call, and
+          // persisting the string would make volumeRoots() throw on `.map` for
+          // every later read AND every container_run, bricking the feature from
+          // a config write. Validate before persisting; echo what was sent.
+          const bad = validateConfigTypes(body);
+          if (bad) return { success: false, error: { code: 'BAD_ARGS', message: bad } };
           const cfg = writeContainerConfig(body);
           return {
             success: true,

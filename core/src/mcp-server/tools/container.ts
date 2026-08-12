@@ -147,7 +147,12 @@ function envelopeError(r: Record<string, unknown> | null): string {
 
 async function get(routePath: string): Promise<McpToolResult> {
   try {
-    const r = await workerGetRaw(routePath);
+    // 120s, not workerGetRaw's 15s default: a read can legitimately outlast
+    // that — the two-stage privilege probe alone budgets ~30s on a host whose
+    // daemon is hung, and STATUS/LIST/LOGS budget 20-30s each. At 15s the tool
+    // would abort with a bare transport error instead of the doctor's reason,
+    // which is exactly the diagnosis the caller needs on such a host.
+    const r = await workerGetRaw(routePath, 120_000);
     if (r && r.success) return ok(pretty(r.data));
     return err(envelopeError(r));
   } catch (e) {
