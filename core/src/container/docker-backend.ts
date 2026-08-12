@@ -568,7 +568,24 @@ export class DockerBackend implements ContainerBackend {
     for (const v of spec.volumes) args.push('--volume', `${v.source}:${v.target}${v.readOnly ? ':ro' : ''}`);
     args.push('--pull', spec.pull);
     args.push(spec.image, ...spec.command);
-    await docker(args, RUN_TIMEOUT_MS, `container run ${spec.name}`);
+    try {
+      await docker(args, RUN_TIMEOUT_MS, `container run ${spec.name}`);
+    } catch (e) {
+      // 🔴 `docker run -d` CREATES the container before it starts it, so a
+      // start-time failure (a published port already taken is the common one)
+      // leaves a dead container squatting the NAME — and the caller's obvious
+      // retry then fails with CONTAINER_EXISTS, blaming the wrong thing.
+      // Found by the 117 e2e. Never clean up on CONTAINER_EXISTS: there the
+      // container that owns the name is someone else's and predates this call.
+      if (!(e instanceof ContainerError && e.code === 'CONTAINER_EXISTS')) {
+        try {
+          await docker(['rm', '-f', spec.name], DELETE_TIMEOUT_MS, `cleanup ${spec.name}`);
+        } catch {
+          /* best effort — the original failure is what the caller needs */
+        }
+      }
+      throw e;
+    }
     return this.getAfterWrite(spec.name, spec);
   }
 
