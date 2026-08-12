@@ -102,12 +102,14 @@ interface JobView {
   id: string; name?: string; description?: string; type: string; enabled: boolean; intervalMinutes: number;
   config: Record<string, any>; lastRunAt: string | null; lastResult: string | null; lastStatus: string | null;
   lastRun?: RunRec | null; runLog?: RunRec[]; runCount?: number; builtin: boolean; nextRunAt: string | null; isRunning: boolean;
+  disabledByEnv?: boolean;
 }
 interface RunRec { at: string; status: string; result: string; trigger: string; exitCode?: number | null; durationMs?: number; stdout?: string; stderr?: string; condition?: string; }
 
 function fmtJob(j: JobView): string {
   const runAt = typeof j.config?.runAt === 'string' ? j.config.runAt : null;
-  const state = !j.enabled ? 'disabled'
+  const state = j.disabledByEnv ? 'DISABLED BY ENV (LM_DISABLE_JOBS — never executes until lifted)'
+    : !j.enabled ? 'disabled'
     : runAt ? (j.lastRun ? 'one-time · done' : `one-time @ ${runAt}`)
     : j.intervalMinutes > 0 ? `every ${j.intervalMinutes}m` : 'trigger-only';
   const lines = [`- ${j.id}${j.name ? `  "${j.name}"` : ''}${j.builtin ? ' (built-in)' : ''}  [${state}]`];

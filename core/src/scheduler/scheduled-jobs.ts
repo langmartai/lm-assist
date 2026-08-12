@@ -12,9 +12,10 @@
  * compare timestamps — a long interval is just "elapsed >= interval", never a
  * single oversized setTimeout.
  *
- * SAFETY: the one built-in job (`cleanup-test-conversations`) deletes claude.ai
- * conversations when armed. It ships DISABLED with dryRun=true. The user arms
- * the actual deletion (set enabled + config.dryRun=false) themselves — the
+ * SAFETY: destructive built-ins (e.g. `cleanup-test-conversations` deletes claude.ai
+ * conversations, `executor-reaper` kills panes) ship DISARMED — disabled and/or
+ * dryRun=true (see makeBuiltinJobs for the per-job policy). The user arms the
+ * destructive action (set enabled + config.dryRun=false) themselves — the
  * scheduler only provides the mechanism. A dry-run sweep is non-destructive
  * (it just reports what WOULD be deleted) and the default selection matches
  * only expired-TTL markers + explicit ids (never a conversation without an
@@ -96,7 +97,24 @@ export type JobHandler = (
   ctx: { dryRunForced: boolean },
 ) => Promise<JobRunOutcome>;
 
-export type ScheduledJobView = ScheduledJob & { nextRunAt: string | null; isRunning: boolean };
+export type ScheduledJobView = ScheduledJob & { nextRunAt: string | null; isRunning: boolean; disabledByEnv: boolean };
+
+/**
+ * Ids named by the `LM_DISABLE_JOBS` env kill switch (comma-separated, e.g.
+ * `LM_DISABLE_JOBS=executor-reaper,worktree-gc`). Read at RUN TIME on every check — never
+ * cached — so the override works regardless of what the persisted store says and survives a
+ * dist-sync/upgrade/restart: an env-disabled job never executes until the env var is lifted.
+ */
+export function envDisabledJobIds(raw: string | undefined = process.env.LM_DISABLE_JOBS): Set<string> {
+  const out = new Set<string>();
+  if (typeof raw === 'string') {
+    for (const part of raw.split(',')) {
+      const id = part.trim();
+      if (id) out.add(id);
+    }
+  }
+  return out;
+}
 
 // ── Pure scheduling logic (unit-tested) ──────────────────────────────
 
@@ -236,7 +254,16 @@ export function formatShellResult(r: { code: number | null; stdout: string; stde
   };
 }
 
-/** The built-in jobs, seeded on first load. All ship inert (disabled). */
+/**
+ * The built-in jobs, seeded on FRESH stores only — an existing store's persisted values win
+ * (see load()), so changing a seed here never flips a job on a node that already has a store.
+ *
+ * Seeding policy (the executor-reaper incident's lesson): a DESTRUCTIVE built-in — anything
+ * that kills/reaps/deletes (executor-reaper, worktree-gc's delete action,
+ * cleanup-test-conversations) — ships DISARMED (disabled and/or dryRun:true) and is armed by
+ * a human. Observational/recovery monitors (stall-monitor, auth-monitor, mission-controller)
+ * ship enabled, matching their prod reality.
+ */
 export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
   const at = iso(nowMs);
   return [
@@ -295,11 +322,14 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
     {
       id: 'worktree-gc',
       name: 'Worktree GC',
-      description: 'Reclaim disk from parked worktrees: remove CLEAN+MERGED worktrees of done/archived missions (dirty/unmerged/active are never touched; git re-verifies on remove), and trim idle .next build caches in kept ones. Born from the 2026-07-21 disk-full incident.',
+      description: 'Reclaim disk from parked worktrees: remove CLEAN+MERGED worktrees of done/archived missions (dirty/unmerged/active are never touched; git re-verifies on remove), and trim idle .next build caches in kept ones. Born from the 2026-07-21 disk-full incident. Ships dry-run — arm with config.dryRun=false.',
       type: 'worktree-gc',
-      enabled: true,
+      enabled: true, // the sweep stays on so a fresh node still REPORTS reclaimable disk…
       intervalMinutes: 360,
-      config: { dryRun: false, idleCacheHours: 24, staleNoMissionDays: 7 },
+      // …but the deleting action seeds dryRun:true (executor-reaper incident lesson: destructive
+      // actions never self-arm on a fresh store). The human arms config.dryRun=false after
+      // reviewing a dry-run report. Existing stores keep their persisted dryRun value.
+      config: { dryRun: true, idleCacheHours: 24, staleNoMissionDays: 7 },
       lastRunAt: null,
       lastResult: null,
       lastStatus: null,
@@ -311,9 +341,12 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
       id: 'executor-reaper',
       name: 'Executor reaper',
       description:
-        'Retire mission executor panes whose work is finished: mission done/failed + pane idle + context exhausted (or idle past the threshold). Harvests results from the merge commits BEFORE reaping so the record is never silently empty. Never touches an active/waiting mission, a mid-turn pane, an onboarded session, or a pane it cannot resolve to a mission. SHIPS DRY-RUN — arm with config.dryRun=false.',
+        'Retire mission executor panes whose work is finished: mission done/failed + pane idle + context exhausted (or idle past the threshold). Harvests results from the merge commits BEFORE reaping so the record is never silently empty. Never touches an active/waiting mission, a mid-turn pane, an onboarded session, or a pane it cannot resolve to a mission. Ships DISABLED + dry-run — enable it, review the would-reap list, then arm with config.dryRun=false.',
       type: 'executor-reaper',
-      enabled: true,
+      // DISABLED BY DEFAULT — the executor-reaper incident: a built-in that KILLS panes must
+      // never self-arm on a fresh store. A human enables it, reviews the dry-run reap list,
+      // and only then arms config.dryRun=false. Existing stores keep their persisted value.
+      enabled: false,
       intervalMinutes: 60,
       config: {
         // dryRun TRUE → reports the full would-reap list without killing anything.
@@ -345,13 +378,19 @@ export function jobsFilePath(): string {
 
 const TICK_MS = 60_000;
 
-class ScheduledJobs {
+export class ScheduledJobs {
   private jobs: Map<string, ScheduledJob> = new Map();
   private handlers: Map<string, JobHandler> = new Map();
   private running: Set<string> = new Set();
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private _started = false;
   private loaded = false;
+  /** mtime of the store file at our last read/write — a newer mtime means a hand-edit. */
+  private lastDiskMtimeMs = 0;
+  /** Job ids THIS process mutated (upsert/delete) since the last disk sync — their values beat a hand-edit. */
+  private mutatedSinceSync: Set<string> = new Set();
+  /** Which env-disabled ids we already logged, so a due job doesn't log every tick. */
+  private envDisabledLogged: Set<string> = new Set();
 
   /** Register a handler for a job `type`. Idempotent (last registration wins). */
   registerHandler(type: string, fn: JobHandler): void {
@@ -483,6 +522,7 @@ class ScheduledJobs {
     } catch {
       arr = []; // no file yet → just the built-ins
     }
+    try { this.lastDiskMtimeMs = fs.statSync(jobsFilePath()).mtimeMs; } catch { this.lastDiskMtimeMs = 0; }
     if (!Array.isArray(arr)) arr = [];
     for (const j of arr) {
       if (!j || typeof j.id !== 'string') continue;
@@ -515,12 +555,58 @@ class ScheduledJobs {
     try {
       const f = jobsFilePath();
       fs.mkdirSync(path.dirname(f), { recursive: true });
+      this.mergeHandEdits(f); // never silently clobber an operator's edit
       const tmp = f + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify([...this.jobs.values()], null, 2));
       fs.renameSync(tmp, f); // atomic replace
+      this.mutatedSinceSync.clear(); // disk now reflects this process's mutations
+      try { this.lastDiskMtimeMs = fs.statSync(f).mtimeMs; } catch { /* keep the old mark */ }
     } catch (e: any) {
       console.error(`[ScheduledJobs] persist failed: ${e?.message || e}`);
     }
+  }
+
+  /**
+   * Guard against silently losing a hand-edit: persist() rewrites the WHOLE file from memory,
+   * so an operator editing scheduled-jobs.json while Core runs (e.g. disarming a job during an
+   * incident) used to lose that edit on the next in-process mutation. Before overwriting,
+   * compare the file's mtime with the last read/write THIS process made; if the file is newer,
+   * adopt the on-disk enabled/schedule/config fields for every job this process has NOT itself
+   * mutated since the last sync — and log the hand-edit loudly. (Run state — lastRun/runLog —
+   * stays in-memory: this process's runs are always newer than the edited file's copies.)
+   */
+  private mergeHandEdits(f: string): void {
+    let mtimeMs: number;
+    try { mtimeMs = fs.statSync(f).mtimeMs; } catch { return; } // no file yet → nothing to merge
+    if (mtimeMs <= this.lastDiskMtimeMs) return;
+    let arr: unknown;
+    try { arr = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e: any) {
+      console.error(`[ScheduledJobs] ⚠️ HAND-EDIT DETECTED in ${f} but the file is unparseable (${e?.message || e}) — keeping in-memory state`);
+      return;
+    }
+    if (!Array.isArray(arr)) return;
+    const taken: string[] = [];
+    const kept: string[] = [];
+    for (const d of arr as Array<Partial<ScheduledJob>>) {
+      if (!d || typeof d.id !== 'string') continue;
+      const mem = this.jobs.get(d.id);
+      if (!mem) continue; // hand-added/hand-deleted jobs are reconciled on the next Core start
+      if (this.mutatedSinceSync.has(d.id)) { kept.push(d.id); continue; } // our change is newer than the edit
+      const enabled = typeof d.enabled === 'boolean' ? d.enabled : mem.enabled;
+      const intervalMinutes = typeof d.intervalMinutes === 'number' ? d.intervalMinutes : mem.intervalMinutes;
+      const config = d.config && typeof d.config === 'object' && !Array.isArray(d.config)
+        ? { ...mem.config, ...d.config }
+        : mem.config;
+      if (enabled !== mem.enabled || intervalMinutes !== mem.intervalMinutes || JSON.stringify(config) !== JSON.stringify(mem.config)) {
+        this.jobs.set(d.id, { ...mem, enabled, intervalMinutes, config });
+        taken.push(`${d.id}${enabled !== mem.enabled ? ` (enabled→${enabled})` : ''}`);
+      }
+    }
+    console.error(
+      `[ScheduledJobs] ⚠️ HAND-EDIT DETECTED: ${f} was modified outside this process — ` +
+        (taken.length ? `adopted on-disk enabled/schedule/config for: ${taken.join(', ')}` : 'no adoptable differences') +
+        (kept.length ? `; kept this process's newer values for: ${kept.join(', ')}` : ''),
+    );
   }
 
   start(): void {
@@ -569,6 +655,17 @@ class ScheduledJobs {
     this.load();
     const job = this.jobs.get(id);
     if (!job) return null;
+    // LM_DISABLE_JOBS kill switch — checked at RUN TIME so it beats any store state and
+    // survives a dist-sync. An env-disabled job never executes, on ANY trigger (an emergency
+    // override outranks even an explicit manual run — lift the env var to run the job).
+    if (envDisabledJobIds().has(id)) {
+      if (!this.envDisabledLogged.has(id)) {
+        this.envDisabledLogged.add(id);
+        console.log(`[ScheduledJobs] "${id}" is disabled by LM_DISABLE_JOBS — never executing (overrides store state; unset the env var and restart-free to re-enable)`);
+      }
+      return this.viewOf(job);
+    }
+    this.envDisabledLogged.delete(id); // env lifted → a future re-listing logs again
     if (this.running.has(id)) return this.viewOf(job);
     const trigger: JobTrigger = opts.trigger || (opts.force ? 'manual' : 'schedule');
     if (trigger === 'schedule' && !job.enabled) return this.viewOf(job); // disabled → no-op on a tick
@@ -649,8 +746,9 @@ class ScheduledJobs {
   }
 
   private viewOf(job: ScheduledJob): ScheduledJobView {
-    const ms = nextRunAtMs(job, Date.now());
-    return { ...job, nextRunAt: ms == null ? null : iso(ms), isRunning: this.running.has(job.id) };
+    const disabledByEnv = envDisabledJobIds().has(job.id);
+    const ms = disabledByEnv ? null : nextRunAtMs(job, Date.now()); // it will never fire while overridden
+    return { ...job, nextRunAt: ms == null ? null : iso(ms), isRunning: this.running.has(job.id), disabledByEnv };
   }
 
   listJobs(): ScheduledJobView[] {
@@ -686,6 +784,7 @@ class ScheduledJobs {
         updatedAt: iso(now),
       };
       this.jobs.set(patch.id, updated);
+      this.mutatedSinceSync.add(patch.id); // an API/MCP edit outranks a concurrent hand-edit
       this.persist();
       return this.viewOf(updated);
     }
@@ -708,6 +807,7 @@ class ScheduledJobs {
       updatedAt: iso(now),
     };
     this.jobs.set(created.id, created);
+    this.mutatedSinceSync.add(created.id);
     this.persist();
     return this.viewOf(created);
   }

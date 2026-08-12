@@ -137,7 +137,13 @@ export function createSchedulerRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!existing) return { success: false, error: { code: 'NOT_FOUND', message: `No job "${id}"` } };
         const deleted = getScheduledJobs().deleteJob(id);
         if (!deleted) {
-          return { success: false, error: { code: 'BUILTIN', message: `"${id}" is a built-in job — disable it instead of deleting` } };
+          // Name the exact lever — an error that says only "disable it" leaves the caller
+          // hunting for HOW (the executor-reaper incident's operational lesson).
+          return { success: false, error: { code: 'BUILTIN', message:
+            `"${id}" is a built-in job and cannot be deleted. Disable it instead: ` +
+            `PUT /scheduler/jobs/${id} {"enabled":false} (REST) or ` +
+            `scheduler_jobs(action="update", id="${id}", auto_run=false) (MCP). ` +
+            `For an emergency stop that survives store rewrites, set LM_DISABLE_JOBS=${id} in the Core environment.` } };
         }
         return { success: true, data: { deleted: id } };
       },
