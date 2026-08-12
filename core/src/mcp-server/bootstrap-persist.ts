@@ -36,6 +36,16 @@ export function bootstrapMarkerFile(): string {
   return path.join(getDataDir(), `mcp-bootstrapped${isDevRepo() ? '-dev' : ''}.json`);
 }
 
+let tmpSeq = 0;
+/** Unique tmp path per PROCESS (pid) and per FLUSH (counter), in the marker
+ *  file's own directory so the rename stays atomic. The old literal
+ *  `file + '.tmp'` was shared by every process writing this file — Core's HTTP
+ *  transport and each stdio plugin MCP process — so two concurrent flushes
+ *  could interleave write/rename on one tmp path. */
+export function markerTmpPath(): string {
+  return `${bootstrapMarkerFile()}.${process.pid}.${++tmpSeq}.tmp`;
+}
+
 /** Pure: apply the age cap, then the count cap (keeping the most recent). */
 export function pruneMarkers(markers: Record<string, PersistedMarker>, now = Date.now()): Record<string, PersistedMarker> {
   const recency = (m: PersistedMarker) => Math.max(m.lastSeen || 0, m.bootstrappedAt || 0);
@@ -44,6 +54,37 @@ export function pruneMarkers(markers: Record<string, PersistedMarker>, now = Dat
     .sort(([, a], [, b]) => recency(b) - recency(a))
     .slice(0, MAX_PERSISTED_MARKERS);
   return Object.fromEntries(kept);
+}
+
+/** Validate an unknown JSON parse into a marker map, dropping malformed entries.
+ *  Shared by the process-start load and the merge-on-flush re-read so both see
+ *  the file through the same shape guard. */
+function validateMarkers(parsed: unknown): Record<string, PersistedMarker> {
+  const valid: Record<string, PersistedMarker> = {};
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return valid;
+  for (const [id, m] of Object.entries(parsed as Record<string, unknown>)) {
+    const cand = m as PersistedMarker | null;
+    if (cand && typeof cand === 'object' && typeof cand.bootstrappedAt === 'number' && typeof cand.lastSeen === 'number') {
+      valid[id] = { bootstrappedAt: cand.bootstrappedAt, lastSeen: cand.lastSeen };
+    }
+  }
+  return valid;
+}
+
+/** Pure: union of two marker maps. For a session present in both, keep the
+ *  newest of EACH timestamp — no writer can move a marker backwards. */
+export function mergeMarkers(
+  a: Record<string, PersistedMarker>,
+  b: Record<string, PersistedMarker>,
+): Record<string, PersistedMarker> {
+  const out: Record<string, PersistedMarker> = { ...a };
+  for (const [id, m] of Object.entries(b)) {
+    const prev = out[id];
+    out[id] = prev
+      ? { bootstrappedAt: Math.max(prev.bootstrappedAt, m.bootstrappedAt), lastSeen: Math.max(prev.lastSeen, m.lastSeen) }
+      : m;
+  }
+  return out;
 }
 
 /** ONE sync read of the (small, pruned) marker file. Called once per process,
@@ -55,15 +96,7 @@ export function loadPersistedMarkers(now = Date.now()): Map<string, PersistedMar
   let parsed: unknown;
   try { parsed = JSON.parse(fs.readFileSync(bootstrapMarkerFile(), 'utf-8')); }
   catch { return out; }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return out;
-  const valid: Record<string, PersistedMarker> = {};
-  for (const [id, m] of Object.entries(parsed as Record<string, unknown>)) {
-    const cand = m as PersistedMarker | null;
-    if (cand && typeof cand === 'object' && typeof cand.bootstrappedAt === 'number' && typeof cand.lastSeen === 'number') {
-      valid[id] = { bootstrappedAt: cand.bootstrappedAt, lastSeen: cand.lastSeen };
-    }
-  }
-  for (const [id, m] of Object.entries(pruneMarkers(valid, now))) out.set(id, m);
+  for (const [id, m] of Object.entries(pruneMarkers(validateMarkers(parsed), now))) out.set(id, m);
   return out;
 }
 
@@ -76,13 +109,31 @@ let writeChain: Promise<void> = Promise.resolve();
 async function writeNow(): Promise<void> {
   const snap = snapshotFn?.();
   if (!snap) return;
+  let tmp: string | null = null;
   try {
     const f = bootstrapMarkerFile();
     await fs.promises.mkdir(path.dirname(f), { recursive: true });
-    const tmp = f + '.tmp';
-    await fs.promises.writeFile(tmp, JSON.stringify(pruneMarkers(snap)), { mode: 0o600 });
-    await fs.promises.rename(tmp, f);    // atomic replace, same as worker-store
-  } catch { /* persistence is best-effort — worst case is one re-bootstrap */ }
+    // Merge-on-flush: this file is shared by SEVERAL processes (Core's HTTP
+    // transport AND every stdio plugin MCP process Claude Code spawns — all
+    // cross configureMcpServer → resolver → here). Each process seeds its
+    // registry from disk ONCE, so flushing a bare snapshot would erase markers
+    // other processes wrote after we seeded — silent marker loss, i.e. the
+    // BOOTSTRAP_REQUIRED re-refusal this feature exists to eliminate. Re-read
+    // the CURRENT file and union it with our snapshot (newest timestamps win)
+    // before pruning + writing. The merge lives HERE, inside the already-async
+    // debounced flush — the record hot path stays untouched.
+    let onDisk: Record<string, PersistedMarker> = {};
+    try { onDisk = validateMarkers(JSON.parse(await fs.promises.readFile(f, 'utf-8'))); }
+    catch { /* missing/corrupt file merges as empty — same fail-open as load */ }
+    const t = markerTmpPath();
+    tmp = t;
+    await fs.promises.writeFile(t, JSON.stringify(pruneMarkers(mergeMarkers(onDisk, snap))), { mode: 0o600 });
+    await fs.promises.rename(t, f);      // atomic replace, same as worker-store
+    tmp = null;
+  } catch {
+    /* persistence is best-effort — worst case is one re-bootstrap */
+    if (tmp) await fs.promises.unlink(tmp).catch(() => { /* already gone */ });
+  }
 }
 
 /** Write-behind: coalesce every change inside a debounce window into ONE async

@@ -27,6 +27,7 @@ import {
 } from '../mcp-server/mcp-session-resolver';
 import {
   bootstrapMarkerFile,
+  markerTmpPath,
   pruneMarkers,
   loadPersistedMarkers,
   MAX_PERSISTED_MARKERS,
@@ -115,6 +116,61 @@ test('malformed entries inside a valid JSON file are skipped, valid ones kept', 
     JSON.stringify({ good: { bootstrappedAt: now, lastSeen: now }, bad: { bootstrappedAt: 'x' }, worse: 42 }),
   );
   assert.deepEqual([...loadPersistedMarkers().keys()], ['good']);
+});
+
+// ── multi-writer safety ─────────────────────────────────────────────────────
+//
+// The marker file is shared by SEVERAL processes: Core's HTTP transport AND
+// every stdio plugin MCP process Claude Code spawns all cross configureMcpServer
+// → resolver → persistence. Each seeds its in-memory registry from disk ONCE,
+// so a full-snapshot flush from a process that seeded early would erase markers
+// other processes wrote later — silent marker loss, i.e. the exact
+// BOOTSTRAP_REQUIRED re-refusal this feature exists to eliminate. The flush must
+// therefore MERGE with the current file, never clobber it.
+
+test("another writer's marker, flushed after this process seeded, survives our flush", async () => {
+  // Writer A (this process): seeds its registry from the (empty) file, bootstraps conv-A.
+  recordBootstrapped(caller('conv-A'));
+  // Writer B (simulated other process — e.g. a stdio plugin MCP): flushes ITS
+  // snapshot to the shared file AFTER A seeded. A has never seen conv-B.
+  const now = Date.now();
+  fs.mkdirSync(path.dirname(bootstrapMarkerFile()), { recursive: true });
+  fs.writeFileSync(bootstrapMarkerFile(), JSON.stringify({ 'conv-B': { bootstrappedAt: now, lastSeen: now } }));
+  // A's debounced flush fires. A clobbering write would erase conv-B here.
+  await __flushPersistForTest();
+  const onDisk = JSON.parse(fs.readFileSync(bootstrapMarkerFile(), 'utf-8')) as Record<string, PersistedMarker>;
+  assert.ok(onDisk['conv-A'], "this process's own marker must be in the file");
+  assert.ok(onDisk['conv-B'], "the other writer's marker must SURVIVE our flush (merge, not clobber)");
+});
+
+test('a session present in both the file and our snapshot keeps the newest timestamps', async () => {
+  recordBootstrapped(caller('conv-D')); // our snapshot: conv-D at ~now
+  const newer = Date.now() + 60_000; // the other writer saw conv-D more recently
+  fs.mkdirSync(path.dirname(bootstrapMarkerFile()), { recursive: true });
+  fs.writeFileSync(bootstrapMarkerFile(), JSON.stringify({ 'conv-D': { bootstrappedAt: newer, lastSeen: newer } }));
+  await __flushPersistForTest();
+  const onDisk = JSON.parse(fs.readFileSync(bootstrapMarkerFile(), 'utf-8')) as Record<string, PersistedMarker>;
+  assert.equal(onDisk['conv-D'].bootstrappedAt, newer, 'merge must keep the NEWEST bootstrappedAt, never move a marker backwards');
+  assert.equal(onDisk['conv-D'].lastSeen, newer);
+});
+
+test('tmp paths are unique per process AND per flush — concurrent renames cannot collide', () => {
+  // The old literal `file + '.tmp'` was shared by every process writing this
+  // file: two concurrent flushes could interleave write/rename on ONE tmp path.
+  const a = markerTmpPath();
+  const b = markerTmpPath();
+  assert.notEqual(a, b, 'two flushes in one process must not share a tmp path');
+  assert.ok(a.includes(`.${process.pid}.`), 'the pid must be in the tmp name so two PROCESSES cannot share one either');
+  assert.equal(path.dirname(a), path.dirname(bootstrapMarkerFile()), 'tmp must stay in the marker directory so rename stays atomic');
+  assert.ok(a.endsWith('.tmp') && b.endsWith('.tmp'));
+});
+
+test('a flush leaves no tmp litter behind', async () => {
+  recordBootstrapped(caller('conv-E'));
+  await __flushPersistForTest();
+  const dir = path.dirname(bootstrapMarkerFile());
+  const litter = fs.readdirSync(dir).filter((n) => n.endsWith('.tmp'));
+  assert.deepEqual(litter, [], 'the tmp file must be renamed away, not left behind');
 });
 
 test('a persisted marker past the age cap is pruned at load — the session simply re-bootstraps', async () => {
