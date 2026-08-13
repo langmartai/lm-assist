@@ -24,7 +24,9 @@
       <div class="filters">
         <!-- Resources-only: how deep to walk ~/.lm-assist. The server walks the WHOLE
              tree eagerly, so this is the one control that decides the payload size. -->
-        <label class="fld" id="depth-wrap" style="display:none">Tree depth
+        <!-- `hidden`, not style="display:none": app.css carries [hidden]{display:none!important}
+             so the attribute beats .fld's display:flex, and app.js toggles el.hidden. -->
+        <label class="fld" id="depth-wrap" hidden>Tree depth
           <select id="depth">
             <option value="1">1 — top level only (~30 KB)</option>
             <option value="2" selected>2 — default (~1 MB)</option>

@@ -146,11 +146,34 @@ option was the defect.
 
 **When the registry is unreachable** — `/hub/machines` 400s with `Hub not configured` on a node
 with no hub, and the grant could also be denied — nothing else on the page changes, and a notice
-above both columns states plainly: the server's own `code: message`, that platform indicators are
-hidden, and that the node list has fallen back to the cluster map alone so an offline node with no
-cluster record cannot be selected. It offers a Retry that re-reads only that route. The registry
-is a **secondary** source: its failure never raises the full-screen fatal overlay, which stays
-reserved for `/cluster/list`.
+above both columns states plainly: a plain-English lead, the server's own message verbatim, that
+platform indicators are hidden, and that the node list has fallen back to the cluster map alone so
+an offline node with no cluster record cannot be selected. It offers a Retry that re-reads only
+that route. The registry is a **secondary** source: its failure never raises the full-screen fatal
+overlay, which stays reserved for `/cluster/list`.
+
+🔴 **That notice must not print a bare `HTTP_400`.** `GET /hub/machines` answers *every* hub-side
+condition with HTTP 400 and a bare string (`hub.routes.ts`) — `Hub not configured`, `Not connected
+to hub`, `Hub returned <status>`, or the hub fetch's own error. None of them is a complaint about
+the request, and none can be: the pane hard-codes a parameterless GET. The envelope carries no
+`error.code`, so `api()` synthesizes `HTTP_400`, and 400 is the one status an operator reads as
+"this page sent something bad". The pane therefore leads with the hub (`The hub is unreachable
+from this node…`), prints the status as `HTTP 400: <the server's own words>` rather than as a
+code the server chose, and adds one line saying the 400 is the route's catch-all. The server is
+another owner's file and is left alone; the compensation is entirely in the pane.
+
+🔴 **The degraded warning cannot live in the `<select>`.** It used to: the placeholder read
+`— pick a node · cluster map only, registry unavailable —`, and a `<select>` renders only as much
+of its selected option as the control is **wide** and cannot wrap. Measured in Chrome, that string
+needs a **354px** control; the field is **350px** even widened to the full row, so the sentence was
+silently truncated (the trailing em-dash rendered as a stub), and at a 380px viewport the field is
+314px — 40px short, which costs whole words. The control now carries a short flag that fits
+(`— pick a node · registry unavailable —`, intrinsic **251px**, 99px of headroom at 350px; the
+`registry empty` variant 220px), and the sentence itself is `#node-warn`, an ordinary wrapping
+block inside the field label. Being a block is the fix: it reflows instead of clipping, so it is
+fully visible at every width — verified 380→1600px, `scrollWidth == clientWidth` throughout.
+`.fld.wide` is kept because the option **labels** are long (the longest measured needs 330px), not
+because it makes the warning readable — nothing about a control's width can.
 
 Platform indicators follow the same honesty rule: the emoji is rendered **only** for a member the
 registry actually knows. `getPlatformEmoji()` has no "unknown" bucket — it falls through to 🐧 —
@@ -183,8 +206,21 @@ map-only and once complete.
   every string field — hostname, platform, cluster name, status, description, gatewayId — never
   appears unescaped on any surface), the two-click arm, and the `BAD_NODE` explanation.
 
-Not verified: the pane has not been rendered in a browser, deployed to `~/.lmui/apps`, or served
-by a running local tier — deploying and restarting services were out of scope for this change.
+- **Rendered in headless Chrome against the running local tier on `:5603`**, with the
+  `/hub/machines` response replaced per-load by CDP request interception, over every failure the
+  route can produce (`Hub not configured`, `Not connected to hub`, `Hub returned 503`,
+  `fetch failed`, a timeout, the generic `Failed to fetch machines`, an empty `machines[]`, a dead
+  transport, and a non-JSON HTTP 500) plus the untouched healthy path. Each load was measured, not
+  eyeballed: `#node-warn` `scrollWidth == clientWidth` and `scrollHeight == clientHeight` in all of
+  them, and every one of its text line-boxes (`Range.getClientRects()`) inside the element's
+  padding box and the viewport.
+- **Legibility measured at 380 / 480 / 640 / 820 / 1024 / 1280 / 1600px**, dark and light, plain
+  and `?embed=1`. The warning wraps to 1–3 lines and never overflows; the placeholder's Chrome
+  intrinsic width (a `width:auto` clone of the real control — the engine stating what it needs)
+  stays at or below the control's actual width at every one of them.
+- **Retry round-trip**: degraded → `Retry` with the route healthy → degraded again. `#fld-node`
+  goes `fld wide` 350px / 3 options → `fld` 170px / 21 options / `#node-warn` hidden /
+  `#src-ok` shown / `machine registry: 20 machines` → back again. No page errors on any load.
 
 ## Deploy
 

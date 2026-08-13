@@ -5,6 +5,14 @@
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
+/* 🔴 Author `display` rules OUTRANK the UA sheet's `[hidden]{display:none}`, because a class or
+   id selector beats a bare attribute selector. Nearly every region below sets display (flex on
+   .filters rows / .live / .scope-line / #who, grid on main and .row, block elsewhere), so a
+   plain `el.hidden = true` would recolor nothing and hide nothing — the element stays on screen.
+   Make the attribute win outright, so hiding is a property of the element and not of whichever
+   rule happens to be more specific. Same rule, same reason, as assist-data. */
+[hidden]{display:none!important}
+
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
 header h1{font-size:1rem;margin:0;font-weight:600}
 .chip{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}

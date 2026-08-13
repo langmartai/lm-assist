@@ -5,6 +5,15 @@
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
+/* 🔴 The UA's own `[hidden]{display:none}` is a plain attribute selector, so ANY class or id rule
+   that sets `display` outranks it — and this file sets `display` on most of its regions
+   (.note is grid-column'd, .chip-row is flex, .mem is flex). Without `!important` an element the
+   JS marks `hidden = true` stays on screen, which for #mach-note means a stale "loading…" or a
+   dismissed warning keeps asserting a state that is no longer true. Make the attribute win
+   globally rather than chasing one `.foo[hidden]` rule per region — the miss is silent, and every
+   region added later inherits the bug. */
+[hidden]{display:none!important}
+
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
 header h1{font-size:1rem;margin:0;font-weight:600}
 .chip{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}
@@ -88,12 +97,33 @@ main{display:grid;grid-template-columns:24rem minmax(0,1fr);gap:1rem;padding:1re
 /* ── forms (assign + describe) ─────────────────────────────────────────── */
 .form-row{display:flex;gap:.6rem;flex-wrap:wrap}
 .fld{display:flex;flex-direction:column;gap:.22rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);flex:1;min-width:9rem}
+/* Own row. Used by #fld-node UNCONDITIONALLY (set in the markup, not toggled): its option labels
+   are "<emoji> <hostname> · <gatewayId> · <cluster>[ · offline]" and half a 24rem column is 170px,
+   which clips EVERY one of them. It is not what keeps the degraded warning legible — .fld-warn
+   below is, because no control width can clip it. */
+.fld.wide{flex:1 0 100%}
 .fld input,.fld select{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.35rem .5rem;font-size:.8rem;text-transform:none;letter-spacing:normal;width:100%;max-width:100%}
 /* The node <select> groups its options ("in the cluster map" / "registry only"); without these
    the popup falls back to the UA's own colours and goes unreadable on the dark theme. */
 .fld select optgroup{background:var(--panel2);color:var(--dim);font-style:normal;font-size:.75rem}
 .fld select option{background:var(--panel2);color:var(--txt);font-style:normal}
 .fld select:disabled{opacity:.6;cursor:not-allowed}
+/* 🔴 The sentence a <select> CANNOT show. It sits inside the <label>, under the control, as an
+   ordinary wrapping block: `white-space:normal` + `overflow-wrap:anywhere` mean its text reflows
+   to whatever width the field has instead of being clipped to the control's, which is the whole
+   reason the warning moved out of the option text. `.fld` is uppercase/letter-spaced/.68rem for
+   the field CAPTION, so undo all three here exactly as `.fld input,.fld select` does — an
+   uppercased sentence is the other half of "unreadable". Amber, like .note.warn. */
+.fld .fld-warn{font-size:.66rem;line-height:1.45;color:var(--amber);text-transform:none;letter-spacing:normal;white-space:normal;overflow-wrap:anywhere;margin-top:.12rem}
+/* 🔴 The label a <select> STILL cannot show, even on its own row. Measured in Chrome on this
+   fleet: the widest real option ('🐧 ubuntu-Virtual-Machine (dev) · gw4-0065715a · no cluster
+   record · offline') needs a 469px control, and the widest this field can ever be is the list
+   column's content box — 350px on a desktop, 314px at a 380px viewport. 469 into 350 does not go
+   at any font size an operator can read, so the full text of the CURRENT PICK is echoed here as
+   an ordinary wrapping block: same escape hatch as .fld-warn above, dim rather than amber because
+   it confirms rather than warns. Undo the caption's uppercase/letter-spacing/size exactly as
+   `.fld input,.fld select` does. */
+.fld .fld-pick{font-size:.66rem;line-height:1.45;color:var(--dim);text-transform:none;letter-spacing:normal;white-space:normal;overflow-wrap:anywhere;margin-top:.12rem}
 .hint{font-size:.66rem;color:var(--dim);line-height:1.45;margin:.15rem 0 .2rem}
 
 .actions{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0 .3rem}
@@ -113,9 +143,10 @@ button.danger{background:var(--red);color:#450a0a}
 .note.warn{border-color:var(--amber);color:var(--amber)}
 .note .note-sub{color:var(--dim);display:block;margin-top:.15rem}
 .note .note-btn{margin-top:.4rem;font-size:.68rem;padding:.2rem .55rem}
-/* Explicit rather than relying on the UA's [hidden] rule, which any later `display` on .note
-   would silently outrank — and a stuck-visible "loading…" notice is a lie about live state. */
-.note[hidden]{display:none}
+/* The server's own verbatim text, kept next to the plain-English lead instead of replacing it. */
+.note .note-raw{font-family:ui-monospace,monospace;display:block;margin-top:.2rem;word-break:break-word}
+/* Hiding is handled by the global `[hidden]{display:none!important}` at the top of this file —
+   this rule's `grid-column` is exactly the kind of declaration that used to outrank the UA's. */
 
 /* ── full-screen fatal error (a hard call failure, surfaced verbatim) ───── */
 .fatal{position:fixed;inset:0;background:rgba(2,6,23,.92);display:flex;align-items:center;justify-content:center;padding:1.5rem;z-index:50}
@@ -145,5 +176,8 @@ body.theme-light button.primary{background:var(--blue);color:#fff}
 body.theme-light button.ghost{background:#fff;border:1px solid var(--line);color:#475569}
 body.theme-light button.danger{background:#dc2626;color:#fff}
 body.theme-light .note.warn{border-color:#b45309;color:#b45309}
+/* --amber is a dark-theme value; on white it is barely legible. Same substitution .note.warn
+   makes, so the two amber warnings stay the same colour as each other in both themes. */
+body.theme-light .fld .fld-warn{color:#b45309}
 body.theme-light .fld select optgroup{background:#fff;color:#64748b}
 body.theme-light .fld select option{background:#fff;color:#0f172a}

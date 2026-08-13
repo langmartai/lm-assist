@@ -5,6 +5,14 @@
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
+/* The tab bodies below carry `display` rules (.cols = grid, .stack = flex), and ANY author
+   `display` declaration beats the UA stylesheet's `[hidden]{display:none}` — a class selector
+   outranks that default. Without this line `el.hidden = true` sets the attribute and changes
+   nothing on screen: switchTab() would recolor the pill while BOTH views stayed rendered,
+   stacked into one long page. Make the attribute win everywhere, once, so every present and
+   future `hidden` toggle in this pane actually hides. */
+[hidden]{display:none!important}
+
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
 header h1{font-size:1rem;margin:0;font-weight:600}
 .chip{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}

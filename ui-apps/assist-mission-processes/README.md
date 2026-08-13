@@ -140,6 +140,16 @@ the address bar as you navigate, so a reload lands back on the same doc. A sibli
 `?mission=<id>`; this registry is fleet-wide rather than per-mission, so that param is accepted
 and ignored rather than 404-ing the pane.
 
+An inbound id is **always fetched**, whether or not the loaded registry lists it — the list read
+is leader-anchored and a lagging replica can legitimately omit a doc that exists. An id the
+server then rejects gets an explicit **"no such document"** state naming the id, quoting the
+route's own `NOT_FOUND` text, saying how many docs this node does hold, offering the closest ids
+in the registry as one-click chips, and leaving `?doc=` in the address bar so the URL and the
+screen agree. *Clear the link* drops the param; *Check again* re-asks. (Before this, an unknown
+`?doc=` was a silent no-op: no request, no message, and a URL still naming a doc nobody opened —
+which is precisely what "nothing is swallowed" is supposed to rule out.) The same rule covers
+*Refresh registry*: a doc that disappears from the list is re-asked, not blanked.
+
 A hard failure of the primary registry call surfaces the server's own error text full-screen; a
 failure of one doc or its history stays inline with a Retry — nothing is swallowed. A failed
 list-refresh *after* a landed write is reported inline instead, because a full-screen error there

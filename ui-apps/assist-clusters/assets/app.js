@@ -221,7 +221,11 @@
       s.push('<span class="fchip' + (cur === v ? ' on' : '') + '" data-fs="' + esc(v) + '">' + esc(v) + '</span>');
     });
     $('chips-status').innerHTML = s.join('');
-    $('row-status').style.display = vals.length ? '' : 'none';   // no statuses set anywhere → no chip row
+    // No statuses set anywhere → no chip row. The `hidden` PROPERTY, not an inline display: the
+    // toggle is now uniform across this pane, and `[hidden]{display:none!important}` in app.css
+    // makes it beat `.chip-row{display:flex}` — which is exactly what an inline style was working
+    // around here.
+    $('row-status').hidden = !vals.length;
   }
 
   function passFilter(c) {
@@ -261,10 +265,23 @@
         ? 'No clusters match the current filter.'
         : 'No clusters yet — every node is in the implicit <b>default</b> cluster. Use <b>Assign a node</b> to split the fleet.')
       + '</div>';
-    var nodes = 0;
-    state.clusters.forEach(function (c) { nodes += (c.members || []).length; });
+    // 🔴 This total counts the CLUSTER MAP, which is not the fleet. /cluster/list is the union of
+    // the synced cluster RECORDS and the currently-ONLINE ids, so a node that is offline AND has
+    // no cluster record is in neither — it is absent from every members[] this loop can see. It
+    // used to be labelled "fleet-wide": measured on this node that read 2 while the machine
+    // registry held 20, i.e. it was wrong by 18 with the correct number visible in the dropdown
+    // three lines below it. Name the source instead, and report the registry's own total beside
+    // it so the gap is legible rather than being silently resolved in favour of the smaller one.
+    var nodesAll = 0, nodesVis = 0;
+    state.clusters.forEach(function (c) { nodesAll += (c.members || []).length; });
+    vis.forEach(function (c) { nodesVis += (c.members || []).length; });
+    // Under a filter the shown clusters carry fewer nodes than the map holds; say both rather
+    // than quietly reporting the map total under a heading that reads as "what is on screen".
+    var nodeTxt = (nodesVis === nodesAll)
+      ? nodesAll + ' node' + (nodesAll === 1 ? '' : 's') + ' in the cluster map'
+      : nodesVis + ' of ' + nodesAll + ' nodes in the cluster map';
     $('counts').textContent = 'showing ' + vis.length + ' of ' + state.clusters.length
-      + ' cluster' + (state.clusters.length === 1 ? '' : 's') + ' · ' + nodes + ' node' + (nodes === 1 ? '' : 's') + ' fleet-wide';
+      + ' cluster' + (state.clusters.length === 1 ? '' : 's') + ' · ' + nodeTxt + ' · ' + registryTotalText();
     reportHeight();
   }
 
@@ -317,13 +334,97 @@
     return '<option value="' + esc(e.gatewayId) + '" title="' + esc(title) + '">' + esc(nodeLabel(e)) + '</option>';
   }
 
+  /**
+   * The hint under the dropdown claims where its options come from. That claim is false the
+   * moment the registry read fails — the list becomes the cluster map alone — so it is withdrawn
+   * rather than left standing as static text next to a shrunken list, and the degraded sentence
+   * is stated at the control instead.
+   *
+   * 🔴 That sentence is NOT carried by the <select>'s selected-option text, which is where it
+   * used to live. A <select> renders only as much of that text as the control is wide and cannot
+   * wrap it, so the warning was truncated at every width this column ever has: Chrome's own
+   * intrinsic width for '— pick a node · cluster map only, registry unavailable —' is 354px and
+   * the field is 350px even with .wide, which cost the trailing em-dash and would cost whole
+   * words on a narrower viewport. #node-warn is an ordinary wrapping block, so it reflows
+   * instead of clipping and stays legible at any width. The control keeps a short flag that fits.
+   */
+  function paintNodeSrcHint() {
+    var ok = $('src-ok'), warn = $('node-warn');
+    var degraded = state.machState !== 'ok';
+    // #fld-node used to be widened to the full row HERE, only while degraded. That toggle is gone:
+    // the field is `class="fld wide"` in the markup unconditionally, because the option labels are
+    // long on BOTH paths — measured, the HEALTHY list is the longer one (the registry-only half
+    // adds "· no cluster record · offline"), so the state this widened for was the wrong one.
+    if (ok) ok.hidden = degraded;
+    if (!warn) return;
+    // 'loading' is transient and the control already says "loading nodes…" — a warning that
+    // appears and vanishes on every refresh trains the operator to ignore this line.
+    if (!degraded || state.machState === 'loading') { warn.hidden = true; warn.textContent = ''; return; }
+    warn.hidden = false;
+    warn.textContent = (state.machState === 'empty'
+      ? 'Cluster map only: the hub answered, but its machine registry lists no machines. '
+      : 'Cluster map only: the machine registry is unavailable. ')
+      + 'A node that is offline AND has no cluster record is missing from this list entirely — '
+      + 'it is not the fleet.';
+  }
+
+  /**
+   * The <select>'s own text, and SHORT by construction: it is the one string on this page that
+   * cannot wrap, so it flags the degradation and #node-warn carries the explanation. Measured
+   * against Chrome's intrinsic width for this control — 350px on a desktop, and 314px at the
+   * narrowest viewport this pane is checked at (380px): '— pick a node · registry unavailable —'
+   * needs 258px, '— pick a node · registry empty —' 228px, the widest form here ('— no nodes
+   * known · registry unavailable —') 285px — all fit at BOTH widths.
+   * 'empty' is a distinct state on purpose: the registry answered, it just had nothing in it,
+   * and calling that "unavailable" is a claim the pane cannot support.
+   */
+  function nodePlaceholder(anyNodes) {
+    var head = anyNodes ? '— pick a node' : '— no nodes known';
+    if (state.machState === 'ok') return head + ' —';
+    if (state.machState === 'empty') return head + ' · registry empty —';
+    return head + ' · registry unavailable —';
+  }
+
+  /**
+   * 🔴 The pick, said in text that CAN wrap.
+   *
+   * The <select> renders only as much of its selected option as the control is wide, and this
+   * control cannot be made wide enough: its widest real label ('🐧 ubuntu-Virtual-Machine (dev) ·
+   * gw4-0065715a · no cluster record · offline') needs 469px in Chrome, while the field's ceiling
+   * is the list column's content box — 350px on a desktop even with the full row, 314px at a 380px
+   * viewport. Half a column (the old layout) was 170px and clipped all 20 node options at EVERY
+   * viewport; the full row clears them all between 600px and 1000px (one column, wide pane) and
+   * halves the deficit on a desktop, but the tail survives — and this fleet's tail is 18
+   * same-hostname machines that differ ONLY in the gatewayId a truncated label eats first, which
+   * is exactly "assigned the wrong node".
+   *
+   * So the control keeps whatever it can show and the full label is echoed here, the same escape
+   * hatch #node-warn uses. Echoed on every repaint AND on change, because the option set is
+   * rebuilt under the user (load() → paintNodeSelect()) and a stale echo naming a node that is no
+   * longer selected is worse than none.
+   *
+   * textContent, never innerHTML: the label is built from server-supplied hostnames.
+   */
+  function paintNodePick() {
+    var el = $('a-node'), pick = $('node-pick');
+    if (!el || !pick) return;
+    var opt = el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
+    // No pick yet (or the placeholder is selected): the placeholder is short by construction and
+    // fits in the control, so echoing it would be noise under an empty field.
+    if (!el.value || !opt) { pick.hidden = true; pick.textContent = ''; return; }
+    pick.hidden = false;
+    pick.textContent = 'picked: ' + opt.textContent;
+  }
+
   function paintNodeSelect() {
     var el = $('a-node');
+    paintNodeSrcHint();
     // LOADING: the registry is still in flight, so the union is not final yet. Say so rather
     // than briefly showing the map-only list, which is the exact under-count being fixed.
     if (state.machState === 'loading') {
       el.innerHTML = '<option value="">loading nodes…</option>';
       el.disabled = true;
+      paintNodePick();
       return;
     }
     el.disabled = state.busy;
@@ -331,13 +432,17 @@
     // EMPTY: no node from either source. Possible on a node whose cluster record has not
     // published yet and whose hub is unreachable — an empty <select> alone would read as a bug.
     if (!all.length) {
-      el.innerHTML = '<option value="">— no nodes known —</option>';
+      el.innerHTML = '<option value="">' + esc(nodePlaceholder(false)) + '</option>';
       state.pickedNode = '';
+      paintNodePick();
       return;
     }
     var inMap = [], regOnly = [];
     all.forEach(function (e) { (e.cluster ? inMap : regOnly).push(e); });
-    var opts = ['<option value="">— pick a node —</option>'];
+    // The control flags the degradation too — the note at the top of the page can be scrolled
+    // off, while this string is inside the control whose contents are incomplete. A FLAG, not
+    // the message: see nodePlaceholder() for why the sentence itself cannot live here.
+    var opts = ['<option value="">' + esc(nodePlaceholder(true)) + '</option>'];
     // Group labels are model constants, but they are escaped anyway — an unescaped literal is a
     // pattern that survives being edited into a server value later.
     if (inMap.length) {
@@ -353,9 +458,68 @@
     // the <select> silently falls back to '' and state must follow, or doAssign would post an
     // id that is no longer on screen.
     state.pickedNode = el.value;
+    paintNodePick();     // last: the echo must name what the REBUILT control actually holds
   }
 
-  // ── machine-registry notice ───────────────────────────────────────────────
+  // ── machine-registry state, said out loud ─────────────────────────────────
+  /** The registry half of the counts line — never a number this pane does not actually have. */
+  function registryTotalText() {
+    if (state.machState === 'loading') return 'machine registry: loading…';
+    if (state.machState === 'error') return 'machine registry: unavailable — fleet size unknown';
+    if (state.machState === 'empty') return 'machine registry: no machines';
+    return 'machine registry: ' + state.machines.length + ' machine' + (state.machines.length === 1 ? '' : 's');
+  }
+
+  /**
+   * Turn the route's failure into a claim an operator can act on, WITHOUT discarding its text.
+   *
+   * 🔴 GET /hub/machines answers EVERY hub-side condition the same way: HTTP 400 with a bare
+   * STRING error (core/src/routes/core/hub.routes.ts) — 'Hub not configured', 'Not connected to
+   * hub', 'Hub returned <status>', or the fetch's own message. None of those is a complaint
+   * about the REQUEST, and none can be: this pane hard-codes a parameterless GET, so there is
+   * nothing in it to malform. The envelope carries no code either, so api() falls back to
+   * synthesizing 'HTTP_400' — and 400 is the one status an operator reads as "the page sent
+   * something bad", which sends them looking at the wrong end of the wire.
+   *
+   * So: lead with the hub, print the status as this route's CATCH-ALL rather than as a verdict,
+   * and keep the server's own words verbatim underneath — a lead that replaced them would be a
+   * second guess dressed as a diagnosis. The server itself is out of scope (another owner).
+   */
+  function machFailure() {
+    var err = state.machErr || { code: 'ERROR', message: 'no detail reported' };
+    var m = String(err.message || '').toLowerCase();
+    var code = String(err.code || '');
+    var synth = /^HTTP_\d+$/.test(code);   // api() invented it: the envelope carried no code
+    var lead, note = '';
+    if (m.indexOf('not configured') !== -1) {
+      lead = 'This node has no hub configured, so there is no fleet machine registry to reach.';
+    } else if (m.indexOf('hub returned') !== -1) {
+      // The only branch where the hub DID answer — do not call that unreachable.
+      lead = 'The hub was reached but refused the machine registry read.';
+    } else if (code === 'NETWORK') {
+      // NETWORK is thrown by the browser's own fetch, so the call never left this page. Blaming
+      // the hub here would point at a machine that was never contacted.
+      lead = 'This page could not reach this node\'s API, so the machine registry read never went out.';
+    } else if (code === 'HTTP_400' || /not connected|econnrefused|enotfound|fetch failed|timeout|socket hang up|network/.test(m)) {
+      // Everything else the route can answer with — 'Not connected to hub' and the hub fetch's
+      // own error, both of which arrive as the catch-all 400 — is the hub being out of reach.
+      lead = 'The hub is unreachable from this node, so the fleet machine registry could not be read.';
+    } else {
+      lead = 'This node failed the machine registry read before it reached the hub.';
+    }
+    if (code === 'HTTP_400') {
+      note = 'The 400 is this route\'s catch-all for every hub-side condition — not a complaint '
+        + 'about the request, which is a parameterless GET this page hard-codes.';
+    }
+    return {
+      lead: lead,
+      // 'HTTP_400' is api()'s invention; show it as a plain status so it is not mistaken for a
+      // code the server chose. A code the server DID send is printed exactly as it sent it.
+      raw: 'GET /hub/machines → ' + (synth ? 'HTTP ' + code.slice(5) : code) + ': ' + err.message,
+      note: note,
+    };
+  }
+
   // Built with textContent + appendChild, never innerHTML: every branch below interpolates
   // SERVER text (the error message), and this element must stay unable to render markup.
   function paintMachNote() {
@@ -365,21 +529,38 @@
     el.className = state.machState === 'loading' ? 'note' : 'note warn';
     el.textContent = '';
     if (state.machState === 'loading') { el.textContent = 'machine registry: loading…'; return; }
-    var err = state.machErr || { code: 'ERROR', message: 'no detail reported' };
     var head = document.createElement('span');
-    head.textContent = state.machState === 'empty'
-      ? 'Machine registry (GET /hub/machines) returned no machines. '
-      : 'Machine registry (GET /hub/machines) unavailable — ' + err.code + ': ' + err.message + '. ';
+    if (state.machState === 'empty') {
+      head.textContent = 'The hub answered, but its machine registry lists no machines at all. ';
+    } else {
+      var f = machFailure();
+      head.textContent = f.lead + ' ';
+      var raw = document.createElement('span');
+      raw.className = 'note-sub note-raw';
+      raw.textContent = f.raw;                  // verbatim — the lead above is an interpretation
+      head.appendChild(raw);
+      // Why a 4xx is on screen at all. Sits under the raw line so the status and its explanation
+      // are read together, rather than the status being read alone and misfiled as a bad request.
+      if (f.note) {
+        var why = document.createElement('span');
+        why.className = 'note-sub';
+        why.textContent = f.note;
+        head.appendChild(why);
+      }
+    }
+    // What this page consequently does NOT know. The node counts are named explicitly: they are
+    // the one number on screen that a reader would otherwise take for the fleet's size.
     var tail = document.createElement('span');
     tail.className = 'note-sub';
-    tail.textContent = 'Platform indicators are hidden and the node list falls back to the cluster '
-      + 'map alone, so a node that is offline AND has no cluster record cannot be selected. '
-      + 'Everything else on this page is unaffected.';
+    tail.textContent = 'While this lasts the fleet size is unknown: the node counts below report '
+      + 'the cluster map only. Platform indicators are hidden, and the node list falls back to the '
+      + 'cluster map alone, so a node that is offline AND has no cluster record cannot be selected. '
+      + 'The cluster map itself is a separate read and is unaffected.';
     var btn = document.createElement('button');
     btn.className = 'ghost note-btn';
     btn.textContent = 'Retry';
     btn.disabled = state.busy;
-    btn.onclick = function () { state.machState = 'loading'; paintMachNote(); paintNodeSelect(); reloadMachines(); };
+    btn.onclick = function () { state.machState = 'loading'; paintMachNote(); paintNodeSelect(); paintList(); reloadMachines(); };
     el.appendChild(head); el.appendChild(tail); el.appendChild(btn);
   }
 
@@ -691,7 +872,7 @@
   $('q').addEventListener('input', function (e) { state.filter.q = e.target.value; paintList(); });
   $('btn-refresh').addEventListener('click', function () { say('refreshing…'); load().then(function () { say('ready'); }); });
   // The pick lives in state, not in the <select> — paintNodeSelect() rebuilds every option.
-  $('a-node').addEventListener('change', function (e) { state.pickedNode = e.target.value; });
+  $('a-node').addEventListener('change', function (e) { state.pickedNode = e.target.value; paintNodePick(); });
   $('a-go').addEventListener('click', armAssign);
   $('a-cluster').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); armAssign(); } });
 

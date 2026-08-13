@@ -35,6 +35,10 @@
   // The `file` param of /assist-resources/log is a KEY into a server-side map, NOT a path.
   // Anything else is ASSIST_RESOURCES_UNKNOWN_LOG, so the viewer must branch on this list.
   var KNOWN_LOGS = ['context-inject-hook.log', 'mcp-calls.jsonl'];
+  // The deepest walk the Tree depth control offers. The server caps at 6, but the select only
+  // lists 1–4, so offering a re-walk past 4 would leave the visible control blank — and past 4
+  // the payload is already ~26 MB. Beyond it the honest answer is "this is as deep as it goes".
+  var MAX_TREE_DEPTH = 4;
 
   // ── embedding + theme contract (identical to sibling panes) ───────────────
   var EMBEDDED = /[?&]embed=1\b/.test(location.search);
@@ -165,6 +169,23 @@
   // Mandatory on a tabbed pane: without it a fatal raised by tab A stays pinned over tab B.
   function clearFatal() { var o = $('fatal-layer'); if (o) o.remove(); }
 
+  /** 🔴 #list-hint and #counts are SHARED by both tabs, and only a tab's own paint ever writes
+   *  them — so for the whole multi-second Resources walk the header still read the CONTENT
+   *  tab's blurb and "showing 30 of 30 units": a precise, confident, WRONG description of what
+   *  is on screen, which is worse than a blank one. A load must therefore claim the header
+   *  SYNCHRONOUSLY (before the await), and the paint that lands the real data clears the mark.
+   *  Both directions matter — Content is the stale one when you switch the other way. */
+  function headerLoading(hint) {
+    var h = $('list-hint'), c = $('counts');
+    if (h) { h.textContent = hint; h.classList.add('loading'); }
+    if (c) { c.textContent = 'counting…'; c.classList.add('loading'); }
+  }
+  function headerReady(hint, counts) {
+    var h = $('list-hint'), c = $('counts');
+    if (h) { h.textContent = hint; h.classList.remove('loading'); }
+    if (c) { c.textContent = counts; c.classList.remove('loading'); }
+  }
+
   // ── tabs ────────────────────────────────────────────────────────────────
   function switchTab(t) {
     if (t === state.tab) return;
@@ -176,7 +197,8 @@
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) {
       b.classList.toggle('on', b.dataset.tab === t);
     });
-    $('depth-wrap').style.display = t === 'resources' ? '' : 'none';
+    // `hidden`, not an inline display — app.css makes [hidden] win over the .fld display rule.
+    $('depth-wrap').hidden = t !== 'resources';
     if (t === 'content') {
       $('q').placeholder = 'filter unit id / title / group…';
       paintDetail();
@@ -198,9 +220,14 @@
    *  the sub-tab or the scroll position — and without a hard fatal if that refresh alone
    *  fails, since the write it follows already succeeded. */
   function loadUnits(quiet) {
-    if (!quiet) $('list').innerHTML = 'loading…';
+    if (!quiet) {
+      $('list').innerHTML = 'loading…';
+      headerLoading('Loading the content registry…');
+    }
     return api('node', '/assist-content').then(function (r) {
-      if (!r.ok) { if (!quiet) fatal(r.error.code + ': ' + r.error.message); return; }
+      // The tab guard is the same one every paint below carries: a failure that resolves after
+      // the user has moved on must not pin a fatal over the tab they are now looking at.
+      if (!r.ok) { if (!quiet && state.tab === 'content') fatal(r.error.code + ': ' + r.error.message); return; }
       var d = r.data || {};
       state.units = d.units || [];
       state.orphans = d.orphanDocs || [];
@@ -255,7 +282,6 @@
    *  itself, which sets state.tab BEFORE it paints) pass it unchanged. */
   function paintUnitList() {
     if (state.tab !== 'content') return;
-    $('list-hint').textContent = 'The prose bootstrap()/guide() serve. An override applies fleet-wide, live, with no deploy.';
     var vis = state.units.filter(unitMatch);
     var html = [], n = 0;
     state.groups.concat(['(other)']).forEach(function (g) {
@@ -280,9 +306,11 @@
       ? html.join('')
       : '<div class="empty-list">' + (state.units.length ? 'No units match the filter.' : 'No content units on this node.') + '</div>';
     var c = state.counts;
-    $('counts').textContent = 'showing ' + n + ' of ' + (state.units.length + state.orphans.length) + ' unit'
-      + (state.units.length + state.orphans.length === 1 ? '' : 's')
-      + (c ? ' · ' + c.overridden + ' overridden' + (c.orphans ? ' · ' + c.orphans + ' orphan' : '') : '');
+    headerReady(
+      'The prose bootstrap()/guide() serve. An override applies fleet-wide, live, with no deploy.',
+      'showing ' + n + ' of ' + (state.units.length + state.orphans.length) + ' unit'
+        + (state.units.length + state.orphans.length === 1 ? '' : 's')
+        + (c ? ' · ' + c.overridden + ' overridden' + (c.orphans ? ' · ' + c.orphans + ' orphan' : '') : ''));
     reportHeight();
   }
 
@@ -551,8 +579,11 @@
   // ═══ RESOURCES TAB ════════════════════════════════════════════════════════
   function loadFiles() {
     $('list').innerHTML = 'loading… (walking ~/.lm-assist at depth ' + state.depth + ')';
+    // Claimed BEFORE the request: this walk takes seconds to tens of seconds, and that whole
+    // window is when the header is read.
+    headerLoading('Walking ~/.lm-assist at depth ' + state.depth + '… (a deeper walk takes longer)');
     return api('node', '/assist-resources/files?depth=' + encodeURIComponent(state.depth)).then(function (r) {
-      if (!r.ok) { fatal(r.error.code + ': ' + r.error.message); return; }
+      if (!r.ok) { if (state.tab === 'resources') fatal(r.error.code + ': ' + r.error.message); return; }
       var d = r.data || {};
       state.root = d.root || null;
       state.extras = d.extras || [];
@@ -570,16 +601,55 @@
     return false;
   }
 
+  function padStyle(depth) { return 'style="padding-left:' + (0.35 + depth * 0.85) + 'rem"'; }
+  function noteRow(depth, html) { return '<div class="tnote" ' + padStyle(depth) + '>' + html + '</div>'; }
+
+  /** 🔴 The server walks ~/.lm-assist EAGERLY to a fixed depth and sends the whole tree in one
+   *  response — there is no per-directory listing route, so a directory the walk never entered
+   *  arrives with NO `children` key at all (only a `fileCount` from its own readdir). It still
+   *  rendered as expandable, so clicking it flipped the twisty and rendered nothing: a silent
+   *  no-op on every directory below the depth budget, which at the default depth=2 is most of
+   *  the tree. `children == null` and `children == []` are DIFFERENT facts and must not collapse
+   *  into one falsy branch — one means "not fetched", the other means "genuinely empty".
+   *  Neither can be fixed by a lazy fetch here, so the expansion states why, and offers the one
+   *  control that actually loads it: a deeper re-walk. */
+  function unwalkedNote(node, depth) {
+    if (node.fileCount == null) return noteRow(depth, 'This directory could not be listed by the server (permissions?).');
+    // fileCount comes from the directory's OWN readdir, which the server ran even where it did
+    // not recurse — so 0 is authoritative and has nothing to do with the depth budget. Offering
+    // a re-walk here would send a user off to re-fetch 4 MB to be shown the same empty folder.
+    if (node.fileCount === 0) return noteRow(depth, 'Empty directory.');
+    var n = node.fileCount;
+    var msg = esc(n) + ' entr' + (n === 1 ? 'y' : 'ies') + ' not loaded — the server walked only '
+      + esc(state.depth) + ' level' + (state.depth === 1 ? '' : 's') + ' into ~/.lm-assist, so this '
+      + 'directory\'s contents were never sent. ';
+    msg += state.depth < MAX_TREE_DEPTH
+      ? '<button class="ghost" data-deepen="' + (state.depth + 1) + '">Re-walk at depth ' + (state.depth + 1) + '</button>'
+      : 'Tree depth is already at its maximum (' + MAX_TREE_DEPTH + ').';
+    return noteRow(depth, msg);
+  }
+
   function treeRows(node, depth, q, out) {
-    var pad = 'style="padding-left:' + (0.35 + depth * 0.85) + 'rem"';
+    var pad = padStyle(depth);
     if (node.isDirectory) {
       var open = !!state.expanded[node.path];
-      out.push('<div class="trow dir" data-dir="' + esc(node.path) + '" ' + pad + '>'
+      var walked = !!node.children && typeof node.children.length === 'number';
+      out.push('<div class="trow dir' + (walked ? '' : ' unwalked') + '" data-dir="' + esc(node.path) + '" ' + pad
+        + (walked ? '' : ' title="Not walked at depth ' + esc(state.depth) + ' — expand for why"') + '>'
         + '<span class="tw">' + (open ? '▾' : '▸') + '</span>'
         + '<span class="tn">' + esc(node.name) + '</span>'
         + '<span class="tm">' + esc(node.fileCount != null ? node.fileCount : (node.children || []).length) + ' · ' + fmtBytes(node.size) + '</span></div>');
       if (open) {
-        (node.children || []).forEach(function (c) { if (subtreeMatches(c, q)) treeRows(c, depth + 1, q, out); });
+        if (!walked) { out.push(unwalkedNote(node, depth + 1)); return; }
+        var kids = node.children.filter(function (c) { return subtreeMatches(c, q); });
+        kids.forEach(function (c) { treeRows(c, depth + 1, q, out); });
+        // An expand that yields no row is the same silent no-op whatever the cause — a filter
+        // that hides every child reads exactly like a broken twisty. Say which it is.
+        if (!kids.length) {
+          out.push(noteRow(depth + 1, node.children.length
+            ? esc(node.children.length) + ' entr' + (node.children.length === 1 ? 'y' : 'ies') + ', none matching the filter.'
+            : 'Empty directory.'));
+        }
       }
       return;
     }
@@ -592,27 +662,28 @@
   function paintTree() {
     if (state.tab !== 'resources') return;    // shared #list — see paintUnitList
     var s = state.resStats;
-    $('list-hint').textContent = s
+    var hint = s
       ? (s.totalFiles + ' files · ' + fmtBytes(s.totalSize) + (s.lastActivity ? ' · active ' + ago(s.lastActivity) : ''))
       : '';
     if (!state.root) {
       $('list').innerHTML = '<div class="empty-list">No assist files found.</div>';
-      $('counts').textContent = ''; reportHeight(); return;
+      headerReady(hint, ''); reportHeight(); return;
     }
     var q = state.filter.trim().toLowerCase(), out = [];
     (state.root.children || []).forEach(function (c) { if (subtreeMatches(c, q)) treeRows(c, 0, q, out); });
-    var shown = out.length;
     if (state.extras.length) {
       var ex = state.extras.filter(function (f) { return subtreeMatches(f, q); });
       if (ex.length) {
         out.push('<div class="grp">external files <span class="dim">(' + ex.length + ')</span></div>');
         ex.forEach(function (f) { treeRows(f, 0, q, out); });
-        shown += ex.length;
       }
     }
+    // Count FILE/DIR rows only — `out` now also carries group headers and the "why this expand
+    // is empty" notes, and counting those would report rows the user cannot click.
+    var shown = out.filter(function (h) { return h.indexOf('<div class="trow') === 0; }).length;
     $('list').innerHTML = shown ? out.join('') : '<div class="empty-list">No files match the filter.</div>';
-    $('counts').textContent = 'showing ' + shown + ' row' + (shown === 1 ? '' : 's') + ' at depth ' + state.depth
-      + ' · deeper directories need a higher depth';
+    headerReady(hint, 'showing ' + shown + ' row' + (shown === 1 ? '' : 's') + ' at depth ' + state.depth
+      + ' · deeper directories need a higher depth');
     reportHeight();
   }
 
@@ -675,7 +746,7 @@
       + '<span class="pill">' + esc(ago(f.modified)) + '</span>'
       + (isKnownLog(f) ? '<span class="pill rin">known log</span>' : '')
       + '<span class="pill" id="f-stats"></span>'
-      + '<span class="pill warn" id="f-changed" style="display:none">updated on disk</span></div>'
+      + '<span class="pill warn" id="f-changed" hidden>updated on disk</span></div>'
       + '<div class="toolbar">'
       + '<input id="f-search" class="q" type="text" placeholder="search lines / entries…" autocomplete="off">'
       + '<label class="chk"><input type="checkbox" id="f-watch"' + (state.watch ? ' checked' : '') + '> watch</label>'
@@ -710,7 +781,7 @@
 
   function updateChangedBadge() {
     var b = $('f-changed');
-    if (b) b.style.display = state.changed ? '' : 'none';
+    if (b) b.hidden = !state.changed;      // [hidden] beats .pill{display:inline-block} — see app.css
   }
   function updateStats() {
     var el = $('f-stats'), b = state.body;
@@ -877,9 +948,23 @@
     state.expanded = {};
     loadFiles();
   });
+  /** The re-walk offered by an unwalked directory's note. It KEEPS state.expanded (unlike the
+   *  depth <select>, which clears it) — the whole point is that the directory you just tried to
+   *  open is still open when the deeper tree lands, so it finally shows its contents. Assigning
+   *  select.value fires no change event, so this does not re-enter the handler above. */
+  function deepenTo(n) {
+    if (!isFinite(n) || n <= state.depth) return;
+    state.depth = Math.min(n, MAX_TREE_DEPTH);
+    var sel = $('depth');
+    if (sel) sel.value = String(state.depth);
+    loadFiles();
+  }
   $('list').addEventListener('click', function (e) {
     var t = e.target.closest ? e.target : null;
     if (!t) return;
+    // Checked FIRST: the note lives outside any .trow, but a stray future wrapper must never
+    // turn this button into a collapse of the directory it belongs to.
+    if (t.dataset && t.dataset.deepen) { deepenTo(parseInt(t.dataset.deepen, 10)); return; }
     var unit = t.closest('.row');
     if (unit && unit.dataset.uid) { openUnit(unit.dataset.uid); return; }
     var dir = t.closest('.trow.dir');

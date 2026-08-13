@@ -156,14 +156,39 @@ Two deliberate differences from the source page, both because the old behaviour 
 The expand controls are disabled while a saved view is active, because a view carries its own
 `query.expand` and is always the server source — the source page silently ignored them there.
 
-🔴 **`.cv-msg[hidden]{display:none}` is load-bearing, not tidy-up.** `.cv-msg` sets
-`display:flex`, and an author `display` **overrides** the UA stylesheet's `[hidden]{display:none}`
-— so `paintCanvas`'s `msg.hidden = true` did nothing and the word "loading…" stayed painted across
-the middle of a fully-loaded graph (measured: `hidden=true` with `getComputedStyle().display ===
-'flex'` over 19 rendered cards). Deleting that rule brings the ghost overlay straight back.
+🔴 **`[hidden]{display:none!important}` is load-bearing, not tidy-up.** An author `display`
+**overrides** the UA stylesheet's `[hidden]{display:none}` (author origin beats UA regardless of
+specificity), so `.cv-msg{display:flex}` meant `paintCanvas`'s `msg.hidden = true` did nothing and
+the word "loading…" stayed painted across the middle of a fully-loaded graph (measured:
+`hidden=true` with `getComputedStyle().display === 'flex'` over 19 rendered cards). The rule is
+now global — same fix as assist-data — because the trap is re-armed by *any* future `display`
+declaration on a toggled element. Five elements depend on it: `#save-box`, `#x-depth`, `#x-note`,
+`#lay-warn`, `#cv-msg` (all five verified in-browser: `display:none` / renderedHeight 0 when
+hidden, visible when not).
 
-A hard failure of the primary graph call surfaces the server's own error text full-screen —
-nothing is swallowed.
+## Failures are never dressed up as emptiness
+
+🔴 **The three ways this pane used to hide its own failures**, and what replaced them:
+
+1. **One overwritable status line.** `loadAll()` runs views + sessions + schedule and *then* the
+   graph, so a views 403 was deterministically erased ~200 ms later by `loaded 19 missions, 24
+   edges`. Failures are now held **per source** in `status.problems` and rendered as sticky `⚠`
+   lines ABOVE the transient last-action line; only the same source loading cleanly clears one
+   (`clearProblem`). `say()` can no longer delete anybody's error.
+2. **A denial rendered as an empty collection.** A 403 on `GET /mission/views` painted the
+   friendly "No saved views yet — filter the graph, then Save as view". Every empty render now
+   consults its own load-outcome flag: `viewsState` (`loading`/`ok`/`error`) in the sidebar,
+   `graphError` on the canvas message + the status chips + the counts line, `liveError` and
+   `scheduleError` on the detail pills. "There is nothing here" is a claim about the server's
+   data and is only made when the server actually answered.
+3. **A permanent spinner.** `select()`'s error branch wrote the status line and returned without
+   repainting, so a refused `GET /mission/:id` left the detail panel on "loading…" forever. The
+   detail fetch now lives in `loadMissionDetail`/`loadMissionSessions`, where **every** outcome
+   repaints — a failure renders an error block with a **Retry**, never a spinner.
+
+A hard failure of the primary graph call still surfaces the server's own error text full-screen;
+the canvas message underneath it now carries that text too, so dismissing the overlay does not
+leave a lie behind it.
 
 ## Both tiers
 

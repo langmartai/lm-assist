@@ -105,6 +105,11 @@
   // Server-supplied counts go through this instead of esc(): a number that is not a number
   // renders as 0 rather than as markup.
   function num(n) { var v = Number(n); return isFinite(v) ? String(v) : '0'; }
+  // EVERY count printed next to a word goes through this. "1 skills" is small, but it is the
+  // reader's cheapest signal that nobody looked at the number — and this pane had it in the
+  // one place a single-skill plugin lands (frontend-design, skillCount 1).
+  function plural(n, one, many) { return Number(n) === 1 ? one : (many || (one + 's')); }
+  function countOf(n, one, many) { return num(n) + ' ' + plural(n, one, many); }
 
   // ── data plane ────────────────────────────────────────────────────────────
   // lmui.call returns the raw fetch Response. The hub relay wraps the node's own
@@ -313,8 +318,8 @@
       ? groups.map(groupHtml).join('')
       : '<div class="empty-list">' + (state.skills.length ? 'No skills match the current filter.' : 'No skills found.') + '</div>';
     $('counts').textContent = 'showing ' + vis.length + ' of ' + state.skills.length
-      + ' skill' + (state.skills.length === 1 ? '' : 's')
-      + (groups.length ? ' · ' + groups.length + ' plugin' + (groups.length === 1 ? '' : 's') : '');
+      + ' ' + plural(state.skills.length, 'skill')
+      + (groups.length ? ' · ' + countOf(groups.length, 'plugin') : '');
     reportHeight();
   }
 
@@ -326,6 +331,11 @@
       state.skills = (r.data && Array.isArray(r.data.skills)) ? r.data.skills : [];
       paintChips();
       paintList();
+      // The Overview card reconciles its own population against this list ("114 … of 131
+      // listed"), so it must be repainted once the list exists — the two reads race at boot and
+      // analytics usually wins. Only repaint something that has already rendered: calling it
+      // early would replace "loading…" with "No analytics data."
+      if (state.analytics || state.analyticsErr) paintAnalytics();
       var want = state.selectedName || recall();
       if (want && rowFor(want)) openSkill(want);
       else if (want) {
@@ -383,7 +393,7 @@
       state.sessions = replace ? got : state.sessions.concat(got);
       state.hasMore = !!d.hasMore;
       paintDetail();
-      if (!replace) say('loaded ' + state.sessions.length + ' of ' + num(d.totalSessions) + ' session records');
+      if (!replace) say('loaded ' + state.sessions.length + ' of ' + countOf(d.totalSessions, 'session record'));
     });
   }
 
@@ -391,17 +401,36 @@
     return value ? '<div><span class="k">' + esc(label) + ':</span> ' + esc(value) + '</div>' : '';
   }
 
+  // 🔴 The subagent COUNT and the subagent RECORDS reach this pane by two different routes:
+  //   count   — `subagentCount` rides the skill-index session record, so it is ALWAYS present;
+  //   records — `subagents[]` is built by the detail route from the SESSION CACHE, and only
+  //             when the cache holds that session's .jsonl. It holds none of them on this node,
+  //             so the live payload is `subagentCount: 3, subagents: []` on 35 of 140 rows.
+  // The old card printed `A:3` from the count and gated the expander on the records, so the
+  // badge advertised a list that could not arrive: 8 of the 20 cards on page 1 showed A:n and
+  // the `.agents` block was absent from all 20. The count is REAL and stays; what changes is
+  // that the disclosure now exists whenever the count is > 0 and, when the records are missing,
+  // opens onto a stated reason instead of nothing.
+  //
+  // Keyed per ROW, not per sessionId: the same session can appear twice in one skill's list
+  // (two invocations, different timestamps, DIFFERENT subagent counts — c7e77d65 shows A:1 and
+  // A:2), and a sessionId key made one click toggle both.
+  function rowKey(s) { return String(s.sessionId || '') + '|' + String(s.timestamp || ''); }
+
   function sessionCardHtml(s) {
     var agents = Array.isArray(s.subagents) ? s.subagents : [];
-    var open = !!state.agentsOpen[s.sessionId];
+    var open = !!state.agentsOpen[rowKey(s)];
     var dot = s.success === true ? ' ok' : (s.success === false ? ' bad' : '');
     var bits = '<span class="sb">' + esc(agoISO(s.timestamp)) + '</span>';
     if (s.model) bits += '<span class="pill model">' + esc(modelShort(s.model)) + '</span>';
     if (Number(s.totalCostUsd) > 0) bits += '<span class="sb mono">' + esc(fmtCost(s.totalCostUsd)) + '</span>';
     if (s.numTurns !== undefined && s.numTurns !== null) bits += '<span class="sb mono">T:' + num(s.numTurns) + '</span>';
     if (Number(s.userPromptCount) > 0) bits += '<span class="sb mono">U:' + num(s.userPromptCount) + '</span>';
-    var ac = Number(s.agentCount) || Number(s.subagentCount) || 0;
-    if (ac > 0) bits += '<span class="sb mono">A:' + num(ac) + '</span>';
+    var ac = Number(s.agentCount) || Number(s.subagentCount) || agents.length || 0;
+    if (ac > 0) {
+      bits += '<span class="sb mono" title="' + esc(countOf(ac, 'subagent') + ' recorded for this session')
+        + '">A:' + num(ac) + '</span>';
+    }
     if (Number(s.toolUseCount) > 0) bits += '<span class="sb mono">' + num(s.toolUseCount) + ' tools</span>';
 
     var head = '<div class="s-head"><span class="sdot' + dot + '"></span>'
@@ -411,17 +440,18 @@
       + '<span class="sb mono">' + esc(shortId(s.sessionId)) + '</span>'
       + '<span class="s-open">open ↗</span></div>';
 
-    var card = '<div class="scard' + (agents.length && open ? ' with-agents' : '') + '"'
+    var card = '<div class="scard' + (ac > 0 && open ? ' with-agents' : '') + '"'
       + ' data-go-session="' + esc(s.sessionId) + '" title="Open this session in the Sessions pane">'
       + head
       + (s.lastMessage ? '<div class="s-msg">' + esc(s.lastMessage) + '</div>' : '')
       + '<div class="s-bits">' + bits + '</div></div>';
 
-    if (!agents.length) return '<div class="s-wrap">' + card + '</div>';
+    // No count, no badge, no disclosure — nothing to say either way.
+    if (!ac) return '<div class="s-wrap">' + card + '</div>';
 
     var list = '';
     if (open) {
-      list = agents.map(function (a) {
+      list = agents.length ? agents.map(function (a) {
         var st = a.status === 'completed' ? ' ok' : (a.status === 'error' ? ' bad' : '');
         // No data-parent: the pinned vocabulary has no word for "the session this agent ran
         // under", so the attribute would only feed a param this pane is not allowed to emit.
@@ -431,12 +461,25 @@
           + '<span class="atxt">' + esc(a.description || shortId(a.agentId)) + '</span>'
           + (Number(a.totalCostUsd) > 0 ? '<span class="sb mono">' + esc(fmtCost(a.totalCostUsd)) + '</span>' : '')
           + '<span class="sdot' + st + '"></span><span class="s-open">↗</span></div>';
-      }).join('');
+      }).join('')
+        // The honest empty state. It names the count we DO have, the reason the records are
+        // absent, and where they can be seen — it never pretends the session had no subagents.
+        : '<div class="arow-none">' + esc('This node’s session cache holds no record for '
+            + (ac === 1 ? 'this subagent' : 'these ' + ac + ' subagents') + ', so there is nothing to list here. '
+            + 'The count comes from the skill index; the detail would come from the cached session file. '
+            + 'Open the session to see them.') + '</div>';
     }
+    // The button says what is behind it BEFORE it is clicked — a disclosure that has to be
+    // opened to learn it is empty is the same false promise the badge used to make.
+    var label = !agents.length
+      ? countOf(ac, 'subagent') + ' · no records on this node'
+      : (agents.length < ac
+          ? agents.length + ' of ' + countOf(ac, 'subagent')
+          : countOf(ac, 'subagent'));
     return '<div class="s-wrap">' + card
-      + '<div class="agents' + (open ? ' on' : '') + '">'
-      + '<button class="agents-btn" data-agents="' + esc(s.sessionId) + '">'
-      + (open ? '▾' : '▸') + ' ' + agents.length + ' agent' + (agents.length === 1 ? '' : 's') + '</button>'
+      + '<div class="agents' + (open ? ' on' : '') + (agents.length ? '' : ' agents-empty') + '">'
+      + '<button class="agents-btn" data-agents="' + esc(rowKey(s)) + '">'
+      + (open ? '▾' : '▸') + ' ' + esc(label) + '</button>'
       + list + '</div></div>';
   }
 
@@ -457,7 +500,7 @@
       : '';
     var more = state.hasMore
       ? '<div class="more"><button class="ghost" id="btn-more">Load more</button>'
-        + '<span class="hint">holding ' + total + ' of ' + known + ' session records</span></div>'
+        + '<span class="hint">holding ' + total + ' of ' + esc(countOf(known, 'session record')) + '</span></div>'
       : '';
     return '<div class="scards">' + rows + '</div>' + nav + more + '<div id="out" class="out">ready</div>';
   }
@@ -484,7 +527,7 @@
           + '</div>';
       }).join('');
       return '<div class="tday"><div class="tday-h"><span class="tday-l">' + esc(dayLabel(k)) + '</span>'
-        + '<span class="sb">' + items.length + ' invocation' + (items.length === 1 ? '' : 's') + '</span>'
+        + '<span class="sb">' + esc(countOf(items.length, 'invocation')) + '</span>'
         + '<span class="tline"></span></div>' + rows + '</div>';
     }).join('');
   }
@@ -519,7 +562,13 @@
     // GET /skills row. Say that plainly instead of pretending the counts are zero-from-data.
     var name = d.shortName || row.shortName || state.selectedName;
     var plugin = d.pluginName || row.pluginName || '';
+    // The inventory scan writes the LITERAL string 'unknown' when a plugin manifest declares no
+    // version (8 of the 131 skills here — every plugin-dev skill, plus frontend-design), and the
+    // pill template prefixed it blindly: "vunknown". Say the words instead of minting a version
+    // number that does not exist. An empty string is a different case — a usage-only skill with
+    // no inventory record at all — and still renders no pill.
     var version = d.pluginVersion || row.pluginVersion || '';
+    var verKnown = !!version && !/^unknown$/i.test(String(version).trim());
     var desc = d.fullDescription || d.description || row.description || '';
     var installPath = d.installPath || row.installPath || '';
     var invocations = Number(state.inventoryOnly ? row.totalInvocations : d.totalInvocations) || 0;
@@ -531,11 +580,20 @@
     var lastUsed = (state.inventoryOnly ? row.lastUsed : d.lastUsed) || row.lastUsed;
     var firstUsed = (state.inventoryOnly ? row.firstUsed : d.firstUsed) || row.firstUsed;
 
+    // 🔴 The success percentage is NOT computed over `invocations` — it is computed over the
+    // invocations that recorded an outcome (successCount + failCount). Live: brainstorming is
+    // 410 invocations / 401 rated / 0 failures, and the row printed "410 invocations … 100%
+    // success" side by side, which reads as a claim about all 410. Print the rate's own
+    // denominator whenever it differs, and never colour a "—" red.
+    var rated = ok + bad;
+    var rateCls = rated === 0 ? '' : (ok / rated >= 0.8 ? 'good' : (ok / rated >= 0.5 ? 'accent' : 'bad'));
+    var rateNote = (rated === invocations)
+      ? ''
+      : '<span class="of">(' + rated + ' of ' + invocations + ' rated)</span>';
     var stats = '<div class="stats">'
-      + '<span class="st"><b class="accent">' + invocations + '</b> invocations</span>'
-      + '<span class="st"><b>' + totalSessions + '</b> sessions</span>'
-      + '<span class="st"><b class="' + (ok + bad > 0 && ok / (ok + bad) >= 0.8 ? 'good' : (ok + bad > 0 && ok / (ok + bad) >= 0.5 ? 'accent' : 'bad')) + '">'
-      + esc(pct(ok, ok + bad)) + '</b> success</span>'
+      + '<span class="st"><b class="accent">' + invocations + '</b> ' + plural(invocations, 'invocation') + '</span>'
+      + '<span class="st"><b>' + totalSessions + '</b> ' + plural(totalSessions, 'session') + '</span>'
+      + '<span class="st"><b class="' + rateCls + '">' + esc(pct(ok, rated)) + '</b> success' + rateNote + '</span>'
       + '<span class="st"><b>' + direct + '</b> direct</span>'
       + '</div>';
 
@@ -558,7 +616,11 @@
       + '<div class="d-idrow"><span class="d-id">' + esc(state.selectedName) + '</span></div>'
       + '<div class="d-pills">'
       + (plugin ? '<span class="pill kind">' + esc(plugin) + '</span>' : '')
-      + (version ? '<span class="pill ver">v' + esc(version) + '</span>' : '')
+      + (verKnown
+          ? '<span class="pill ver" title="plugin version">v' + esc(version) + '</span>'
+          : (version
+              ? '<span class="pill ver" title="the plugin manifest declares no version for this skill">version unknown</span>'
+              : ''))
       + (state.inventoryOnly ? '<span class="pill sub">no usage recorded</span>' : '')
       + '</div>'
       + (desc ? '<pre class="d-desc">' + esc(desc) + '</pre>' : '')
@@ -566,7 +628,7 @@
       + '<div class="d-meta">'
       + metaRow('first used', firstUsed ? agoISO(firstUsed) + ' (' + String(firstUsed).slice(0, 10) + ')' : 'never')
       + metaRow('last used', lastUsed ? agoISO(lastUsed) + ' (' + String(lastUsed).slice(0, 10) + ')' : 'never')
-      + metaRow('failures', bad ? String(bad) : '')
+      + metaRow(plural(bad, 'failure'), bad ? String(bad) : '')
       + metaRow('install path', installPath)
       + '</div>'
       + body;
@@ -602,11 +664,21 @@
     if (!a) { el.innerHTML = '<div class="empty-list">No analytics data.</div>'; reportHeight(); return; }
 
     var o = a.overall || {};
-    var rate = Number(o.totalInvocations) > 0 ? Math.round((Number(o.successRate) || 0) * 100) + '%' : '—';
+    // 🔴 Every number in this column counts the USAGE INDEX, and the list beside it counts the
+    // INVENTORY — two different populations that were printed as if they were one. Live: the
+    // list footer says "131 skills" while this card said "Total skills 114"; and "Invocations
+    // 2039" sat next to "Success rate 100%", a rate whose denominator is 1890. Each card now
+    // names its own population, so no two numbers on screen claim a relationship they lack.
+    var totalInv = Number(o.totalInvocations) || 0;
+    var ratedAll = (Number(o.successCount) || 0) + (Number(o.failCount) || 0);
+    var rate = totalInv > 0 ? Math.round((Number(o.successRate) || 0) * 100) + '%' : '—';
+    var listed = state.skills.length;   // 0 until GET /skills lands; then this repaints
     var cards = '<div class="cards">'
-      + '<div class="card"><div class="c-l">Total skills</div><div class="c-v">' + num(o.totalSkills) + '</div></div>'
-      + '<div class="card"><div class="c-l">Invocations</div><div class="c-v accent">' + num(o.totalInvocations) + '</div></div>'
-      + '<div class="card"><div class="c-l">Success rate</div><div class="c-v good">' + esc(rate) + '</div></div>'
+      + '<div class="card"><div class="c-l">Skills with usage</div><div class="c-v">' + num(o.totalSkills) + '</div>'
+      + (listed ? '<div class="c-sub">of ' + listed + ' listed</div>' : '') + '</div>'
+      + '<div class="card"><div class="c-l">Invocations</div><div class="c-v accent">' + num(totalInv) + '</div></div>'
+      + '<div class="card"><div class="c-l">Success rate</div><div class="c-v good">' + esc(rate) + '</div>'
+      + (ratedAll === totalInv ? '' : '<div class="c-sub">' + ratedAll + ' of ' + totalInv + ' rated</div>') + '</div>'
       + '<div class="card"><div class="c-l">Failed</div><div class="c-v' + (Number(o.failCount) > 0 ? ' bad' : '') + '">' + num(o.failCount) + '</div></div>'
       + '</div>';
 
@@ -627,8 +699,14 @@
     byPlugin.sort(function (x, y) { return (Number(y.totalInvocations) || 0) - (Number(x.totalInvocations) || 0); });
     var plugins = byPlugin.length
       ? byPlugin.map(function (p) {
-          return '<div class="prow"><span class="pname">' + esc(p.pluginName) + '</span>'
-            + '<span class="sb mono">' + num(p.skillCount) + ' skills</span>'
+          // "1 skills" lived here — frontend-design is the single-skill plugin that exposed it.
+          // The count is also usage-scoped (superpowers: 13 here, 15 in the list), which the
+          // section heading states rather than leaving the two numbers to argue.
+          return '<div class="prow" title="' + esc(countOf(p.skillCount, 'skill') + ' of this plugin '
+              + plural(p.skillCount, 'has', 'have') + ' recorded usage · '
+              + countOf(p.totalInvocations, 'invocation')) + '">'
+            + '<span class="pname">' + esc(p.pluginName) + '</span>'
+            + '<span class="sb mono">' + esc(countOf(p.skillCount, 'skill')) + '</span>'
             + '<span class="pn mono">' + num(p.totalInvocations) + '</span></div>';
         }).join('')
       : '<div class="empty-list">No plugin data.</div>';
@@ -664,8 +742,7 @@
       if (all.length > CHAIN_PREVIEW) {
         chainBody += '<div class="more"><button class="ghost" data-chains-all="1">'
           + (showAll ? 'Show top ' + CHAIN_PREVIEW : 'Show all ' + all.length) + '</button>'
-          + '<span class="hint">showing ' + shown.length + ' of ' + all.length + ' chain'
-          + (all.length === 1 ? '' : 's') + ' held'
+          + '<span class="hint">showing ' + shown.length + ' of ' + esc(countOf(all.length, 'chain')) + ' held'
           + (all.length >= CHAIN_API_MAX ? ' — the API returns at most ' + CHAIN_API_MAX : '')
           + '</span></div>';
       } else if (all.length >= CHAIN_API_MAX) {
@@ -674,9 +751,9 @@
       }
     }
 
-    el.innerHTML = '<div class="a-sect"><h3>Overview</h3>' + cards + '</div>'
-      + '<div class="a-sect"><h3>Top skills</h3>' + bars + '</div>'
-      + '<div class="a-sect"><h3>By plugin</h3>' + plugins + '</div>'
+    el.innerHTML = '<div class="a-sect"><h3>Overview<span class="sect-note">usage index</span></h3>' + cards + '</div>'
+      + '<div class="a-sect"><h3>Top skills<span class="sect-note">by invocations</span></h3>' + bars + '</div>'
+      + '<div class="a-sect"><h3>By plugin<span class="sect-note">skills with usage</span></h3>' + plugins + '</div>'
       + '<div class="a-sect"><h3>Common chains' + chainCount + '</h3>' + chainBody + '</div>';
     // Server text goes in as TEXT, never as markup — same rule as every other error surface here.
     if (state.chainsErr && $('chains-err-msg')) {

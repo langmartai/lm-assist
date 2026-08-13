@@ -527,6 +527,20 @@ test('unknown path → 404 (origin wall, on both the dispatcher and a pane)', as
   assert.equal((await req(panePort, 'GET', '/whatever')).status, 404);
 });
 
+test('/favicon.ico → 204 on every origin, so a pane load logs no console error', async () => {
+  // The browser asks for this on EVERY document load and no pane ships one. A 404 was often the
+  // only error in an otherwise clean run — noise that teaches a viewer to ignore the console.
+  for (const port of [tierPort, panePort, panePort2]) {
+    const r = await req(port, 'GET', '/favicon.ico');
+    assert.equal(r.status, 204, 'answered without auth — it carries nothing to protect');
+    assert.equal(r.body, '', 'and no body: 204 means deliberately empty');
+  }
+  // It is NOT a wildcard: the origin wall still 404s everything else, /favicon.ico included
+  // once it is nested (only the exact origin-root path the browser asks for is answered).
+  assert.equal((await req(panePort, 'GET', `/ui/${UI_ID}/favicon.ico`)).status, 401, 'nested paths still take the asset route');
+  assert.equal((await req(panePort, 'GET', '/favicon.png')).status, 404);
+});
+
 // ── /go: cross-pane navigation ───────────────────────────────────────────────────────────
 // The ONE surface that mints ANOTHER pane's cookie on a caller's behalf. Under one origin per
 // pane that is no longer a credential handover — see serveGo.

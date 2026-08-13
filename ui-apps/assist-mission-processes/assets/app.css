@@ -3,6 +3,15 @@
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
 *{box-sizing:border-box}
+/* 🔴 A class/element `display` rule OUTRANKS the UA sheet's `[hidden]{display:none}` — the UA
+   sheet is the weakest origin, so ANY author rule beats it. Half this pane's regions are
+   flex/grid (main, .list, .tabs, .actions, .fld, .pager, .chip-row, .chips, #who, .fatal), so
+   without this an `el.hidden = true` anywhere would recolour nothing and hide nothing — the
+   element would just stay on screen. Measured in Chrome before this line existed: main grid,
+   #list flex, .tabs flex, .d-idrow flex all survived `hidden=true` unchanged. Keep it FIRST and
+   keep the !important — a later `display:` (including the light-theme block) would win otherwise.
+   Same fix, same reason, as assist-data/assets/app.css. */
+[hidden]{display:none!important}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
@@ -51,6 +60,8 @@ main{display:grid;grid-template-columns:22rem minmax(0,1fr);gap:1rem;padding:1re
 .pill.human{color:var(--blue2);border-color:#1e3a8a}
 .pill.open{color:var(--dim)}
 .pill.cur{color:var(--green);border-color:#14532d;margin-left:.35rem}
+/* an inbound ?doc= this node has never heard of — the explicit "no such document" state */
+.pill.missing{color:var(--red);border-color:#7f1d1d}
 
 /* ── detail ────────────────────────────────────────────────────────────── */
 .detail.empty{color:var(--dim);font-size:.85rem}

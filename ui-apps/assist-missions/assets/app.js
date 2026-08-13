@@ -173,7 +173,7 @@
     sessState: {},                     // sid -> {alive:'checking'|'alive'|…, notice}
     allSessions: [], allSessionsOpen: false,
     trace: null, traceOpen: false,
-    repos: [], branches: [], createOpen: false,
+    repos: [], branches: [], createOpen: false, reposLoading: false,
     chat: null,                        // {sid,node,missionTag,prefix,depth,messages,pq,pqId,reachedStart,hideInjected,toolOpen,timer}
     poller: null,
   };
@@ -559,9 +559,33 @@
       return '<option value="' + esc(p[0]) + '"' + (p[0] === current ? ' selected' : '') + '>' + esc(p[1]) + '</option>';
     }).join('');
   }
+  // The repo picker is filled EAGERLY at boot (see the boot block) — not on first open — so the
+  // form is usable the moment it is expanded. It used to load only from the toggle handler, which
+  // meant a fresh pane showed a repo picker holding nothing but the two placeholder rows.
+  // `reposLoading` keeps the boot load and an open-time retry from firing twice.
+  //
+  // 🔴 The prefetch is SILENT ON FAILURE, and that is the whole point of this shape.
+  // Of the two ways to keep the picker populated, the eager fetch is the only one that actually
+  // closes the original defect: fetching lazily on first open still hands the user an empty picker
+  // for the width of a round trip, which IS the "first open shows nothing" symptom, just shorter.
+  // But an eager fetch must not eagerly COMPLAIN. /ccr/cloud/repos feeds exactly ONE optional
+  // control in a collapsed form, so a reader who opened this pane to look at missions and never
+  // went near "New mission" must not have the status line turned red at them about a cloud-repo
+  // endpoint they never asked about — a prefetch is our idea, not theirs, and its failure is not
+  // their problem until it costs them something.
+  // So the announcement is gated on the one condition under which the repo list is something the
+  // user asked for: the create form being open WHEN THE ANSWER LANDS. Resolve-time rather than
+  // call-time is deliberate — one rule then covers both a boot prefetch still in flight when the
+  // form is opened, and the retry the toggle handler fires while the list is still empty. The
+  // consequence is that the failure is RE-VERIFIED rather than replayed: a blip that has since
+  // healed just populates the picker and says nothing, and a real outage states itself in the
+  // form, at the moment it starts mattering.
   function loadRepos() {
+    if (state.reposLoading) return Promise.resolve();
+    state.reposLoading = true;
     fillSelect($('c-repo'), [['', 'loading…']], '');
-    api('node', '/ccr/cloud/repos').then(function (r) {
+    return api('node', '/ccr/cloud/repos').then(function (r) {
+      state.reposLoading = false;
       // data = { repos:[{repo,isPrivate,pushedAt}] } — OBJECTS, not strings.
       var list = ((r.ok && r.data && r.data.repos) || []).map(function (x) {
         return typeof x === 'string' ? x : (x.repo || x.slug || x.full_name || '');
@@ -570,9 +594,13 @@
       var opts = [['', '— none —']].concat(list.map(function (s) { return [s, s]; }));
       opts.push(['__custom__', '— type it —']);
       fillSelect($('c-repo'), opts, '');
-      if (!r.ok) say('repo list unavailable (' + fail(r) + ') — type the repo instead', true);
-      if (r.ok && !list.length) { $('c-repo-text-wrap').hidden = false; }
-    });
+      // No usable list either way (call failed, or it succeeded and the account has no repos) →
+      // reveal the typed input, because "type the repo instead" is the only path left. This half
+      // stays unconditional: it only ever mutates a control INSIDE the collapsed create form, so it
+      // is invisible to a silent load and means the fallback is already in place on first open.
+      if (!list.length) { $('c-repo-text-wrap').hidden = false; }
+      if (!r.ok && state.createOpen) say('repo list unavailable (' + fail(r) + ') — type the repo instead', true);
+    }, function () { state.reposLoading = false; });
   }
   function loadBranches(repo) {
     if (!repo) { fillSelect($('c-branch'), [['', '— none —'], ['__custom__', '— type it —']], ''); return; }
@@ -1637,6 +1665,10 @@
     state.createOpen = !state.createOpen;
     $('create').hidden = !state.createOpen;
     this.textContent = state.createOpen ? '✕ Cancel new mission' : '+ New mission';
+    // An empty list on open means the boot prefetch failed (or found nothing) and kept quiet about
+    // it. Retry now that the user has actually asked for the form: `state.createOpen` is already
+    // true above, so if this attempt fails too, loadRepos() announces it right here — this is the
+    // deferred half of the silent prefetch, and the only place the message can honestly appear.
     if (state.createOpen && !state.repos.length) loadRepos();
     reportHeight();
   };
@@ -1661,6 +1693,13 @@
   fillSelect($('c-isolation'), ISOLATIONS.map(function (v) { return [v, v]; }), 'cloud');
   fillSelect($('c-repo'), [['', '— none —'], ['__custom__', '— type it —']], '');
   fillSelect($('c-branch'), [['', '— none —'], ['__custom__', '— type it —']], '');
+  // Fill the repo picker NOW, not when the form is first expanded: the form has to be usable the
+  // instant it opens, and a picker that only populates on a toggle is dead weight if the toggle
+  // (or anything else on the way to it) misbehaves. Branches stay lazy — they are per-repo and
+  // meaningless until a repo is chosen.
+  // This call is deliberately FIRE-AND-FORGET AND SILENT: nothing it can fail at is worth a word
+  // to a user who has not opened the create form. See loadRepos() for where the failure resurfaces.
+  loadRepos();
   paintTabs();
   renderStage();
 

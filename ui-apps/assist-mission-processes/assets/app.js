@@ -232,6 +232,7 @@
     selectedId: null,
     detail: null,                 // { doc, defaultBody, rendered } from GET :id
     detailErr: null,
+    detailMissing: false,         // the server said NOT_FOUND — this id does not exist (≠ a transport error)
     detailLoading: false,
     tab: 'rendered',
     hist: null,                   // snapshots for selectedId (null = not fetched for this doc yet)
@@ -377,9 +378,18 @@
         paintChips();
         paintList();
         // Land somewhere useful: an inbound deep link wins, else the overview map.
+        // 🔴 An inbound id is ALWAYS asked about — known to this registry or not. Gating the
+        // open on `state.known[want]` made an unknown `?doc=` a total no-op: no request, no
+        // message, and the address bar still claiming a doc nobody ever opened. Two reasons the
+        // gate was wrong. (1) `known` comes from the LIST read, which is leader-anchored and may
+        // be answered by a replica that has not caught up — refusing locally asserts something
+        // this pane cannot know, and the doc route is the only thing that can settle it.
+        // (2) Even when the id really is bogus, that is a fact worth SAYING; silently landing on
+        // the overview is exactly the swallow this pane promises not to do. The server's
+        // NOT_FOUND becomes the explicit "no such document" state in paintDetail().
         if (!state.selectedId) {
           var want = deepLinkDoc();
-          if (want && state.known[want]) openDoc(want);
+          if (want) openDoc(want);
           else if (state.known[OVERVIEW_ID]) openDoc(OVERVIEW_ID);
         } else {
           paintDetail();
@@ -422,6 +432,7 @@
     state.selectedId = id;
     state.detail = null;
     state.detailErr = null;
+    state.detailMissing = false;
     state.detailLoading = true;
     state.tab = 'rendered';
     state.hist = null;
@@ -439,10 +450,69 @@
     return api('node', '/mission/workflows/' + encodeURIComponent(id)).then(function (r) {
       if (seq !== state.seq) return;               // a newer click already superseded this one
       state.detailLoading = false;
-      if (!r.ok) { state.detailErr = r.error.code + ': ' + r.error.message; state.detail = null; }
-      else { state.detail = r.data || null; state.detailErr = null; adoptDoc(state.detail); }
+      if (!r.ok) {
+        state.detailErr = r.error.code + ': ' + r.error.message;
+        // NOT_FOUND is a FACT about the id, not a failure of the call — the route answers it
+        // (HTTP 400 + {code:'NOT_FOUND'}) for an id that is neither stored nor built-in. It gets
+        // its own state because "retry, it may work" is the wrong thing to say about it.
+        state.detailMissing = r.error.code === 'NOT_FOUND';
+        state.detail = null;
+      } else { state.detail = r.data || null; state.detailErr = null; state.detailMissing = false; adoptDoc(state.detail); }
       paintDetail();
     });
+  }
+
+  /** Ids from THIS node's registry that a mistyped/stale `id` plausibly meant. RANKED, because
+   *  the cheap version was worse than useless: a `case.*` typo matched all 17 case docs on the
+   *  namespace alone and the slice cut off before the one id the user actually meant. Prefix
+   *  beats substring beats "the typed id contains a real one" beats bare namespace. Suggestion
+   *  only — never auto-opened. */
+  function nearIds(id) {
+    var q = String(id || '').toLowerCase();
+    if (!q) return [];
+    var dot = q.indexOf('.');
+    var ns = dot > 0 ? q.slice(0, dot + 1) : '';
+    var scored = [];
+    allRows().forEach(function (r) {
+      var lx = r.id.toLowerCase();
+      if (lx === q) return;
+      var rank = lx.indexOf(q) === 0 ? 0            // case.captur → case.capture
+        : lx.indexOf(q) > 0 ? 1                     // the typed id is embedded in a real one
+        : q.indexOf(lx) >= 0 ? 2                    // the typed id has a real one inside it
+        : (ns && lx.indexOf(ns) === 0) ? 3          // right namespace, wrong leaf
+        : -1;
+      if (rank >= 0) scored.push({ id: r.id, rank: rank });
+    });
+    scored.sort(function (a, b) { return a.rank - b.rank || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); });
+    return scored.slice(0, 8).map(function (x) { return x.id; });
+  }
+
+  /** The id does not exist here. Say so explicitly, name it, quote the server verbatim, and leave
+   *  `?doc=` in the address bar pointing at it — the URL and the screen must agree, which is the
+   *  half of this that a silent fallback to the overview got wrong. Same shape as the way
+   *  assist-sessions surfaces an inbound session id its node does not have. */
+  function missingHtml(id) {
+    var near = nearIds(id);
+    var total = allRows().length;
+    return '<div class="d-idrow"><span class="d-id">' + esc(id) + '</span>'
+      + '<span class="pill missing">no such document</span></div>'
+      + '<div class="err-box"><strong>No process doc with this id on this node.</strong><br>'
+      + 'The link asked for <code>' + esc(id) + '</code>. It is neither a stored doc nor a built-in default '
+      + 'here, and the server said <code>' + esc(state.detailErr) + '</code>. Nothing was opened in its place '
+      + 'and nothing was written; the address bar still carries <code>doc=' + esc(id) + '</code> so it matches '
+      + 'what you are looking at. This registry holds ' + esc(total) + ' doc' + (total === 1 ? '' : 's')
+      + ' — they are listed on the left. A link from another node, or from before a doc was renamed, lands here.'
+      + '</div>'
+      + (near.length
+        ? '<div class="note">Closest ids in this registry: '
+          + near.map(function (x) {
+            return '<a class="doclink" data-doc="' + esc(x) + '" title="Open ' + esc(x) + '">' + esc(x) + '</a>';
+          }).join(' · ')
+          + '</div>'
+        : '')
+      + '<div class="actions">'
+      + '<button class="ghost sm" id="d-clear">Clear the link</button>'
+      + '<button class="ghost sm" id="d-retry">Check again</button></div>';
   }
 
   function metaRow(label, value) {
@@ -639,9 +709,19 @@
       return;
     }
     if (state.detailErr) {
-      el.innerHTML = '<div class="d-idrow"><span class="d-id">' + esc(id) + '</span></div>'
-        + '<div class="err-box">' + esc(state.detailErr) + ' <button class="ghost sm" id="d-retry">Retry</button></div>';
+      el.innerHTML = state.detailMissing
+        ? missingHtml(id)
+        : '<div class="d-idrow"><span class="d-id">' + esc(id) + '</span></div>'
+          + '<div class="err-box">' + esc(state.detailErr) + ' <button class="ghost sm" id="d-retry">Retry</button></div>';
+      // "Check again" is not theatre on the missing state: the doc route is leader-anchored, so
+      // an id created a moment ago (or on a replica that had not caught up) can start answering.
       $('d-retry').onclick = function () { openDoc(id); };
+      // Drop the dead `?doc=` and go back to the neutral state, rather than leaving a URL that a
+      // reload would land on again.
+      if ($('d-clear')) $('d-clear').onclick = function () {
+        state.selectedId = null; state.detail = null; state.detailErr = null; state.detailMissing = false;
+        syncUrl(); paintList(); paintDetail();
+      };
       reportHeight();
       return;
     }
@@ -865,6 +945,10 @@
   // in the address bar as the user navigates, so a reload lands back on the same doc.
   // A sibling may also send `?mission=<id>`; this registry is fleet-wide, not per-mission, so
   // that param is accepted and ignored rather than 404-ing the pane.
+  // An id this node does not have is NOT ignored: it is fetched like any other, and the route's
+  // NOT_FOUND becomes the "no such document" state, with `?doc=` left in place so the URL says
+  // the same thing the screen does. `?mission=` and `?doc=` are different claims — one is a
+  // filter this pane has no use for, the other is "open this", and only the second can be wrong.
   function deepLinkDoc() {
     var m = /[?&](?:doc|id)=([^&]*)/.exec(location.search);
     try { return m ? decodeURIComponent(m[1]) : ''; } catch (e) { return m ? m[1] : ''; }
@@ -896,13 +980,17 @@
     var keepDraft = isDirty();                     // …unless that would throw away typed-but-unsaved text
     loadList().then(function () {
       if (!id) return;
-      if (!state.known[id]) { state.selectedId = null; state.detail = null; paintList(); paintDetail(); return; }
       if (keepDraft) {
         paintList();
         say('registry refreshed. ' + id + ' was NOT reloaded because you have unsaved changes — '
-          + 'save them, or use Reload in the Edit tab to discard them and pick up the stored version.');
+          + 'save them, or use Reload in the Edit tab to discard them and pick up the stored version.'
+          + (state.known[id] ? '' : ' (It is also no longer listed in the registry.)'));
         return;
       }
+      // Re-open it whether or not the refreshed list still lists it. The old code blanked the
+      // detail pane when the id vanished from the list — same swallow as the deep link: an empty
+      // pane, no message, and `?doc=<id>` still in the address bar. The doc route settles it, and
+      // an id that really is gone now lands on the explicit "no such document" state.
       openDoc(id);
     });
   };

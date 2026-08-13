@@ -3,6 +3,12 @@
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
 *{box-sizing:border-box}
+/* 🔴 An author `display` rule BEATS the UA stylesheet's [hidden]{display:none} (any author
+   declaration wins over the UA origin), so a class like .cv-msg{display:flex} kept an element
+   painted even with hidden=true and the JS toggle silently did nothing. Make the attribute win
+   outright — same fix as assist-data — so every `el.hidden = true` in app.js actually hides.
+   Toggled here: #save-box, #x-depth, #x-note, #lay-warn, #cv-msg. */
+[hidden]{display:none!important}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
@@ -59,9 +65,6 @@ body:not(.embed) .canvas{height:40rem}
 .edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
 .cards{position:absolute;left:0;top:0}
 .cv-msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:.85rem;pointer-events:none;padding:1rem;text-align:center}
-/* An author `display` OVERRIDES the UA stylesheet's [hidden]{display:none}, so paintCanvas's
-   `msg.hidden = true` did nothing and "loading…" stayed painted over the loaded graph. */
-.cv-msg[hidden]{display:none}
 
 .card{position:absolute;overflow:hidden;border-radius:6px;border:1px solid var(--line);border-left-width:4px;background:var(--bg);padding:.25rem .45rem;font-size:.74rem;cursor:pointer}
 .card.dim{opacity:.3}
@@ -97,10 +100,17 @@ body:not(.embed) .canvas{height:40rem}
 /* plan text renders as PLAIN TEXT pre-wrap — no markdown library anywhere in this pane */
 .mono{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.55rem .7rem;font-size:.74rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin:0;max-height:18rem;overflow:auto;font-family:ui-monospace,monospace}
 
+/* ── "this did not load" ≠ "there is nothing here" ──────────────────────────
+   Every place that can render an empty collection can also be showing a REFUSAL; the refusal
+   gets this treatment so it can never be mistaken for the friendly empty state. */
+.load-err{font-size:.7rem;color:var(--red);line-height:1.45;background:rgba(248,113,113,.08);border:1px solid #7f1d1d;border-radius:7px;padding:.4rem .5rem;margin-top:.35rem;word-break:break-word}
+.load-err button{margin-top:.35rem;display:block}
+
 /* ── pills ──────────────────────────────────────────────────────────────── */
 .pill{display:inline-block;border-radius:999px;padding:.05rem .5rem;font-size:.66rem;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
 .pill.sched{color:var(--amber);border-color:#78350f}
 .pill.live-pill{color:var(--green);border-color:#14532d}
+.pill.bad{color:var(--red);border-color:#7f1d1d}
 
 /* ── buttons + status line ──────────────────────────────────────────────── */
 .actions{display:flex;gap:.5rem;flex-wrap:wrap;margin:.2rem 0 .3rem}
@@ -114,7 +124,9 @@ button.link:hover{color:var(--txt);filter:none}
 button.link.blue{color:var(--blue2)}
 button.link.blue:hover{color:var(--blue)}
 button:disabled{opacity:.5;cursor:not-allowed}
-.out{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:.45rem .6rem;margin-top:.8rem;min-height:1.4rem;white-space:pre-wrap;color:var(--dim);max-height:8rem;overflow:auto}
+/* Tall enough that the sticky ⚠ lines AND the last-action line below them are on screen
+   together — a status box that scrolls its own errors out of sight is the defect again. */
+.out{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:.45rem .6rem;margin-top:.8rem;min-height:1.4rem;white-space:pre-wrap;color:var(--dim);max-height:13rem;overflow:auto}
 .out.err{color:var(--red)}
 
 /* ── full-screen fatal error (a hard call failure, surfaced verbatim) ───── */

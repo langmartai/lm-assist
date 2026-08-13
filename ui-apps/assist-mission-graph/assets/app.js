@@ -117,6 +117,9 @@
     });
   }
 
+  /** One rendering of a failed api() result, used everywhere a failure is shown. */
+  function errText(r) { return r.error.code + ': ' + r.error.message; }
+
   // ── formatters ────────────────────────────────────────────────────────────
   // Epoch-ms only (mission history/timestamps are numbers). A FUTURE timestamp falls back to
   // the absolute date rather than reading "just now".
@@ -157,15 +160,62 @@
     vis: [],                       // visible nodes after filter+search
     visEdges: [],
     zoom: 1,
-    pan: { x: 0, y: 0 }
+    pan: { x: 0, y: 0 },
+    // 🔴 Per-source LOAD OUTCOME, kept next to the data it describes. Without these, every
+    // "empty" render is ambiguous: an empty views list, a graph with no nodes and a detail
+    // panel with no fields all look identical whether the server answered "nothing here" or
+    // "you may not read this". A denial is NOT an empty collection — each renderer below
+    // consults its own flag and says which one it is.
+    viewsState: 'loading',         // 'loading' | 'ok' | 'error'
+    viewsError: null,
+    liveError: null,               // GET /mission/sessions failed → live dots are UNKNOWN, not absent
+    scheduleError: null,           // POST /mission/schedule failed → ready/blocked is UNKNOWN
+    graphError: null,              // the primary graph call failed → the canvas has no data to show
+    missionError: null,            // GET /mission/:id failed for the SELECTED mission
+    sessionsError: null            // GET /mission/:id/sessions failed for the SELECTED mission
   };
 
-  function say(msg, isErr) {
+  // ── status line ───────────────────────────────────────────────────────────
+  // 🔴 The status line used to be ONE overwrite target, and loadAll() fires loadViews +
+  // loadSessions + loadSchedule and THEN loadGraph — so a views 403 was deterministically
+  // erased milliseconds later by "loaded 19 missions, 24 edges". An error a SIBLING call's
+  // success can delete is an error nobody ever reads. So failures are now held per SOURCE and
+  // survive until that same source loads cleanly; say() only rewrites the transient
+  // last-action line printed beneath them.
+  var status = { line: 'ready', lineErr: false, lineTag: null, problems: [] };   // problems: [{src,msg}]
+
+  function renderStatus() {
     var out = $('out');
     if (!out) return;
-    out.textContent = typeof msg === 'string' ? msg : JSON.stringify(msg, null, 2);
-    out.classList.toggle('err', !!isErr);
+    var lines = status.problems.map(function (p) { return '⚠ ' + p.msg; });
+    lines.push(status.line);
+    out.textContent = lines.join('\n');
+    out.classList.toggle('err', status.lineErr || status.problems.length > 0);
     reportHeight();
+  }
+  function problemIndex(src) {
+    for (var i = 0; i < status.problems.length; i++) if (status.problems[i].src === src) return i;
+    return -1;
+  }
+  /** Record a durable failure for one data source. Cleared ONLY by clearProblem(src). */
+  function problem(src, msg) {
+    var i = problemIndex(src);
+    if (i === -1) status.problems.push({ src: src, msg: msg });
+    else status.problems[i].msg = msg;
+    renderStatus();
+  }
+  function clearProblem(src) {
+    var i = problemIndex(src);
+    if (i !== -1) { status.problems.splice(i, 1); renderStatus(); }
+  }
+  /** The transient line: what the last action did. Never erases a recorded problem.
+   *  `tag` identifies who wrote it, so a later success can replace ITS OWN stale error line
+   *  without stepping on an unrelated message (a deep-link notice, say). */
+  function say(msg, isErr, tag) {
+    status.line = typeof msg === 'string' ? msg : JSON.stringify(msg, null, 2);
+    status.lineErr = !!isErr;
+    status.lineTag = tag || null;
+    renderStatus();
   }
 
   // A hard failure of the primary data call: cover the screen with the server's own text.
@@ -519,16 +569,36 @@
     html += state.views.map(function (v) {
       return '<div class="vrow' + (state.activeViewId === v.id ? ' on' : '') + '" data-vid="' + esc(v.id) + '" title="' + esc(v.id) + '">' + esc(v.name || v.id) + '</div>';
     }).join('');
-    if (!state.views.length) html += '<div class="hint">No saved views yet — filter the graph, then “Save as view”.</div>';
+    // 🔴 Three distinct outcomes, three distinct renders. "No saved views yet" is a claim about
+    // the SERVER'S data and may only be made when the server actually answered.
+    if (state.viewsState === 'error') {
+      html += '<div class="load-err">Saved views could not be loaded — ' + esc(state.viewsError || 'unknown error')
+        + '<button id="views-retry" class="ghost sm">Retry</button></div>';
+    } else if (state.viewsState === 'loading') {
+      html += '<div class="hint">loading…</div>';
+    } else if (!state.views.length) {
+      html += '<div class="hint">No saved views yet — filter the graph, then “Save as view”.</div>';
+    }
     $('views').innerHTML = html;
+    var retry = $('views-retry');
+    if (retry) retry.onclick = function (e) {
+      e.stopPropagation();                       // the row-click delegate must not read this as a view pick
+      state.viewsState = 'loading';
+      paintViews();
+      loadViews();
+    };
   }
 
   function paintChips() {
     var present = new Set();
     state.nodes.forEach(function (n) { present.add(n.status); });
+    // "no missions" is a statement about loaded data — with no loaded graph it would be a guess.
+    var noChips = state.graphError
+      ? '<span class="warn">graph not loaded — status filters unavailable</span>'
+      : '<span class="hint">no missions</span>';
     $('chips-status').innerHTML = STATUSES.filter(function (s) { return present.has(s); }).map(function (s) {
       return '<span class="fchip' + (state.filter.statuses.indexOf(s) !== -1 ? ' on' : '') + '" data-fs="' + esc(s) + '">' + esc(s) + '</span>';
-    }).join('') || '<span class="hint">no missions</span>';
+    }).join('') || noChips;
 
     var dims = new Map();
     state.nodes.forEach(function (n) {
@@ -642,7 +712,11 @@
       $('edge-g').innerHTML = '';
       state.layout = null;             // so a queued fitToView cannot fit a layout that is gone
       msg.hidden = false;
-      msg.textContent = state.nodes.length ? 'No missions match this view.' : 'No missions on this node yet.';
+      // A failed graph call must never render as "No missions on this node yet" — that is the
+      // pane inventing an answer the server refused to give.
+      msg.textContent = state.graphError
+        ? 'Graph could not be loaded — ' + state.graphError
+        : (state.nodes.length ? 'No missions match this view.' : 'No missions on this node yet.');
       paintCounts();
       reportHeight();
       return;
@@ -742,11 +816,15 @@
   }
 
   function paintCounts() {
-    var bits = state.vis.length + ' shown / ' + state.nodes.length + ' total';
+    var bits = state.graphError
+      ? 'graph not loaded'
+      : state.vis.length + ' shown / ' + state.nodes.length + ' total';
     var v = state.views.filter(function (x) { return x.id === state.activeViewId; })[0];
     bits += ' · ' + (v ? (v.name || v.id) : 'ad-hoc filter');
     if (state.view && state.view.display && state.view.display.groupBy) bits += ' · grouped by ' + state.view.display.groupBy;
     if (state.expand.direction !== 'none') bits += ' · expand ' + state.expand.direction + ' d' + state.expand.depth;
+    // No green dot can mean "nothing live" OR "the live-session call was refused" — say which.
+    if (state.liveError) bits += ' · live sessions unknown';
     $('counts').textContent = bits;
   }
 
@@ -842,6 +920,10 @@
     var sessBody = state.sessions.map(function (s) {
       return '<div>' + esc(String(s.sid || '').slice(0, 12)) + ' · ' + esc(s.kind || s.role || '') + '</div>';
     }).join('');
+    // An empty Sessions section reads as "no sessions"; when the call was refused, say so.
+    var sessSection = state.sessionsError
+      ? '<div class="load-err">Sessions could not be loaded — ' + esc(state.sessionsError) + '</div>'
+      : (sessBody ? '<div class="d-hist">' + sessBody + '</div>' : '');
 
     var pct = m && m.progress && m.progress.percent != null ? m.progress.percent : (node ? node.progressPercent : null);
     var sched = scheduleLine(id);
@@ -853,9 +935,18 @@
       + '<div class="d-pills"><span class="pill" style="color:' + color + ';border-color:' + color + '">' + esc(status) + '</span>'
       + (pct != null ? '<span class="pill">' + esc(fmtPct(pct)) + '</span>' : '')
       + (sched ? '<span class="pill sched">' + esc(sched) + '</span>' : '')
+      + (state.scheduleError && !sched ? '<span class="pill bad" title="' + esc(state.scheduleError) + '">schedule unknown</span>' : '')
       + (state.liveIds.has(id) ? '<span class="pill live-pill">live session</span>' : '')
+      + (state.liveError ? '<span class="pill bad" title="' + esc(state.liveError) + '">live state unknown</span>' : '')
       + '</div>'
-      + (!m ? '<div class="hint">loading…</div>' : '')
+      // 🔴 The three states of the mission fetch are now distinct. Before, the error branch of
+      // select() only wrote the status line and returned — it never repainted — so a refused
+      // GET /mission/:id left this panel on "loading…" for as long as the pane stayed open.
+      // A failed load renders an error with a Retry, never a permanent spinner.
+      + (state.missionError
+        ? '<div class="load-err">Details could not be loaded — ' + esc(state.missionError)
+          + '<button id="d-retry" class="ghost sm">Retry</button></div>'
+        : (!m ? '<div class="hint">loading…</div>' : ''))
       + section('Objective', m && m.objective ? '<div class="d-desc">' + esc(m.objective) + '</div>' : '')
       + section('Plan', m && m.plan ? '<pre class="mono">' + esc(m.plan) + '</pre>' : '')
       + section('Next steps', m && m.nextSteps && m.nextSteps.length
@@ -863,12 +954,20 @@
       + section('Tags', tagBody)
       + section('Relationships', relBody)
       + section('Recent changes', histBody ? '<div class="d-hist">' + histBody + '</div>' : '')
-      + section('Sessions', sessBody ? '<div class="d-hist">' + sessBody + '</div>' : '')
+      + section('Sessions', sessSection)
       + '<button id="d-open" class="link blue open-link">Open in Missions →</button>';
 
     $('d-close').onclick = function () { select(null); };
     // Cross-pane nav goes through the shim — a pane never builds another pane's URL.
     $('d-open').onclick = function () { lmui.goto('assist-missions', { mission: id }); };
+    var retry = $('d-retry');
+    if (retry) retry.onclick = function () {
+      state.missionError = null;
+      state.sessionsError = null;
+      paintDetail();                       // back to "loading…" for the duration of the retry
+      loadMissionDetail(id);
+      loadMissionSessions(id);
+    };
     reportHeight();
   }
 
@@ -888,10 +987,52 @@
     } catch (e) { /* sandboxed frame / opaque origin — state.selected stays the source of truth */ }
   }
 
+  /** GET /mission/:id → the detail panel's body. EVERY outcome repaints. */
+  function loadMissionDetail(id) {
+    return api('node', '/mission/' + encodeURIComponent(id)).then(function (r) {
+      if (state.selected !== id) return;                 // a newer click already superseded this
+      if (!r.ok) {
+        state.mission = null;
+        state.missionError = errText(r);
+        problem('mission', 'mission ' + id + ' failed to load — ' + state.missionError);
+        say('open ' + id + ' failed — ' + state.missionError, true, 'mission:' + id);
+        paintDetail();                                   // ← the repaint the old error branch skipped
+        return;
+      }
+      state.mission = r.data || null;                    // data is the mission BARE
+      state.missionError = null;
+      clearProblem('mission');
+      // Retry succeeded → drop the stale "open … failed" line this same load wrote. Tag-matched
+      // so it can only ever replace its OWN message.
+      if (status.lineTag === 'mission:' + id) say('mission ' + id + ' loaded', false, 'mission:' + id);
+      paintDetail();
+    });
+  }
+
+  /** GET /mission/:id/sessions → the Sessions section. A refusal is shown IN that section. */
+  function loadMissionSessions(id) {
+    return api('node', '/mission/' + encodeURIComponent(id) + '/sessions').then(function (r) {
+      if (state.selected !== id) return;
+      if (!r.ok) {
+        state.sessions = [];
+        state.sessionsError = errText(r);
+        paintDetail();
+        return;
+      }
+      state.sessions = Array.isArray(r.data) ? r.data : ((r.data && r.data.sessions) || []);
+      state.sessionsError = null;
+      paintDetail();
+    });
+  }
+
   function select(id) {
     state.selected = id;
     state.mission = null;
     state.sessions = [];
+    // The previous selection's failures describe a mission we are no longer showing.
+    state.missionError = null;
+    state.sessionsError = null;
+    clearProblem('mission');
     syncUrl();
     paintPickers();       // the focus-layout warning depends on having a selection
     paintCanvas();
@@ -900,20 +1041,8 @@
     if (state.strategy === 'focus') requestAnimationFrame(fitToView);
     paintDetail();
     if (!id) return;
-    api('node', '/mission/' + encodeURIComponent(id)).then(function (r) {
-      if (state.selected !== id) return;                 // a newer click already superseded this
-      if (!r.ok) {
-        say('open ' + id + ' failed — ' + r.error.code + ': ' + r.error.message, true);
-        return;
-      }
-      state.mission = r.data || null;                    // data is the mission BARE
-      paintDetail();
-    });
-    api('node', '/mission/' + encodeURIComponent(id) + '/sessions').then(function (r) {
-      if (state.selected !== id || !r.ok) return;        // best-effort — never blocks the panel
-      state.sessions = Array.isArray(r.data) ? r.data : ((r.data && r.data.sessions) || []);
-      paintDetail();
-    });
+    loadMissionDetail(id);
+    loadMissionSessions(id);
   }
 
   /** Land on the inbound `?mission=<id>`: select it (detail panel + 1-hop emphasis) and bring
@@ -939,27 +1068,57 @@
   // ── loaders ───────────────────────────────────────────────────────────────
   function loadViews() {
     return api('node', '/mission/views').then(function (r) {
-      if (!r.ok) { say('views failed — ' + r.error.code + ': ' + r.error.message, true); state.views = []; }
-      else state.views = (r.data && Array.isArray(r.data.views)) ? r.data.views : [];   // WRAPPER {views}
+      if (!r.ok) {
+        // 🔴 A DENIAL is not an empty list. Record it so paintViews renders "could not be
+        // loaded" instead of the friendly "No saved views yet" — which is what a 403 used to
+        // look like, i.e. the pane telling the user a lie about their own data.
+        state.views = [];
+        state.viewsState = 'error';
+        state.viewsError = errText(r);
+        problem('views', 'saved views failed to load — ' + state.viewsError);
+      } else {
+        state.views = (r.data && Array.isArray(r.data.views)) ? r.data.views : [];   // WRAPPER {views}
+        state.viewsState = 'ok';
+        state.viewsError = null;
+        clearProblem('views');
+      }
       paintViews();
     });
   }
 
-  // Live-session badges. Best-effort: a failure just means no green dots.
+  // Live-session badges. Decoration, but a failure means the live dots are UNKNOWN — which is
+  // not the same as "nothing is live", so it is recorded rather than swallowed.
   function loadSessions() {
     return api('node', '/mission/sessions').then(function (r) {
+      if (!r.ok) {
+        state.liveIds = new Set();
+        state.liveError = errText(r);
+        problem('sessions', 'live sessions unknown — ' + state.liveError);
+        return;
+      }
       var ids = new Set();
-      if (r.ok && r.data && Array.isArray(r.data.sessions)) {
+      if (r.data && Array.isArray(r.data.sessions)) {
         r.data.sessions.forEach(function (s) { if (s.missionId) ids.add(s.missionId); });
       }
       state.liveIds = ids;
+      state.liveError = null;
+      clearProblem('sessions');
     });
   }
 
-  // POST, not GET — see the header note. Best-effort: only decorates the detail panel.
+  // POST, not GET — see the header note. Decorates the detail panel; a failure means the
+  // ready/blocked line is unknown, so it is recorded rather than rendered as "not blocked".
   function loadSchedule() {
     return api('node', '/mission/schedule', { method: 'POST', body: {} }).then(function (r) {
-      state.schedule = r.ok ? (r.data || null) : null;
+      if (!r.ok) {
+        state.schedule = null;
+        state.scheduleError = errText(r);
+        problem('schedule', 'schedule unknown — ' + state.scheduleError);
+        return;
+      }
+      state.schedule = r.data || null;
+      state.scheduleError = null;
+      clearProblem('schedule');
     });
   }
 
@@ -979,7 +1138,22 @@
     return req.then(function (r) {
       // Resolves false on failure so a queued deep-link landing does not report "not in this
       // graph" — which would be a lie — over a graph that never loaded at all.
-      if (!r.ok) { fatal(r.error.code + ': ' + r.error.message); return false; }
+      if (!r.ok) {
+        state.graphError = errText(r);
+        problem('graph', 'graph failed to load — ' + state.graphError);
+        // The canvas must not sit on "loading…" behind the overlay (nor, once the overlay is
+        // dismissed by Retry, claim "No missions on this node yet" — that is a denial dressed
+        // up as an empty node).
+        var m = $('cv-msg');
+        m.hidden = false;
+        m.textContent = 'Graph could not be loaded — ' + state.graphError;
+        paintChips();
+        paintCounts();
+        fatal(errText(r));
+        return false;
+      }
+      state.graphError = null;
+      clearProblem('graph');
       var d = r.data || {};
       state.view = d.view || null;                       // present ONLY on the view-sourced route
       state.nodes = Array.isArray(d.nodes) ? d.nodes : [];
@@ -1013,12 +1187,15 @@
     };
     // No `id` is ever sent — this always CREATES; it can never overwrite an existing view.
     $('save-go').disabled = true;
+    clearProblem('save');                                // this attempt supersedes the last one
     say('saving view "' + name + '"…');
     api('node', '/mission/views', { method: 'POST', body: body }).then(function (r) {
       $('save-go').disabled = false;
       if (!r.ok) {
         // This route is leader-anchored and fails CLOSED — an unreachable leader is a hard error.
-        say('save view failed — ' + r.error.code + ': ' + r.error.message, true);
+        // Sticky: a WRITE that did not happen must not be erased by the next background reload.
+        problem('save', 'save view "' + name + '" failed — ' + errText(r));
+        say('save view failed — ' + errText(r), true);
         return;
       }
       var v = r.data || {};                              // data is the view object BARE

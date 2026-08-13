@@ -279,6 +279,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     if (method !== 'GET') return reply(res, log, 405, 'text/plain', 'local tier: /panes is GET only', undefined, `${method} ${rawPath}`);
     return servePaneIndex(req, res, log);
   }
+  if (rawPath === '/favicon.ico') return serveFavicon(res);
   // The origin wall. /data, /viewtoken/remint and /auth/me live on a PANE origin only —
   // answering them here would put a second, shared origin back into the trust story.
   return reply(res, log, 404, 'text/plain', 'not found', undefined, `${method} ${rawPath}`);
@@ -330,6 +331,7 @@ async function handlePane(paneId: string, req: IncomingMessage, res: ServerRespo
     if (method !== 'GET') return reply(res, log, 405, 'text/plain', 'local tier: /panes is GET only', undefined, `${method} ${rawPath}`);
     return servePaneIndex(req, res, log);
   }
+  if (rawPath === '/favicon.ico') return serveFavicon(res);
   const dataMatch = /^\/data\/(.*)$/.exec(rawPath);
   if (dataMatch) return serveData(req, res, opts, log, method, dataMatch[1], search, paneId);
 
@@ -590,6 +592,20 @@ function escapeHtml(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
   ));
+}
+
+/**
+ * GET /favicon.ico → 204, not 404.
+ *
+ * Browsers request this from the ORIGIN ROOT on every document load, unasked, and no pane ships
+ * one — so every pane load logged a 404 that nobody could act on. On several panes it was the
+ * ONLY console error in an otherwise clean run, which trains a viewer to ignore the console —
+ * the exact condition under which a REAL error goes unnoticed. 204 says "deliberately nothing":
+ * it needs no auth because it carries no body, no cookie and no token, and the short cache stops
+ * the browser asking again on the next load.
+ */
+function serveFavicon(res: ServerResponse): void {
+  try { res.writeHead(204, { 'cache-control': 'max-age=86400' }); res.end(); } catch { /* socket gone */ }
 }
 
 // ── assets ───────────────────────────────────────────────────────────────────────────────

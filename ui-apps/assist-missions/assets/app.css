@@ -5,6 +5,13 @@
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
+/* 🔴 Several regions below carry a `display` rule (.create and .fld are flex columns), and an
+   author `display` BEATS the UA's `[hidden]{display:none}` — a class selector outranks the
+   attribute default. Without this line every `el.hidden = true` in app.js is a no-op for those
+   elements: the "+ New mission" form could never be collapsed and the "Repo (typed)" /
+   "Branch (typed)" inputs were permanently on screen. Make the attribute win everywhere. */
+[hidden]{display:none!important}
+
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
 header h1{font-size:1rem;margin:0;font-weight:600}
 .chip{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}

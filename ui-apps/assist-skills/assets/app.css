@@ -3,6 +3,13 @@
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
 *{box-sizing:border-box}
+/* 🔴 The UA's own `[hidden]{display:none}` is a plain attribute selector, so ANY class rule
+   below that sets `display` (flex/grid/block) outranks it and an element with hidden=true
+   stays on screen. Sibling panes shipped exactly that bug — a tab pill recoloured while both
+   bodies stayed stacked. This pane currently toggles nothing via hidden (it re-renders each
+   region wholesale), so the rule changes nothing today; it is here so the next hidden=true
+   added to this file works the moment it is written. */
+[hidden]{display:none!important}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
@@ -67,6 +74,10 @@ main{display:grid;grid-template-columns:19rem minmax(0,1fr) 21rem;gap:1rem;paddi
 .stats .st b.accent{color:var(--amber)}
 .stats .st b.good{color:var(--green)}
 .stats .st b.bad{color:var(--red)}
+/* A percentage whose denominator is NOT the number sitting next to it must carry that
+   denominator, or the two read as one contradictory pair ("410 invocations … 100% success"
+   where the rate was computed over 401 rated outcomes). */
+.stats .st .of{margin-left:.25rem;opacity:.75;font-size:.68rem}
 .d-meta{font-size:.72rem;color:var(--dim);line-height:1.6;margin-bottom:.7rem;word-break:break-word}
 .d-meta .k{color:var(--txt);font-weight:600}
 .note{font-size:.76rem;color:var(--dim);line-height:1.55;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.6rem .75rem}
@@ -100,6 +111,10 @@ main{display:grid;grid-template-columns:19rem minmax(0,1fr) 21rem;gap:1rem;paddi
 .arow{display:flex;align-items:center;gap:.35rem;padding:.22rem .6rem .22rem .9rem;font-size:.66rem;cursor:pointer;border-top:1px solid var(--line)}
 .arow:hover{background:var(--panel)}
 .arow .atxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+/* The honest empty state of the subagent expander: the count is known, the records are not.
+   Not a row you can click — nothing behind it — so it does not take the .arow hover/cursor. */
+.arow-none{display:block;padding:.3rem .6rem .4rem .9rem;font-size:.66rem;line-height:1.45;
+  color:var(--dim);border-top:1px solid var(--line);cursor:default}
 
 .pager{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-top:.6rem;font-size:.72rem;color:var(--dim)}
 .pnum{font-family:ui-monospace,monospace}
@@ -136,6 +151,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
 /* The "10 of 20+" count beside a section title: a cap the reader can SEE, not one implied by a
    list that happens to stop. Normal case + mono so it reads as a number, not as more heading. */
 .sect-n{font-family:ui-monospace,monospace;text-transform:none;letter-spacing:0;color:var(--amber)}
+/* A WORD qualifying a section's population, deliberately NOT amber/mono — a reader must not
+   mistake "which rows are counted here" for "how many rows there are". */
+.sect-note{text-transform:none;letter-spacing:0;color:var(--dim);font-weight:400;font-size:.64rem}
 .cards{display:grid;grid-template-columns:1fr 1fr;gap:.45rem}
 .card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.5rem .6rem}
 .c-l{font-size:.64rem;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
@@ -143,6 +161,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .c-v.accent{color:var(--amber)}
 .c-v.good{color:var(--green)}
 .c-v.bad{color:var(--red)}
+/* The card's own denominator, printed under the headline number whenever it is NOT the number
+   in the neighbouring card. Two cards reading 2039 and 100% with nothing between them claim a
+   relationship that does not hold. */
+.c-sub{font-family:ui-monospace,monospace;font-size:.6rem;color:var(--dim);margin-top:.15rem;line-height:1.3}
 .bar-row{display:flex;align-items:center;gap:.45rem;font-size:.7rem;padding:.12rem 0;cursor:pointer;border-radius:5px}
 .bar-row:hover{background:var(--panel2)}
 .bar-l{width:6.5rem;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { handleMissionSpawn, type MissionSpawnDeps } from '../routes/core/mission.routes';
-import { ensureControllerWorkspace, CONTROLLER_WORKSPACE_CLAUDE_MD } from '../mission/mission-controller';
+import { ensureControllerWorkspace, controllerModeSuffix, CONTROLLER_WORKSPACE_CLAUDE_MD } from '../mission/mission-controller';
 
 // ---------------------------------------------------------------------------
 // handleMissionSpawn — the sanctioned native executor spawn
@@ -92,7 +92,8 @@ test('workspace: created with seeded CLAUDE.md, idempotent, edits preserved', ()
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'lmws-'));
   try {
     const dir = ensureControllerWorkspace(base);
-    assert.equal(dir, path.join(base, 'mission-control'));
+    // Mode-suffixed: a dev Core's workspace must not be prod's (see controllerModeSuffix).
+    assert.equal(dir, path.join(base, `mission-control${controllerModeSuffix()}`));
     assert.ok(fs.existsSync(dir));
     const md = path.join(dir, 'CLAUDE.md');
     assert.equal(fs.readFileSync(md, 'utf8'), CONTROLLER_WORKSPACE_CLAUDE_MD);

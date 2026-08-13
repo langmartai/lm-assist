@@ -115,6 +115,23 @@
   // Identity: `id` repeats across task lists, so a task is only addressable as (sessionId, id).
   function taskKey(t) { return String(t.sessionId || '') + '' + String(t.id || ''); }
 
+  // ── project identity: ONE key for the board's grouping AND the project filter ─────────────
+  // 🔴 `projectName` is genuinely absent on a large slice of real rows (141 of 470 on this node —
+  // 30%, spread over 20 sessions, with no projectPath either). Those tasks are a real group the
+  // board renders ("Unknown Project"), so they need a real, SELECTABLE filter value. paintProjects
+  // used to skip every falsy name, which left 141 tasks visible on the board inside the one group
+  // the dropdown could not isolate.
+  //
+  // Option values are PREFIXED so a project name can never collide with the nameless bucket, and
+  // neither can collide with '' (already spoken for by "All projects"):
+  //   ''  → all projects     'p:<name>' → that project     'n:' → the tasks with no project name
+  // groupsOf() keys project groups with the SAME function, so "a group the board can show" and
+  // "an option the filter offers" are 1:1 by construction rather than by coincidence.
+  var NO_PROJECT = 'n:';
+  var NO_PROJECT_LABEL = 'Unknown Project';
+  function projValue(t) { return t.projectName ? 'p:' + String(t.projectName) : NO_PROJECT; }
+  function projLabel(t) { return t.projectName ? String(t.projectName) : NO_PROJECT_LABEL; }
+
   // ── state ───────────────────────────────────────────────────────────────
   var state = {
     tasks: [],                                    // data.tasks from GET /tasks/all (flat, all lists)
@@ -255,29 +272,50 @@
   }
 
   // Project options are rebuilt on every load; the current choice survives if it still exists.
+  // EVERY distinct project value present in the data gets an option — including the nameless
+  // bucket, which is a group the board renders and therefore a group the filter must be able to
+  // select. Each option carries its own task count so the dropdown and the board's group headers
+  // reconcile by eye ("Unknown Project (141)" ⇢ a group headed "Unknown Project · 141 tasks"),
+  // and the option counts sum to the "All projects (N)" total.
+  // Those counts are over ALL loaded tasks, deliberately NOT re-derived from the status/search
+  // filters: this list is rebuilt on every 10s poll, and a set of option labels that churned on
+  // every keystroke would be re-rendering under an open native dropdown.
   function paintProjects() {
-    var seen = Object.create(null), names = [];
+    var seen = Object.create(null), opts = [];
     state.tasks.forEach(function (t) {
-      var n = t.projectName;
-      if (n && !seen[n]) { seen[n] = 1; names.push(n); }
+      var v = projValue(t);
+      if (!seen[v]) { seen[v] = { value: v, label: projLabel(t), n: 0 }; opts.push(seen[v]); }
+      seen[v].n++;
     });
-    names.sort();
-    if (state.filter.project && names.indexOf(state.filter.project) === -1) state.filter.project = '';
+    // Named projects sort alphabetically; the nameless bucket sorts last — it is not a name.
+    opts.sort(function (a, b) {
+      if ((a.value === NO_PROJECT) !== (b.value === NO_PROJECT)) return a.value === NO_PROJECT ? 1 : -1;
+      return a.label < b.label ? -1 : (a.label > b.label ? 1 : 0);
+    });
+    // A selection that no longer exists in the data falls back to "all" — including 'n:', which
+    // disappears the moment every task on this node carries a project name.
+    if (state.filter.project && !seen[state.filter.project]) state.filter.project = '';
     var cur = state.filter.project;
-    $('f-project').innerHTML = '<option value=""' + (cur ? '' : ' selected') + '>All projects</option>'
-      + names.map(function (n) {
-        return '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>';
+    $('f-project').innerHTML = '<option value=""' + (cur ? '' : ' selected') + '>All projects ('
+      + state.tasks.length + ')</option>'
+      + opts.map(function (o) {
+        return '<option value="' + esc(o.value) + '"' + (o.value === cur ? ' selected' : '') + '>'
+          + esc(o.label) + ' (' + o.n + ')</option>';
       }).join('');
   }
 
   function passFilters(t) {
     var f = state.filter;
     if (f.status && t.status !== f.status) return false;
-    if (f.project && (t.projectName || '') !== f.project) return false;
+    // Same key the dropdown emits and the board groups on — so selecting any project option
+    // (the nameless one included) isolates exactly the group the board was already showing.
+    if (f.project && projValue(t) !== f.project) return false;
     var q = f.q.trim().toLowerCase();
     if (q) {
+      // projLabel(), not projectName: the board calls these rows "Unknown Project", so typing
+      // that is a search a user can reasonably expect to hit them.
       var hay = ((t.subject || '') + ' ' + (t.id || '') + ' ' + (t.description || '') + ' '
-        + (t.projectName || '') + ' ' + (t.sessionId || '')).toLowerCase();
+        + projLabel(t) + ' ' + (t.sessionId || '')).toLowerCase();
       if (hay.indexOf(q) === -1) return false;
     }
     return true;
@@ -291,8 +329,8 @@
     list.forEach(function (t) {
       var key, label, sub;
       if (state.groupBy === 'project') {
-        key = t.projectName || 'Unknown Project';
-        label = key;
+        key = projValue(t);              // the filter's option value → group ↔ option is 1:1
+        label = projLabel(t);
         sub = t.projectPath || '';
       } else {
         key = t.sessionId || 'unknown';

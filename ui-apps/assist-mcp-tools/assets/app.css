@@ -5,6 +5,14 @@
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
+/* A class selector (0,1,0) BEATS the UA's `[hidden]{display:none}` (0,0,1), so any author
+   `display` rule on a toggled element silently defeats `el.hidden = true`. That is exactly
+   what happened here: `.cols` (below) kept #view-tools as a grid on every tab, so Plugins
+   and Status rendered UNDER the full 286-row tool list and tab switching only recoloured
+   the pill. Make the attribute win outright — every hidden toggle on this page depends on
+   it (#view-tools/#view-plugins/#view-status, #pending). Same fix as assist-data. */
+[hidden]{display:none!important}
+
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
 header h1{font-size:1rem;margin:0;font-weight:600}
 .chip{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}
@@ -64,7 +72,12 @@ main{display:flex;flex-direction:column;gap:.8rem;padding:1rem;max-width:82rem;m
 .chips{display:flex;gap:.25rem;flex-wrap:wrap}
 .fchip{font-size:.7rem;border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:999px;padding:.1rem .5rem;cursor:pointer}
 .fchip.on{background:var(--blue);border-color:var(--blue);color:#fff}
-.sel{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.22rem .4rem;font-size:.74rem;max-width:11rem}
+/* The category <select>. NAMED `.selbox`, not `.sel`: `.sel` is the list's SELECTED-row state
+   class (`.row.sel`, emitted by app.js), and a control style sharing that name applied to the
+   selected row too — its `max-width:11rem` + `.74rem` font collapsed the highlighted row to
+   176px wide / 11.8px text next to 350px / 16px siblings. A state class and a control class
+   must never share a name; the collision is invisible until both happen to land on one node. */
+.selbox{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.22rem .4rem;font-size:.74rem;max-width:11rem}
 
 .list{display:flex;flex-direction:column;gap:.3rem;max-height:36rem;overflow:auto}
 .grp{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.5rem}

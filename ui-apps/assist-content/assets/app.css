@@ -3,6 +3,12 @@
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
 *{box-sizing:border-box}
+/* 🔴 A class/id `display` rule BEATS the UA's `[hidden]{display:none}` (class > attribute
+   default), so `.fld`/`.pill`/`.cols`-style rules keep an element on screen even after the JS
+   sets hidden=true — the toggle recolours nothing and silently does nothing. `!important` is
+   what makes the attribute win, and it is why every hidden= toggle in app.js can be trusted.
+   Sibling panes (assist-data) carry the same line for the same reason. */
+[hidden]{display:none!important}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
@@ -51,6 +57,14 @@ main{display:flex;flex-direction:column;gap:1rem;padding:1rem;max-width:82rem;ma
 .trow.dir .tn{font-weight:600}
 .trow.file .tn{font-family:ui-monospace,monospace}
 .trow .tm{flex:none;font-size:.64rem;color:var(--dim);white-space:nowrap}
+/* A directory the server never walked INTO: its twisty still works, but what it opens is the
+   note below, not children. Dimmed so the dead-end is visible BEFORE the click. */
+.trow.dir.unwalked .tw{opacity:.4}
+/* The row an expansion falls back to when there is nothing to show — an expand must never be
+   a silent no-op, so every branch of it renders SOMETHING that says why. */
+.tnote{font-size:.68rem;color:var(--dim);padding:.2rem .4rem .3rem;line-height:1.45;font-style:italic}
+.tnote button{padding:.08rem .45rem;font-size:.65rem;font-style:normal;margin-left:.25rem;vertical-align:baseline}
+.counts.loading,.hint.loading{opacity:.75;font-style:italic}
 
 /* ── pills ─────────────────────────────────────────────────────────────── */
 .pill{display:inline-block;border-radius:999px;padding:.05rem .5rem;font-size:.66rem;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
