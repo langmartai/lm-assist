@@ -146,6 +146,14 @@ export class ApiRelayHandler {
     '/lifecycle',     // graceful exit/restart of a node's Core/Web (node_lifecycle → POST /lifecycle/{exit,restart})
     '/whatsapp',      // whatsapp cloud-api connector (send/chats/messages/search/status; webhook is reached directly by Meta, not via the hub)
     '/ui-pages',      // pluggable-UI serving status + lifecycle (assist UI Pages page controls the node via the machine proxy)
+    '/scheduler',     // scheduled-jobs pane (list/detail/logs + run-now) — also missions pane's controller run-now
+    '/skills',        // skills pane (list/detail/analytics + reindex/refresh-inventory)
+    // The next three are deliberately NARROW: a bare '/hub' would relay the whole hub-client
+    // surface and a bare '/claude-ai' the claude.ai cookie/conversation surface. Each pane
+    // needs exactly one read-only corner of them.
+    '/hub/status',    // mcp-tools pane header (hub connectivity readout)
+    '/hub/machines',  // clusters pane node picker
+    '/claude-ai/mcp/servers', // mcp-tools pane (connector server list, read-only)
   ];
 
   /**
