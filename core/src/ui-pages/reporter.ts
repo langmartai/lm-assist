@@ -24,6 +24,10 @@ export async function reportStatusesOnce(log: (m: string) => void = () => {}): P
   // Reportable, not running: a host-mode server is one process serving many UIs, and the
   // gateway keys status per registered UI. See listReportableUis.
   for (const s of listReportableUis()) {
+    // assist-web-scoped panes are GATEWAY-hosted (source='local' on the registry): their files
+    // live on the gateway box and serve with no node online. A worker heartbeat against those
+    // rows would stamp node-era status onto pages this node no longer serves.
+    if (s.scope === 'assist-web') continue;
     try {
       const st = await statusOf(s, uiWebPort);
       // The path routes take a bare uiId (resolved inside our own namespace) or the uiKey;
@@ -89,6 +93,12 @@ export async function syncManagedUis(log: (m: string) => void = () => {}): Promi
     };
     try { cfg = JSON.parse(fs.readFileSync(path.join(appsRoot, n, 'lmui.config.json'), 'utf8')); } catch { continue; }
     if (cfg.managed !== true || !cfg.uiId) continue;
+    // assist-web scope = the pane's data plane is assist-api (hub-side), so the pane is
+    // gateway-hosted (registry source='local', artifacts on the gateway box) and must stay
+    // reachable when NO node is up. Asserting it from here would flip the registration back
+    // to source='worker' and re-tie it to this node — the exact dependency being removed.
+    // lm-assist-scoped panes (node data plane) remain node-hosted and ARE asserted below.
+    if (cfg.scope === 'assist-web') { log(`[ui-pages] managed sync: ${cfg.uiId} skipped (assist-web scope is gateway-hosted)`); continue; }
     const bad = uiIdError(cfg.uiId);
     if (bad) { log(`[ui-pages] managed sync of ${appsRoot}/${n} skipped: ${bad}`); continue; }
     try {

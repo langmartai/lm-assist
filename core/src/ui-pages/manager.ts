@@ -96,7 +96,7 @@ export const HOST_UI_ID = '_host';
  * intact: boot respawn and start/stop must keep acting on the one thing that IS a process.
  * Killing a synthetic per-app entry would take down every app sharing the host server.
  */
-export interface ReportableUi extends UiPageState { hosted?: boolean }
+export interface ReportableUi extends UiPageState { hosted?: boolean; scope?: string }
 
 export function listReportableUis(): ReportableUi[] {
   const out: ReportableUi[] = [];
@@ -105,13 +105,13 @@ export function listReportableUis(): ReportableUi[] {
     let names: string[] = [];
     try { names = fs.readdirSync(s.dir); } catch { continue; }
     for (const n of names) {
-      let cfg: { uiId?: string; service?: string };
+      let cfg: { uiId?: string; service?: string; scope?: string };
       try { cfg = JSON.parse(fs.readFileSync(path.join(s.dir, n, 'lmui.config.json'), 'utf8')); } catch { continue; }
       if (!cfg?.uiId) continue;
       // pid/port stay the host's: one process serves them all, so it is the honest answer
       // to "is this alive" — and the probe still hits each app's own service path. `hosted`
       // marks the entry as NOT independently controllable (see controlPage).
-      out.push({ ...s, uiId: cfg.uiId, service: cfg.service || `ui-${cfg.uiId}`, dir: path.join(s.dir, n), hosted: true });
+      out.push({ ...s, uiId: cfg.uiId, service: cfg.service || `ui-${cfg.uiId}`, dir: path.join(s.dir, n), hosted: true, scope: cfg.scope });
     }
   }
   return out;
