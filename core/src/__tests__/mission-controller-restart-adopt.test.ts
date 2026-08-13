@@ -4,13 +4,20 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   runSupervisorTick, pickStrayControllers, CONTROLLER_ADOPT_RESUME_DIRECTIVE,
+  controllerTmuxPrefix,
   _resetNotMonitorStreak,
   type SupervisorDeps,
 } from '../mission/mission-controller';
 
+// The sweep is scoped to THIS process's own controller namespace (dev vs prod — see
+// controllerTmuxPrefix), so the fixtures are built from it rather than hard-coded 'lmcc'.
+// OTHER is the other mode's prefix: its windows belong to the other Core and are off-limits.
+const P = controllerTmuxPrefix();
+const OTHER = controllerTmuxPrefix(P === 'lmcc');
+
 // lastDriveAt = 1 min before `now` so the fallback time-gate is NOT due (interval 5 min) —
 // keeps adopt/sweep assertions from colliding with an incidental 'drive' action.
-const CS = { node: 'n1', sessionId: 'uuid-1', cse: null, tmux: 'lmcc-orig', startedAt: 1, lastDriveAt: 9 * 60_000 } as any;
+const CS = { node: 'n1', sessionId: 'uuid-1', cse: null, tmux: `${P}-orig`, startedAt: 1, lastDriveAt: 9 * 60_000 } as any;
 
 function baseDeps(over: Partial<SupervisorDeps>): SupervisorDeps {
   return {
@@ -27,13 +34,13 @@ function baseDeps(over: Partial<SupervisorDeps>): SupervisorDeps {
   } as SupervisorDeps;
 }
 
-test('pickStrayControllers: only non-recorded lmcc-*', () => {
+test('pickStrayControllers: only non-recorded controllers of THIS mode', () => {
   assert.deepEqual(
-    pickStrayControllers(['lmcc-orig', 'lmcc-dup1', 'lmt-x', 'ccr-y', 'lmcc-dup2'], 'lmcc-orig'),
-    ['lmcc-dup1', 'lmcc-dup2'],
+    pickStrayControllers([`${P}-orig`, `${P}-dup1`, 'lmt-x', 'ccr-y', `${OTHER}-theirs`, `${P}-dup2`], `${P}-orig`),
+    [`${P}-dup1`, `${P}-dup2`],
   );
-  assert.deepEqual(pickStrayControllers(['lmcc-a'], null), ['lmcc-a']);
-  assert.deepEqual(pickStrayControllers([], 'lmcc-orig'), []);
+  assert.deepEqual(pickStrayControllers([`${P}-a`], null), [`${P}-a`]);
+  assert.deepEqual(pickStrayControllers([], `${P}-orig`), []);
 });
 
 test('boot-adopt: live recorded controller gets ONE resume drive, then normal ticks', async () => {
@@ -92,15 +99,28 @@ test('TOCTOU: decide says launch but recorded controller is alive at act time �
   assert.equal(r.controllerSession, CS);
 });
 
-test('stray sweep: kills every lmcc-* except the recorded one, never the record itself', async () => {
+test('stray sweep: kills every own-mode duplicate, never the record itself', async () => {
   const killed: string[] = [];
   const deps = baseDeps({
-    listTmuxSessions: async () => ['lmcc-orig', 'lmcc-dup1', 'lmt-worker', 'lmcc-dup2'],
+    listTmuxSessions: async () => [`${P}-orig`, `${P}-dup1`, 'lmt-worker', `${P}-dup2`],
     killStrayTmux: async (n) => { killed.push(n); },
   });
   const r = await runSupervisorTick(deps);
   assert.equal(r.action, 'idle');
-  assert.deepEqual(killed.sort(), ['lmcc-dup1', 'lmcc-dup2']);
+  assert.deepEqual(killed.sort(), [`${P}-dup1`, `${P}-dup2`]);
+});
+
+// The 2026-08-12→13 storm: dev's sweep killed prod's controller (and vice versa), so each
+// Core's isLive() went false and it relaunched — 136 launches in 8 hours, every one of them
+// re-resuming the SAME session. The other mode's window is not ours to touch.
+test('stray sweep: never touches the OTHER mode\'s controller', async () => {
+  const killed: string[] = [];
+  const deps = baseDeps({
+    listTmuxSessions: async () => [`${P}-orig`, `${OTHER}-theirs`, `${OTHER}-theirs-2`],
+    killStrayTmux: async (n) => { killed.push(n); },
+  });
+  await runSupervisorTick(deps);
+  assert.deepEqual(killed, []);
 });
 
 test('sweep failures never sink the tick', async () => {
@@ -118,7 +138,7 @@ test('non-leader: no sweep, no adopt-drive; teardown only after the anti-flap st
   const deps = baseDeps({
     amMonitor: async () => ({ isMonitor: false, monitorNodeId: 'other' }),
     teardown: async () => { torn = true; },
-    listTmuxSessions: async () => ['lmcc-orig', 'lmcc-dup1'],
+    listTmuxSessions: async () => [`${P}-orig`, `${P}-dup1`],
     killStrayTmux: async (n) => { killed.push(n); },
     bootAdopt: { done: () => false, mark: () => {} },
   });

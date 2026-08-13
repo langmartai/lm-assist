@@ -576,11 +576,52 @@ export const CONTROLLER_SYSTEM_PROMPT = [
 export const CONTROLLER_ADOPT_RESUME_DIRECTIVE =
   '⟦CORE RESTARTED — REATTACH⟧ The lm-assist Core under you restarted; you were NOT relaunched (your session and context are intact). Re-establish situational awareness and RESUME in-flight work now: run a normal pass (mission_changes → mission_schedule), then for every active mission re-check its executor/session state (mission_executor_status / mission_session_read) and continue where it left off — resume-first for anything that went stale during the restart. If a tool call failed mid-restart, simply retry it.';
 
-/** Pure: the lmcc-* tmux sessions that are NOT the recorded controller — duplicates to sweep.
- *  (Observed live: a Core restart + tick race can launch a second controller while the original
- *  survives; the recorded one is authoritative, everything else lmcc-* is a stray.) */
-export function pickStrayControllers(tmuxNames: string[], recordedTmux: string | null | undefined): string[] {
-  return tmuxNames.filter((n) => n.startsWith('lmcc-') && !!n && n !== recordedTmux);
+/**
+ * DEV/PROD isolation for every piece of node-local controller state.
+ *
+ * A dev Core (repo, :3200) and a prod Core (npm, :3100) run on the same host, on SEPARATE
+ * hubs — so each election names its own Core the monitor and BOTH run a supervisor. They are
+ * not competing for one controller; they legitimately own one each. What broke (117,
+ * 2026-08-12→13) is that the two controllers shared a namespace: one workspace (hence ONE
+ * resumable lineage — both resumed session 5a2f797e), one `lmcc-` tmux prefix (hence each
+ * sweep murdered the OTHER's controller → isLive false → relaunch → sweep …: 136 launches in
+ * 8 hours), and one extras dir (dev's hub key + :3200 MCP config overwriting prod's).
+ *
+ * The suffix makes the three disjoint. `isDevRepo()` is per-process (`__dirname` under
+ * node_modules or not), so each Core picks its own side with no configuration.
+ */
+function isDev(): boolean {
+  const { isDevRepo } = require('../utils/path-utils') as typeof import('../utils/path-utils');
+  return isDevRepo();
+}
+
+/** '' for prod, '-dev' for a repo Core — appended to every node-local controller path. */
+export function controllerModeSuffix(dev: boolean = isDev()): string {
+  return dev ? '-dev' : '';
+}
+
+/** tmux session-name prefix for THIS mode's controller. The two values must not prefix each
+ *  other under the `<prefix>-` match the sweep uses: 'lmccdev-x' does not start with 'lmcc-'. */
+export function controllerTmuxPrefix(dev: boolean = isDev()): string {
+  return dev ? 'lmccdev' : 'lmcc';
+}
+
+/** Dir holding the launch extras (system-prompt file + hub-MCP config), per mode. */
+export function controllerExtrasDir(baseDir?: string, dev: boolean = isDev()): string {
+  const { getDataDir } = require('../utils/path-utils') as typeof import('../utils/path-utils');
+  return path.join(baseDir || getDataDir(), `controller${controllerModeSuffix(dev)}`);
+}
+
+/** Pure: the controller tmux sessions of THIS mode that are NOT the recorded controller —
+ *  duplicates to sweep. (Observed live: a Core restart + tick race can launch a second
+ *  controller while the original survives; the recorded one is authoritative.) The prefix
+ *  defaults to this process's own mode so a dev Core can never sweep prod's controller. */
+export function pickStrayControllers(
+  tmuxNames: string[],
+  recordedTmux: string | null | undefined,
+  prefix: string = controllerTmuxPrefix(),
+): string[] {
+  return tmuxNames.filter((n) => n.startsWith(`${prefix}-`) && !!n && n !== recordedTmux);
 }
 
 /**
@@ -1744,14 +1785,16 @@ Both feed the control loop's self-recovery (drive-failure relaunch, churn back-o
 resume-first) and the Missions page **Trace** panel the human watches.
 `;
 
-/** Dedicated home-project folder for controller sessions (~/.lm-assist/mission-control).
+/** Dedicated home-project folder for controller sessions (~/.lm-assist/mission-control,
+ *  `-dev` on a repo Core — see controllerModeSuffix: the shared folder is what let two Cores
+ *  resume the SAME controller session and clobber each other's lineage + journal).
  *  Keeps the controller OUT of process.cwd() — on a prod npm install that was the package
  *  dir itself, so controller transcripts landed in the .../node_modules/... project bucket.
  *  Exported + base-dir-injectable for tests. */
-export function ensureControllerWorkspace(baseDir?: string): string {
+export function ensureControllerWorkspace(baseDir?: string, dev?: boolean): string {
   const fsmod = require('fs') as typeof import('fs');
   const { getDataDir } = require('../utils/path-utils') as typeof import('../utils/path-utils');
-  const dir = path.join(baseDir || getDataDir(), 'mission-control');
+  const dir = path.join(baseDir || getDataDir(), `mission-control${controllerModeSuffix(dev)}`);
   fsmod.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const claudeMd = path.join(dir, 'CLAUDE.md');
   if (!fsmod.existsSync(claudeMd)) fsmod.writeFileSync(claudeMd, CONTROLLER_WORKSPACE_CLAUDE_MD, { mode: 0o644 });
@@ -2099,13 +2142,14 @@ export function registerMissionController(
         try {
           const hub = getHubConfig();
           const fsmod = require('fs') as typeof import('fs');
-          const { getDataDir } = require('../utils/path-utils') as typeof import('../utils/path-utils');
           // The mcp file holds the hub bearer key — write it to the user-private
           // lm-assist data dir (where hub.json's key already lives), NOT a
           // world-writable /tmp. Fixed path (overwrite in place, no accumulation)
           // + unlink-then-O_EXCL create (refuses a planted symlink/file, so a
-          // predictable path can't be exploited for a symlink-swap attack).
-          const dir = path.join(getDataDir(), 'controller');
+          // predictable path can't be exploited for a symlink-swap attack). Per MODE: a dev
+          // Core writing its :3200 endpoint + dev-hub key into the shared path was handing
+          // prod's controller the wrong tool surface (and vice versa) on every launch.
+          const dir = controllerExtrasDir();
           fsmod.mkdirSync(dir, { recursive: true, mode: 0o700 });
           const writeFile = (name: string, body: string): string => {
             const p = path.join(dir, name);
@@ -2146,6 +2190,9 @@ export function registerMissionController(
           appendSystemPromptFile: extras.appendSystemPromptFile,
           mcpConfigPath: extras.mcpConfigPath,
           name: controllerName,
+          // Own-mode namespace: the sweep only kills `<prefix>-*`, so a dev and a prod
+          // controller can coexist on one host instead of relaunching each other forever.
+          tmuxPrefix: controllerTmuxPrefix(),
           ...(resumeSid ? { resume: resumeSid } : {}),
         });
         const sessionId = ((launched.sessionId as string | null) ?? '') || (resumeSid ?? '');
