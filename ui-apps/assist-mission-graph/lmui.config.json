@@ -1,0 +1,20 @@
+{
+  "uiId": "assist-mission-graph",
+  "name": "Mission Graph",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/mission/*", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/*/sessions", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/views/*/graph", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/graph", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/schedule", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/views", "verbs": ["POST"], "exact": true }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-mission-graph",
+  "category": "Node",
+  "sortOrder": 130,
+  "managed": true
+}

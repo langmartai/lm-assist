@@ -1487,6 +1487,29 @@ case "${1:-}" in
     test)
         test_api
         ;;
+    panes)
+        # Pane shims deploy through a DIFFERENT channel than the server that talks to them:
+        # the server rides `build`, the shim rides a copy into the node's apps root. See
+        # docs/ui-panes-deploy.md.
+        case "${2:-check}" in
+            check)
+                node "$CORE_DIR/scripts/sync-ui-shims.js" --check
+                ;;
+            sync)
+                node "$CORE_DIR/scripts/sync-ui-shims.js"
+                ;;
+            *)
+                echo "Usage: $0 panes [check|sync]"
+                echo ""
+                echo "  check   Report installed panes whose lmui.js differs from this build (default)"
+                echo "  sync    Re-copy the canonical shim over every stale installed pane"
+                echo ""
+                echo "Run 'sync' after any deploy that changed ui-apps/*/assets/lmui.js —"
+                echo "a Core build does NOT touch the node's apps root. See docs/ui-panes-deploy.md."
+                exit 1
+                ;;
+        esac
+        ;;
     logs)
         view_logs_cli "${2:-}"
         ;;
@@ -1549,6 +1572,8 @@ case "${1:-}" in
         echo "                    (refuses a dirty or behind-origin/main tree by default)"
         echo "  cleandata [-y]    Stop services and delete all lm-assist data (~/.lm-assist)"
         echo "  test              Test API endpoints"
+        echo "  panes [check|sync]  Check/re-copy the pane shim in the node's apps root"
+        echo "                    (a build does NOT deploy panes — see docs/ui-panes-deploy.md)"
         echo "  logs [service]    View service logs"
         echo "  hub [command]     Hub client management"
         echo "  help              Show this help"

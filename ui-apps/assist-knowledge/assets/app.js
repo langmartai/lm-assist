@@ -15,6 +15,29 @@
   var STATUSES = ['active', 'outdated', 'archived', 'excluded'];
   var ORIGINS = ['local', 'remote'];
 
+  // ── inbound deep link — the PINNED cross-pane param vocabulary ────────────
+  // The entity's singular noun, unqualified: `unit` = a knowledge unit id. Read on load from
+  // location.search and LANDED ON — a param a target never reads is a silently broken button
+  // in the caller, not a no-op. assist-content linkifies `[K12]` / `[K12.3]` inside content
+  // bodies and jumps here with it.
+  //
+  // A unit is addressed at either grain: `K12` is the document, `K12.3` one of its parts.
+  // The detail route only takes the document (`/^\/knowledge\/(?<id>K\d+)$/` in
+  // knowledge.routes.ts — `K12.3` does not match it and would come back as a router-level
+  // "Route not found"), so the suffix is split off and reused as the part to highlight, which
+  // is exactly the channel a clicked search hit already uses.
+  //
+  // Clamped at the same 512-char ceiling lmui.goto enforces on the EMIT side, so a hand-typed
+  // URL cannot push an unbounded string into the pane.
+  function inboundParam(name) {
+    try {
+      var v = new URLSearchParams(location.search).get(name);
+      return v == null ? '' : String(v).trim().slice(0, 512);
+    } catch (e) { return ''; }          // no URLSearchParams / opaque origin → no deep link
+  }
+  var UNIT_RE = /^K\d+(?:\.\d+)?$/;
+  var DEEP_UNIT = inboundParam('unit');
+
   // ── embedding + theme contract (identical to sibling panes) ───────────────
   var EMBEDDED = /[?&]embed=1\b/.test(location.search);
   if (EMBEDDED) document.body.classList.add('embed');
@@ -105,7 +128,9 @@
       + '<pre class="fatal-msg"></pre><button class="primary" id="fatal-retry">Retry</button></div>';
     d.querySelector('.fatal-msg').textContent = message;
     document.body.appendChild(d);
-    $('fatal-retry').onclick = function () { d.remove(); loadList(); };
+    // Retry goes through the boot path, not loadList alone: a deep link that never got its
+    // list is still pending, and it must land once the list finally arrives.
+    $('fatal-retry').onclick = function () { d.remove(); bootList(); };
     reportHeight();
   }
 
@@ -192,11 +217,12 @@
   // ── list load (status=all so the status chip can filter client-side) ──────
   function loadList() {
     return api('node', '/knowledge?status=all').then(function (r) {
-      if (!r.ok) { fatal(r.error.code + ': ' + r.error.message); return; }
+      if (!r.ok) { fatal(r.error.code + ': ' + r.error.message); return false; }
       state.list = Array.isArray(r.data) ? r.data : [];
       paintChips();
       paintList();
       paintReviewStatus();                         // list carries unaddressedComments → pending count
+      return true;
     });
   }
 
@@ -223,13 +249,16 @@
   function openDoc(kid, machineId, score, hitPart) {
     var path = '/knowledge/' + encodeURIComponent(kid) + (machineId ? '?machineId=' + encodeURIComponent(machineId) : '');
     return api('node', path).then(function (r) {
-      if (!r.ok) { say('open ' + kid + ' failed — ' + r.error.code + ': ' + r.error.message, true); return; }
+      // Resolves to whether the document opened, so a deep link can report its own miss
+      // where the reader is looking; existing callers ignore the value.
+      if (!r.ok) { say('open ' + kid + ' failed — ' + r.error.code + ': ' + r.error.message, true); return { ok: false, error: r.error }; }
       state.selected = r.data || null;
       state.selScore = (typeof score === 'number' && isFinite(score)) ? score : null;
       state.selHitPart = hitPart || null;
       paintDetail();
       paintList();                                 // re-highlight the selected row
       reportHeight();
+      return { ok: true };
     });
   }
 
@@ -359,7 +388,75 @@
     $('who-name').textContent = (d.claims && (d.claims.name || d.claims.email)) || d.userId || 'signed in';
   }).catch(function () { $('who-name').textContent = 'signed in'; });
 
+  // ── inbound `unit` — select and scroll to the named knowledge unit ────────
+  // Rows are matched in JS rather than through a `[data-kid="…"]` attribute selector: the
+  // value arrives from the URL, and a selector built by interpolation is a defect waiting
+  // for the first quote character.
+  function scrollRowIntoView(docId) {
+    var rows = $('list').querySelectorAll('.row');
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].dataset.kid !== docId) continue;
+      // 'nearest' scrolls the .list box (max-height + overflow:auto) and leaves the page
+      // alone when the row is already on screen — a framed pane cannot scroll the shell.
+      if (rows[i].scrollIntoView) {
+        try { rows[i].scrollIntoView({ block: 'nearest' }); } catch (e) { rows[i].scrollIntoView(); }
+      }
+      return true;
+    }
+    return false;                                  // filtered out, or not on this node
+  }
+
+  // The one place the deep link speaks: the detail pane, where the reader is looking.
+  // textContent, not innerHTML — the value came off the URL.
+  function unitMiss(raw, why) {
+    var el = $('detail');
+    el.className = 'detail empty';
+    el.textContent = 'Knowledge unit "' + raw + '" could not be opened — ' + why;
+    reportHeight();
+  }
+
+  function landOnUnit(raw) {
+    if (!UNIT_RE.test(raw)) { unitMiss(raw, 'not a knowledge unit id (expected K12 or K12.3).'); return; }
+    var dot = raw.indexOf('.');
+    var docId = dot > 0 ? raw.slice(0, dot) : raw;
+    var hitPart = dot > 0 ? raw : null;             // K12.3 → highlight that part in the detail
+
+    // Resolve the row first: a REMOTE document is only readable with its machineId, and ids
+    // are per-machine so the same K12 can exist twice. Prefer the local one deterministically
+    // rather than whichever the index happened to yield first.
+    var row = null;
+    state.list.forEach(function (it) {
+      if (it.id !== docId) return;
+      if (!row || (row.origin === 'remote' && it.origin !== 'remote')) row = it;
+    });
+
+    return openDoc(docId, (row && row.machineId) || '', null, hitPart).then(function (res) {
+      if (!res || !res.ok) {
+        unitMiss(raw, (res && res.error ? res.error.code + ': ' + res.error.message : 'the request failed.'));
+        return;
+      }
+      scrollRowIntoView(docId);
+      // Standalone only: when EMBEDDED the shell owns the scroll position and a cross-origin
+      // frame cannot move it, so this would be pure jank against the row scroll above.
+      if (!EMBEDDED && hitPart) {
+        var hit = document.querySelector('.part.hit');
+        if (hit && hit.scrollIntoView) { try { hit.scrollIntoView({ block: 'nearest' }); } catch (e) {} }
+      }
+    });
+  }
+
+  // Consumed once: a later fatal-retry must not yank the reader off a row they picked by hand.
+  var deepPending = DEEP_UNIT;
+  function bootList() {
+    return loadList().then(function (ok) {
+      if (!ok || !deepPending) return;             // list failed → the link is still pending
+      var raw = deepPending;
+      deepPending = '';
+      return landOnUnit(raw);
+    });
+  }
+
   // ── boot ────────────────────────────────────────────────────────────────
-  loadList();
+  bootList();
   loadReviewStatus();
 })();

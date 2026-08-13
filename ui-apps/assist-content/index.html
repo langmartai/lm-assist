@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — Content</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots, so a leading-slash href would break under one of them. -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header>
+  <h1>Content<span class="chip">assist-content</span><span class="chip">scope: lm-assist</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <div class="tabs" id="tabs">
+    <button class="tab on" data-tab="content">Content registry</button>
+    <button class="tab" data-tab="resources">Resources</button>
+  </div>
+
+  <div class="cols">
+    <section class="pane pane-list">
+      <div class="filters">
+        <!-- Resources-only: how deep to walk ~/.lm-assist. The server walks the WHOLE
+             tree eagerly, so this is the one control that decides the payload size. -->
+        <label class="fld" id="depth-wrap" style="display:none">Tree depth
+          <select id="depth">
+            <option value="1">1 — top level only (~30 KB)</option>
+            <option value="2" selected>2 — default (~1 MB)</option>
+            <option value="3">3 — deep (~4 MB, slow)</option>
+            <option value="4">4 — everything (~26 MB, very slow)</option>
+          </select>
+        </label>
+        <input id="q" class="q" type="text" placeholder="filter unit id / title / group…" autocomplete="off">
+        <div class="hint" id="list-hint"></div>
+      </div>
+      <div id="list" class="list">loading…</div>
+      <div id="counts" class="counts"></div>
+    </section>
+
+    <section class="pane pane-detail">
+      <div id="detail" class="detail empty">Select a content unit on the left to read, edit or roll it back.</div>
+    </section>
+  </div>
+</main>
+<!-- The serving tier injects window.__VIEW_TOKEN__ / __UI_ID__ / __UI_KEY__ before these
+     scripts run; lmui.js captures them, app.js drives the UI. Both are self-hosted (CSP). -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

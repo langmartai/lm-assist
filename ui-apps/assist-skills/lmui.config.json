@@ -1,0 +1,21 @@
+{
+  "uiId": "assist-skills",
+  "name": "Skills",
+  "scope": "lm-assist",
+  "grant": [
+    {
+      "service": "node",
+      "pathPrefix": "/skills",
+      "verbs": [
+        "GET"
+      ]
+    }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-skills",
+  "category": "Node",
+  "sortOrder": 110,
+  "managed": true
+}

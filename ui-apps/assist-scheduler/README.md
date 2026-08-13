@@ -12,13 +12,29 @@ data call goes through the injected `assets/lmui.js` SDK helper (view token + re
 
 ## Grant
 
-One declared grant in `lmui.config.json`, and nothing else it can reach:
+Four leaf rules in `lmui.config.json`, and nothing else it can reach:
 
 ```
-node:/scheduler [GET, POST]
+node:/scheduler/jobs        [GET]   exact
+node:/scheduler/jobs/*      [GET]   exact
+node:/scheduler/jobs/*/logs [GET]   exact
+node:/scheduler/jobs/*/run  [POST]  exact
 ```
 
-That prefix covers everything this pane calls (paths + shapes mirror
+🔴 **The write is one leaf route, not the `/scheduler` prefix it used to be.** `node:/scheduler
+[GET, POST]` granted `POST /scheduler/jobs` (create a scheduled job) and
+`POST /scheduler/jobs/:id` (reconfigure one — interval, enabled, command) on top of the run
+button. A pane that can create a scheduled job can run arbitrary work on this node forever; that
+authority now sits outside the ceiling, and the prose below ("no create/arm is ever issued") is
+enforced by the grant rather than by the app's good behaviour.
+The narrowing uses the leaf/exact rule form in `core/src/ui-pages/local-tier/grants.ts`:
+`"exact": true` means the request path must have the SAME NUMBER OF SEGMENTS as the rule
+(a leaf, not a subtree), and a whole-segment `*` matches exactly one segment — how a rule
+names a path parameter. The hub's ui-gateway enforces both identically
+(`LangMartDesign/ui-gateway/src/viewtoken/grant.ts`), so a pane narrowed here is narrowed
+on both serving tiers.
+
+The four rules cover everything this pane calls (paths + shapes mirror
 `core/src/routes/core/scheduler.routes.ts`):
 
 - `GET /scheduler/jobs` — the job list. `data` is a **wrapper `{ jobs:[...], count }`** (not a
@@ -30,7 +46,7 @@ That prefix covers everything this pane calls (paths + shapes mirror
   run count. No `PUT`/`DELETE`/create/arm is ever issued, so a job can never be enabled, armed,
   reconfigured or deleted from this pane.
 
-The view token's grant is the hard ceiling — anything outside `/scheduler` 403s.
+The view token's grant is the hard ceiling — anything outside these four rules 403s.
 
 ## Layout
 

@@ -1,0 +1,18 @@
+{
+  "uiId": "assist-content",
+  "name": "Content",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/assist-content", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/assist-content/*", "verbs": ["GET", "POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/assist-content/*/rollback", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/assist-resources", "verbs": ["GET"] }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-content",
+  "category": "Node",
+  "sortOrder": 80,
+  "managed": true
+}

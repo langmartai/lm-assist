@@ -4,15 +4,10 @@
   "scope": "lm-assist",
   "service": "ui-assist-manage",
   "grant": [
-    {
-      "service": "node",
-      "pathPrefix": "/ui-pages",
-      "verbs": [
-        "GET",
-        "POST",
-        "DELETE"
-      ]
-    }
+    { "service": "node", "pathPrefix": "/ui-pages", "verbs": ["GET"] },
+    { "service": "node", "pathPrefix": "/ui-pages/enable", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/ui-pages/control", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/ui-pages/registry/*", "verbs": ["DELETE"], "exact": true }
   ],
   "managed": true
 }

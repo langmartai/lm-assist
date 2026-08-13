@@ -1,0 +1,19 @@
+{
+  "uiId": "assist-clusters",
+  "name": "Clusters",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/cluster/list", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/cluster/assign", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/cluster/unassign", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/cluster/describe", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/hub/machines", "verbs": ["GET"], "exact": true }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-clusters",
+  "category": "Node",
+  "sortOrder": 60,
+  "managed": true
+}

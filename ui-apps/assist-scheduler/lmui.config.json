@@ -3,14 +3,10 @@
   "name": "Scheduler",
   "scope": "lm-assist",
   "grant": [
-    {
-      "service": "node",
-      "pathPrefix": "/scheduler",
-      "verbs": [
-        "GET",
-        "POST"
-      ]
-    }
+    { "service": "node", "pathPrefix": "/scheduler/jobs", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/scheduler/jobs/*", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/scheduler/jobs/*/logs", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/scheduler/jobs/*/run", "verbs": ["POST"], "exact": true }
   ],
   "dev": {
     "port": 5601

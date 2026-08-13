@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — Missions</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots, so a leading-slash href would break under one of them. -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header>
+  <h1>Missions<span class="chip">assist-missions</span><span class="chip">scope: lm-assist</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <!-- STAGE: the active internal route (controller | mission detail | session).
+       Its skeleton is built once per view change; the 5s poll refreshes only the
+       dynamic sub-regions, so a focused textarea is never wiped mid-keystroke. -->
+  <section class="pane pane-stage">
+    <div class="stage-head">
+      <div id="leader" class="leader">…</div>
+      <div class="spacer"></div>
+      <button id="btn-graph" class="ghost" title="Open the Mission Graph pane">Graph ↗</button>
+      <button id="btn-procs" class="ghost" title="Open the Mission Processes pane">Processes ↗</button>
+      <button id="btn-refresh" class="ghost" title="Reload missions + controller now">Refresh</button>
+      <button id="btn-side" class="ghost" title="Show / hide the missions sidebar">Missions ▸</button>
+    </div>
+    <div id="tabs" class="tabs"></div>
+    <div id="stage" class="stage">loading…</div>
+  </section>
+
+  <!-- SIDEBAR: the mission list, its filters, the all-sessions panel and the create form. -->
+  <section class="pane pane-side" id="side">
+    <div class="filters">
+      <input id="q" class="q" type="text" placeholder="search title / objective / id / status / tag… (space = AND)" autocomplete="off">
+      <div class="selrow">
+        <select id="f-status" class="sel" title="Filter by status"></select>
+        <select id="f-transport" class="sel" title="Filter by executor transport"></select>
+        <select id="f-recency" class="sel" title="Filter by last update"></select>
+      </div>
+    </div>
+
+    <div class="sect">
+      <button id="allsess-toggle" class="ghost wide">▸ All sessions</button>
+      <div id="allsess" class="allsess" hidden></div>
+    </div>
+
+    <div class="sect">
+      <button id="create-toggle" class="ghost wide">+ New mission</button>
+      <div id="create" class="create" hidden>
+        <label class="fld">Title *<input id="c-title" type="text" maxlength="300" placeholder="e.g. Migrate auth module"></label>
+        <label class="fld">Objective *<textarea id="c-objective" rows="3" placeholder="Describe the goal…"></textarea></label>
+        <div class="row2">
+          <label class="fld">Isolation<select id="c-isolation"></select></label>
+          <label class="fld">Repo <span class="hint">optional</span><select id="c-repo"></select></label>
+        </div>
+        <label class="fld" id="c-repo-text-wrap" hidden>Repo (typed)<input id="c-repo-text" type="text" placeholder="owner/repo"></label>
+        <label class="fld">Branch <span class="hint">optional</span><select id="c-branch"></select></label>
+        <label class="fld" id="c-branch-text-wrap" hidden>Branch (typed)<input id="c-branch-text" type="text" placeholder="branch"></label>
+        <div class="row2">
+          <label class="fld">Projects <span class="hint">comma-sep</span><input id="c-projects" type="text" placeholder="owner/repo, …"></label>
+          <label class="fld">Depends on <span class="hint">comma-sep</span><input id="c-depends" type="text" placeholder="mission_abc123, …"></label>
+        </div>
+        <div class="actions"><button id="c-submit" class="primary">Create mission</button></div>
+      </div>
+    </div>
+
+    <div id="list" class="list">loading…</div>
+    <div id="counts" class="counts"></div>
+    <button id="more" class="ghost wide" hidden>Load more</button>
+    <div id="out" class="out">ready</div>
+  </section>
+</main>
+<!-- The serving tier injects window.__VIEW_TOKEN__ / __UI_ID__ / __UI_KEY__ before these
+     scripts run; lmui.js captures them, app.js drives the UI. Both are self-hosted (CSP). -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

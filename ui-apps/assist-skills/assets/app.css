@@ -1,0 +1,177 @@
+:root{
+  --bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;
+  --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
+}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
+
+header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
+header h1{font-size:1rem;margin:0;font-weight:600}
+.chip{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}
+#who{display:flex;align-items:center;gap:.4rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.25rem .7rem;font-size:.8rem}
+#who .dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--green)}
+
+/* Three panes: skill list | detail | analytics. The analytics column drops under the other
+   two on a medium viewport, then everything collapses to one column on a narrow one. */
+main{display:grid;grid-template-columns:19rem minmax(0,1fr) 21rem;gap:1rem;padding:1rem;align-items:start;max-width:100rem;margin:0 auto}
+@media (max-width:1280px){main{grid-template-columns:19rem minmax(0,1fr)}.pane-analytics{grid-column:1/-1}}
+@media (max-width:1000px){main{grid-template-columns:1fr}.pane-analytics{grid-column:auto}}
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.9rem 1rem;min-width:0}
+
+/* ── filters + list ────────────────────────────────────────────────────── */
+.filters{margin-bottom:.7rem}
+.q{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.4rem .6rem;font-size:.82rem}
+.chip-row{display:flex;align-items:center;gap:.35rem;margin-top:.55rem;flex-wrap:wrap}
+.chip-lbl{font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);width:3rem;flex:none}
+.chips{display:flex;gap:.25rem;flex-wrap:wrap}
+.fchip{font-size:.7rem;border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:999px;padding:.1rem .5rem;cursor:pointer}
+.fchip.on{background:var(--blue);border-color:var(--blue);color:#fff}
+
+.list{display:flex;flex-direction:column;gap:.12rem;max-height:36rem;overflow:auto}
+.grp{display:flex;align-items:center;gap:.4rem;padding:.35rem .3rem;cursor:pointer;font-size:.72rem;font-weight:600;
+  font-family:ui-monospace,monospace;color:var(--dim);letter-spacing:.02em;user-select:none;border-radius:6px}
+.grp:hover{background:var(--panel2)}
+.grp .caret{width:.7rem;flex:none;color:var(--dim)}
+.grp .grp-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grp .grp-n{flex:none;font-size:.66rem;color:var(--dim)}
+.row{display:flex;align-items:center;gap:.4rem;padding:.28rem .4rem .28rem 1.5rem;cursor:pointer;font-size:.8rem;
+  border-left:2px solid transparent;border-radius:0 6px 6px 0}
+.row:hover{background:var(--panel2)}
+.row.sel{background:var(--panel2);border-left-color:var(--blue)}
+.row.unused{opacity:.45}
+.row .rt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+.row.sel .rt{color:var(--txt);font-weight:500}
+.row .rwhen{flex:none;font-size:.64rem;color:var(--dim);font-family:ui-monospace,monospace}
+.counts{margin-top:.55rem;font-size:.72rem;color:var(--dim)}
+.empty-list{color:var(--dim);font-size:.8rem;padding:.4rem 0}
+
+/* ── pills ─────────────────────────────────────────────────────────────── */
+.pill{display:inline-block;border-radius:999px;padding:.05rem .5rem;font-size:.66rem;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.pill.uses{color:var(--amber);border-color:#78350f;font-family:ui-monospace,monospace}
+.pill.kind{color:var(--blue2);border-color:#1e3a8a;font-family:ui-monospace,monospace}
+.pill.ver{color:var(--dim);font-family:ui-monospace,monospace}
+.pill.sub{color:var(--purple);border-color:#581c87}
+.pill.model{color:var(--green);border-color:#14532d}
+
+/* ── detail ────────────────────────────────────────────────────────────── */
+.detail.empty{color:var(--dim);font-size:.85rem}
+.detail h2.d-title{font-size:1.02rem;margin:0 0 .35rem;line-height:1.3;word-break:break-word}
+.d-idrow{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;margin-bottom:.55rem}
+.d-id{font-family:ui-monospace,monospace;font-size:.72rem;color:var(--dim);word-break:break-all}
+.d-pills{display:flex;gap:.3rem;flex-wrap:wrap;margin-bottom:.6rem}
+/* The description is skill-authored prose: PLAIN TEXT, pre-wrap — there is no md library. */
+.d-desc{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.6rem .75rem;font-family:inherit;
+  font-size:.79rem;line-height:1.55;color:var(--dim);white-space:pre-wrap;word-break:break-word;margin:0 0 .7rem;max-height:14rem;overflow:auto}
+.stats{display:flex;gap:.9rem;flex-wrap:wrap;font-size:.72rem;color:var(--dim);margin-bottom:.6rem}
+.stats .st b{font-family:ui-monospace,monospace;font-size:.85rem;font-weight:600;color:var(--txt);margin-right:.25rem}
+.stats .st b.accent{color:var(--amber)}
+.stats .st b.good{color:var(--green)}
+.stats .st b.bad{color:var(--red)}
+.d-meta{font-size:.72rem;color:var(--dim);line-height:1.6;margin-bottom:.7rem;word-break:break-word}
+.d-meta .k{color:var(--txt);font-weight:600}
+.note{font-size:.76rem;color:var(--dim);line-height:1.55;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.6rem .75rem}
+.note code{font-family:ui-monospace,monospace;font-size:.72rem;color:var(--blue2)}
+
+.tabs{display:flex;gap:.4rem;margin:.2rem 0 .7rem}
+.tab{border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:999px;padding:.3rem .85rem;font-size:.76rem;cursor:pointer}
+.tab.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.tab .tab-n{font-family:ui-monospace,monospace;font-size:.66rem;margin-left:.4rem;opacity:.8}
+
+/* ── session cards ─────────────────────────────────────────────────────── */
+.scards{display:flex;flex-direction:column;gap:.35rem;max-height:40rem;overflow:auto}
+.s-wrap{display:flex;flex-direction:column}
+.scard{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:.5rem .6rem;cursor:pointer}
+.scard:hover{border-color:var(--blue2)}
+.scard.with-agents{border-radius:8px 8px 0 0}
+.s-head{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap}
+.sdot{width:.5rem;height:.5rem;border-radius:50%;background:var(--dim);flex:none}
+.sdot.ok{background:var(--green)}
+.sdot.bad{background:var(--red)}
+.s-proj{flex:1;min-width:6rem;font-size:.8rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.s-open{font-size:.64rem;color:var(--dim);flex:none}
+.s-msg{font-size:.7rem;color:var(--dim);line-height:1.4;margin:.28rem 0 0;max-height:2.9rem;overflow:hidden;word-break:break-word}
+.s-bits{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap;margin-top:.3rem}
+.sb{font-size:.64rem;color:var(--dim)}
+.mono{font-family:ui-monospace,monospace}
+.agents{border-left:2px solid var(--blue);margin-left:.7rem;border-radius:0 0 8px 0}
+.agents.on{background:var(--panel2)}
+.agents-btn{background:none;border:0;color:var(--dim);font-size:.66rem;padding:.2rem .6rem;cursor:pointer;text-align:left;width:100%}
+.agents-btn:hover{color:var(--txt)}
+.arow{display:flex;align-items:center;gap:.35rem;padding:.22rem .6rem .22rem .9rem;font-size:.66rem;cursor:pointer;border-top:1px solid var(--line)}
+.arow:hover{background:var(--panel)}
+.arow .atxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+
+.pager{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-top:.6rem;font-size:.72rem;color:var(--dim)}
+.pnum{font-family:ui-monospace,monospace}
+.more{display:flex;align-items:center;gap:.6rem;margin-top:.5rem;flex-wrap:wrap}
+.hint{font-size:.66rem;color:var(--dim)}
+button{border:0;border-radius:7px;padding:.42rem .8rem;font-size:.78rem;cursor:pointer;background:#334155;color:var(--txt)}
+button:hover{filter:brightness(1.12)}
+button.primary{background:var(--blue);color:#fff}
+button.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.out{font-family:ui-monospace,monospace;font-size:.72rem;background:var(--panel2);border:1px solid var(--line);border-radius:7px;
+  padding:.45rem .6rem;margin-top:.8rem;min-height:1.4rem;white-space:pre-wrap;color:var(--dim);max-height:9rem;overflow:auto}
+.out.err{color:var(--red)}
+
+/* ── usage timeline ────────────────────────────────────────────────────── */
+.tday{margin-bottom:.9rem}
+.tday-h{display:flex;align-items:center;gap:.5rem;margin-bottom:.3rem}
+.tday-l{font-size:.76rem;font-weight:600}
+.tline{flex:1;height:1px;background:var(--line)}
+.trow{display:flex;align-items:center;gap:.5rem;padding:.22rem .4rem;border-radius:6px;cursor:pointer;font-size:.75rem}
+.trow:hover{background:var(--panel2)}
+.tclock{flex:none;width:2.6rem;font-size:.68rem;color:var(--dim)}
+.tproj{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+
+/* ── an in-pane failure (detail / analytics): the server's own text, verbatim ── */
+.d-err{border:1px solid var(--red);border-radius:8px;padding:.7rem .85rem;background:var(--panel2)}
+.d-err-h{font-size:.82rem;font-weight:600;color:var(--red);margin-bottom:.5rem}
+.d-err-msg{font-family:ui-monospace,monospace;font-size:.74rem;white-space:pre-wrap;word-break:break-word;color:var(--txt);margin:0 0 .7rem;max-height:12rem;overflow:auto}
+
+/* ── analytics column ──────────────────────────────────────────────────── */
+.a-sect{margin-bottom:1rem}
+.a-sect h3{font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin:0 0 .5rem;
+  display:flex;align-items:baseline;gap:.4rem}
+/* The "10 of 20+" count beside a section title: a cap the reader can SEE, not one implied by a
+   list that happens to stop. Normal case + mono so it reads as a number, not as more heading. */
+.sect-n{font-family:ui-monospace,monospace;text-transform:none;letter-spacing:0;color:var(--amber)}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:.45rem}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.5rem .6rem}
+.c-l{font-size:.64rem;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.c-v{font-family:ui-monospace,monospace;font-size:1.05rem;font-weight:600;margin-top:.15rem}
+.c-v.accent{color:var(--amber)}
+.c-v.good{color:var(--green)}
+.c-v.bad{color:var(--red)}
+.bar-row{display:flex;align-items:center;gap:.45rem;font-size:.7rem;padding:.12rem 0;cursor:pointer;border-radius:5px}
+.bar-row:hover{background:var(--panel2)}
+.bar-l{width:6.5rem;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar-t{flex:1;min-width:0;height:.85rem;background:var(--panel2);border-radius:4px;overflow:hidden}
+.bar{display:block;height:100%;border-radius:4px;background:var(--blue)}
+.bar.b1{background:var(--amber)}.bar.b2{background:var(--blue)}.bar.b3{background:var(--green)}
+.bar.b4{background:var(--purple)}.bar.b5{background:var(--blue2)}.bar.b6{background:var(--red)}
+.bar-n{flex:none;width:2.2rem;text-align:right;font-size:.65rem;color:var(--dim)}
+.prow{display:flex;align-items:center;gap:.45rem;font-size:.72rem;padding:.15rem 0}
+.pname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pn{flex:none;color:var(--amber);font-size:.7rem}
+.chain{display:flex;align-items:center;gap:.25rem;flex-wrap:wrap;padding:.25rem 0}
+.chain .arrow{color:var(--dim);font-size:.7rem}
+
+/* ── full-screen fatal error (a hard call failure, surfaced verbatim) ───── */
+.fatal{position:fixed;inset:0;background:rgba(2,6,23,.92);display:flex;align-items:center;justify-content:center;padding:1.5rem;z-index:50}
+.fatal-card{background:var(--panel);border:1px solid var(--red);border-radius:12px;padding:1.4rem 1.6rem;max-width:44rem;width:100%}
+.fatal-h{font-size:1rem;font-weight:600;color:var(--red);margin-bottom:.7rem}
+.fatal-msg{font-family:ui-monospace,monospace;font-size:.78rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.7rem .85rem;white-space:pre-wrap;word-break:break-word;color:var(--txt);max-height:16rem;overflow:auto;margin:0 0 .9rem}
+
+/* ── embedded in the app shell: drop own chrome + background (sibling-pane contract) ── */
+body.embed{background:transparent;overflow:hidden}
+body.embed,html:has(body.embed){height:auto}
+body.embed header{display:none}
+body.embed main{margin:0;padding:.4rem;max-width:none}
+
+/* ── light theme (shell passes ?theme=light) ───────────────────────────── */
+body.theme-light{--bg:#ffffff;--panel:#f8fafc;--panel2:#f1f5f9;--line:#e2e8f0;--txt:#0f172a;--dim:#64748b}
+body.theme-light button{background:#e2e8f0;color:#0f172a}
+body.theme-light button.primary{background:var(--blue);color:#fff}
+body.theme-light button.ghost{background:#fff;border:1px solid var(--line);color:#475569}
+body.theme-light .d-desc,body.theme-light .note,body.theme-light .card,body.theme-light .scard,body.theme-light .out{background:#fff}

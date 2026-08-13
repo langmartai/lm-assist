@@ -69,6 +69,11 @@ export function stopStatusHeartbeat(): void {
 export async function syncManagedUis(log: (m: string) => void = () => {}): Promise<number> {
   const path = await import('path');
   const os = await import('os');
+  // Pane SHIM drift, checked here because this is the one boot pass that already reads the apps
+  // root — and because it must run BEFORE the hub-config early return below: a stale shim breaks
+  // panes on the local serving tier, which does not need a hub at all. It only logs; the fix is
+  // `node core/scripts/sync-ui-shims.js`. See shim-sync.ts for why a build cannot do this itself.
+  try { (await import('./shim-sync')).logShimDrift(log); } catch { /* never block the boot sync */ }
   const appsRoot = process.env.LMUI_APPS_DIR || path.join(os.homedir(), '.lmui', 'apps');
   let names: string[] = [];
   try { names = fs.readdirSync(appsRoot); } catch { return 0; }

@@ -1,0 +1,16 @@
+{
+  "uiId": "assist-tasks",
+  "name": "Tasks",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/tasks/all", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/health", "verbs": ["GET"], "exact": true }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-tasks",
+  "category": "Node",
+  "sortOrder": 90,
+  "managed": true
+}

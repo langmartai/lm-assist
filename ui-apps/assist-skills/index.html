@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — Skills</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots, so a leading-slash href would break under one of them. -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header>
+  <h1>Skills<span class="chip">assist-skills</span><span class="chip">scope: lm-assist</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <section class="pane pane-list">
+    <div class="filters">
+      <input id="q" class="q" type="text" placeholder="filter skill / short name / plugin…" autocomplete="off">
+      <div class="chip-row"><span class="chip-lbl">usage</span><span id="chips-usage" class="chips"></span></div>
+    </div>
+    <div id="list" class="list">loading…</div>
+    <div id="counts" class="counts"></div>
+  </section>
+
+  <section class="pane pane-detail">
+    <div id="detail" class="detail empty">Select a skill on the left to see its description, usage stats and the sessions that invoked it.</div>
+  </section>
+
+  <section class="pane pane-analytics">
+    <div id="analytics" class="analytics">loading…</div>
+  </section>
+</main>
+<!-- The serving tier injects window.__VIEW_TOKEN__ / __UI_ID__ / __UI_KEY__ before these
+     scripts run; lmui.js captures them, app.js drives the UI. Both are self-hosted (CSP). -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

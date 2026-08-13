@@ -107,6 +107,17 @@ export function verifyViewToken(token: string): { uiId: string } | null {
   return p ? { uiId: p.u } : null;
 }
 
+/**
+ * Proof of possession ONLY — never authorization. A pane idle past the 15-min view TTL holds an
+ * EXPIRED token; graceMs re-dates the expiry check so it still proves WHICH document is asking.
+ * The 8h cookie is what bounds the session, so callers pass the cookie TTL as the grace.
+ * 🔴 Never use on /data — an expired token must not buy data reach.
+ */
+export function verifyViewTokenForProof(token: string, graceMs: number): { uiId: string } | null {
+  const p = verify(VIEW_PREFIX, token, Date.now() - graceMs);
+  return p ? { uiId: p.u } : null;
+}
+
 // ── Entry tokens (single-use) ────────────────────────────────────────────────
 // nonce → token expiry; a consumed nonce is refused for the rest of its window.
 const consumed = new Map<string, number>();

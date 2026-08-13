@@ -8,7 +8,7 @@
     "lm-assist": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc && node scripts/copy-voice-assets.js",
+    "build": "tsc && node scripts/copy-voice-assets.js && node scripts/copy-ui-shim.js",
     "build:test": "tsc -p tsconfig.test.json",
     "dev": "tsc --watch",
     "clean": "rm -rf dist dist-test",

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — Data</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots, so a leading-slash href would break under one of them. -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header>
+  <h1>Data<span class="chip">assist-data</span><span class="chip">scope: lm-assist</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <div class="tabrow">
+    <div class="tabs" id="tabs">
+      <button class="tab on" data-tab="datasets">Datasets</button>
+      <button class="tab" data-tab="keys">Access Keys</button>
+      <button class="tab" data-tab="sync">Sync</button>
+    </div>
+    <!-- The principal badge lives in main, NOT in <header>: the shell hides header when
+         embedded, and "can I manage this node's data?" must stay visible there. -->
+    <span id="principal" class="pill prin">…</span>
+  </div>
+
+  <!-- Shown only when the caller is not the local principal (hub-relayed = cloud). -->
+  <div id="cap" class="cap" hidden></div>
+
+  <section class="pane">
+    <div class="filters">
+      <input id="q" class="q" type="text" placeholder="filter datasets…" autocomplete="off">
+      <!-- Hidden until paintChips() fills it: if the boot catalog call fatals, an empty chip
+           strip with a hard-coded label must not sit behind the error overlay. -->
+      <div class="chip-row" id="chip-row" hidden><span class="chip-lbl" id="chip-lbl">backend</span><span id="chips" class="chips"></span></div>
+    </div>
+
+    <div id="toolbar" class="actions"></div>
+
+    <!-- Create-dataset form (datasets tab, local principal only). -->
+    <form id="form" class="form" autocomplete="off" hidden>
+      <label class="fld">id
+        <input id="f-id" type="text" maxlength="64" placeholder="my-dataset" required>
+      </label>
+      <label class="fld">backend<select id="f-backend"></select></label>
+      <label class="fld">visibility<select id="f-visibility"></select></label>
+      <label class="fld">syncMode<select id="f-syncmode"></select></label>
+      <button id="f-create" type="submit" class="primary">Create</button>
+      <div class="hint">id must match <code>^[a-z0-9][a-z0-9_-]{0,63}$</code> (the server's own rule).</div>
+    </form>
+
+    <!-- Sync stat tiles + last-run line (sync tab only). -->
+    <div id="stats" class="stats" hidden></div>
+
+    <div id="list" class="list">loading…</div>
+    <div id="counts" class="counts"></div>
+    <div id="out" class="out">ready</div>
+  </section>
+</main>
+<!-- The serving tier injects window.__VIEW_TOKEN__ / __UI_ID__ / __UI_KEY__ before these
+     scripts run; lmui.js captures them, app.js drives the UI. Both are self-hosted (CSP). -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

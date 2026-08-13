@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — MCP Tools</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots, so a leading-slash href would break under one of them. -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header>
+  <h1>MCP Tools<span class="chip">assist-mcp-tools</span><span class="chip">scope: lm-assist</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <!-- Parked admin tool calls are a security alert, not a tab: they stay above the tabs so
+       they are visible whichever view is open, and they are rendered in EVERY state
+       (loading / empty / error / rows) — these entries expire 10 minutes after they are
+       made, so a strip that hides itself would make a broken poll look like all-clear. -->
+  <div id="pending" class="pending calm"></div>
+
+  <!-- The capability ledger: which of the source page's writes this pane can fire and which
+       it deliberately cannot, with the reason and where to perform each. It lives ON the
+       page, above the tabs, because a capability gap documented only in a README is found
+       exactly when it is too late to matter. Filled in by app.js from HELD/WITHHELD. -->
+  <div id="withheld" class="withheld"></div>
+
+  <div class="tabs">
+    <button class="tab on" data-tab="tools">Tools</button>
+    <button class="tab" data-tab="plugins">Plugins</button>
+    <button class="tab" data-tab="status">Status</button>
+  </div>
+
+  <div class="cols" id="view-tools">
+    <section class="pane pane-list">
+      <div class="filters">
+        <input id="q" class="q" type="text" placeholder="filter name / category / module / description…" autocomplete="off">
+        <div class="chip-row"><span class="chip-lbl">scope</span><span id="chips-scope" class="chips"></span></div>
+        <div class="chip-row"><span class="chip-lbl">state</span><span id="chips-state" class="chips"></span></div>
+        <div class="chip-row"><span class="chip-lbl">category</span><select id="cat" class="sel"></select><button id="btn-reload" class="ghost sm">Refresh</button></div>
+      </div>
+      <div id="list" class="list">loading…</div>
+      <div id="counts" class="counts"></div>
+    </section>
+
+    <section class="pane pane-detail">
+      <div id="detail" class="detail empty">Select a tool on the left to see its description, implementation, settings and revision history.</div>
+      <div id="out" class="out">ready</div>
+    </section>
+  </div>
+
+  <div class="single" id="view-plugins" hidden>
+    <div id="plugins" class="plugins">loading…</div>
+  </div>
+
+  <div class="single" id="view-status" hidden>
+    <div id="status" class="status">loading…</div>
+  </div>
+</main>
+<!-- The serving tier injects window.__VIEW_TOKEN__ / __UI_ID__ / __UI_KEY__ before these
+     scripts run; lmui.js captures them, app.js drives the UI. Both are self-hosted (CSP). -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
