@@ -9,16 +9,27 @@ re-mint on 401/403), never a hard-coded origin.
 
 ## Grant
 
-One declared grant in `lmui.config.json`, and nothing else it can reach:
+Three leaf rules in `lmui.config.json`, and nothing else it can reach:
 
 ```
-node:/backlog [GET, POST]
+node:/backlog           [GET, POST]  exact
+node:/backlog/*         [GET, POST]  exact
+node:/backlog/*/discuss [POST]       exact
 ```
 
-That prefix covers list (`GET /backlog`), detail (`GET /backlog/:id`), history
-(`GET /backlog/:id/history`), create (`POST /backlog`), update (`POST /backlog/:id`) and
-discuss (`POST /backlog/:id/discuss`). The view token's grant is the hard ceiling —
-anything outside `/backlog` 403s.
+They cover list (`GET /backlog`), detail (`GET /backlog/:id`), graph/history reads under
+`/backlog/*`, create (`POST /backlog`), update (`POST /backlog/:id`) and discuss
+(`POST /backlog/:id/discuss`).
+
+🔴 **Why not the bare `node:/backlog [GET, POST]` it used to be.** A rule with no `exact` is a
+**subtree** rule, so that one line also carried `POST /backlog/:id/remove`,
+`/rollback`, `/link`, `/unlink` and `/review` — five mutations this pane never issues, including
+deleting an item and reverting one to an older revision. Both forms come from the leaf/exact rule form in `core/src/ui-pages/local-tier/grants.ts`:
+`"exact": true` means the request path must have the SAME NUMBER OF SEGMENTS as the rule
+(a leaf, not a subtree), and a whole-segment `*` matches exactly one segment — how a rule
+names a path parameter. The hub's ui-gateway enforces both identically
+(`LangMartDesign/ui-gateway/src/viewtoken/grant.ts`).
+The view token's grant is the hard ceiling — anything outside these rules 403s.
 
 ## Layout
 

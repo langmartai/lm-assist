@@ -1,0 +1,24 @@
+{
+  "uiId": "assist-mcp-tools",
+  "name": "MCP Tools",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/mcp-tools", "verbs": ["GET"] },
+    { "service": "node", "pathPrefix": "/mcp-tools/*", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mcp-tools/*/rollback", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mcp-plugins", "verbs": ["GET"] },
+    { "service": "node", "pathPrefix": "/mcp/access", "verbs": ["GET"] },
+    { "service": "node", "pathPrefix": "/mcp/access/tool-gate", "verbs": ["PUT"], "exact": true },
+    { "service": "node", "pathPrefix": "/mcp/pending", "verbs": ["GET"] },
+    { "service": "node", "pathPrefix": "/mcp/pending/*/confirm", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mcp/pending/*/deny", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/health", "verbs": ["GET"] },
+    { "service": "node", "pathPrefix": "/hub/status", "verbs": ["GET"] },
+    { "service": "node", "pathPrefix": "/claude-ai/mcp/servers", "verbs": ["GET"] }
+  ],
+  "dev": { "port": 5601 },
+  "service": "ui-assist-mcp-tools",
+  "category": "Node",
+  "sortOrder": 70,
+  "managed": true
+}

@@ -1,0 +1,21 @@
+{
+  "uiId": "assist-data",
+  "name": "Data",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/data/catalog", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/data/keys", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/data/sync/status", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/data/datasets", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/data/datasets/*", "verbs": ["DELETE"], "exact": true },
+    { "service": "node", "pathPrefix": "/data/access/*", "verbs": ["DELETE"], "exact": true },
+    { "service": "node", "pathPrefix": "/data/sync", "verbs": ["POST"], "exact": true }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-data",
+  "category": "Node",
+  "sortOrder": 50,
+  "managed": true
+}

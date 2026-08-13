@@ -1,0 +1,193 @@
+:root{
+  --bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;
+  --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
+}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
+
+/* A class selector (0,1,0) BEATS the UA's `[hidden]{display:none}` (0,0,1), so any author
+   `display` rule on a toggled element silently defeats `el.hidden = true`. That is exactly
+   what happened here: `.cols` (below) kept #view-tools as a grid on every tab, so Plugins
+   and Status rendered UNDER the full 286-row tool list and tab switching only recoloured
+   the pill. Make the attribute win outright — every hidden toggle on this page depends on
+   it (#view-tools/#view-plugins/#view-status, #pending). Same fix as assist-data. */
+[hidden]{display:none!important}
+
+header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
+header h1{font-size:1rem;margin:0;font-weight:600}
+.chip{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}
+#who{display:flex;align-items:center;gap:.4rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.25rem .7rem;font-size:.8rem}
+#who .dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--green)}
+
+/* Tabbed root (Tools / Plugins / Status), like assist-memory: main is a flex column,
+   and only the Tools view is a two-column grid. Collapses to one column when narrow. */
+main{display:flex;flex-direction:column;gap:.8rem;padding:1rem;max-width:82rem;margin:0 auto}
+.cols{display:grid;grid-template-columns:24rem minmax(0,1fr);gap:1rem;align-items:start}
+@media (max-width:1000px){.cols{grid-template-columns:1fr}}
+.pane,.single>div{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.9rem 1rem;min-width:0}
+
+.tabs{display:flex;gap:.4rem;flex-wrap:wrap}
+.tab{background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:999px;padding:.3rem .9rem;font-size:.78rem;cursor:pointer}
+.tab.on{background:var(--blue);border-color:var(--blue);color:#fff}
+
+/* ── pending admin confirmations (always visible, above the tabs) ─────────
+   Three visually distinct states, because they mean three different things: amber = calls
+   are parked and waiting on you, calm = read fine and nothing is parked, red = the list
+   could not be read at all (which must never look like "nothing is parked"). */
+.pending{background:rgba(251,191,36,.08);border:1px solid #78350f;border-radius:10px;padding:.7rem .9rem}
+.pending.calm{background:var(--panel);border-color:var(--line)}
+.pending.calm .pend-h{color:var(--dim);font-weight:500}
+.pending.broken{background:rgba(248,113,113,.08);border-color:#7f1d1d}
+.pending.broken .pend-h{color:var(--red)}
+.pend-h{font-size:.8rem;font-weight:600;color:var(--amber);margin-bottom:.4rem}
+/* Separator BETWEEN rows only. `:first-of-type` would not work here: it selects by element
+   type (div), and the first div in this container is .pend-h, so no .pend-row would ever
+   match it and every row would keep a top border. */
+.pend-row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;font-size:.76rem;padding:.28rem 0}
+.pend-row + .pend-row{border-top:1px solid var(--line)}
+.pend-row.gone{opacity:.6}
+.pend-sum{color:var(--dim);word-break:break-word;flex:1 1 12rem}
+.pend-when{font-size:.68rem;color:var(--dim)}
+.pend-acts{display:flex;gap:.35rem;flex-wrap:wrap;margin-left:auto;align-items:center}
+.pend-gone{font-size:.68rem;color:var(--red)}
+.pend-note{font-size:.68rem;color:var(--dim);line-height:1.5;margin-top:.45rem}
+.pend-note.err{color:var(--red);font-family:ui-monospace,monospace;word-break:break-word}
+.pend-note.ok{color:var(--green)}
+.pend-note.busy{color:var(--blue2)}
+
+/* ── capability ledger (held vs withheld writes) ────────────────────────── */
+.withheld{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.5rem .8rem;font-size:.72rem}
+.wh-sum{color:var(--dim);margin-left:.55rem}
+.wh-body{margin-top:.6rem}
+.wh-item{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:.5rem .65rem;margin-bottom:.45rem}
+.wh-item.held{opacity:.85}
+.wh-top{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin-bottom:.15rem}
+.mono-inline{font-family:ui-monospace,monospace;font-size:.68rem;color:var(--dim);word-break:break-all}
+
+/* ── filters + list ────────────────────────────────────────────────────── */
+.filters{margin-bottom:.7rem}
+.q{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.4rem .6rem;font-size:.82rem}
+.chip-row{display:flex;align-items:center;gap:.35rem;margin-top:.55rem;flex-wrap:wrap}
+.chip-lbl{font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);width:3.6rem;flex:none}
+.chips{display:flex;gap:.25rem;flex-wrap:wrap}
+.fchip{font-size:.7rem;border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:999px;padding:.1rem .5rem;cursor:pointer}
+.fchip.on{background:var(--blue);border-color:var(--blue);color:#fff}
+/* The category <select>. NAMED `.selbox`, not `.sel`: `.sel` is the list's SELECTED-row state
+   class (`.row.sel`, emitted by app.js), and a control style sharing that name applied to the
+   selected row too — its `max-width:11rem` + `.74rem` font collapsed the highlighted row to
+   176px wide / 11.8px text next to 350px / 16px siblings. A state class and a control class
+   must never share a name; the collision is invisible until both happen to land on one node. */
+.selbox{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.22rem .4rem;font-size:.74rem;max-width:11rem}
+
+.list{display:flex;flex-direction:column;gap:.3rem;max-height:36rem;overflow:auto}
+.grp{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.5rem}
+.grp-h{font-size:.66rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);padding:.25rem 0 .1rem}
+.grp-n{font-weight:400}
+.row{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:.5rem .6rem;cursor:pointer}
+.row:hover{border-color:var(--blue2)}
+.row.sel{border-color:var(--blue);box-shadow:inset 0 0 0 1px var(--blue)}
+.row.dim{opacity:.55}
+.row .rt{font-family:ui-monospace,monospace;font-size:.78rem;font-weight:500;line-height:1.25;word-break:break-all}
+.row .rmeta{display:flex;gap:.3rem;align-items:center;margin-top:.32rem;flex-wrap:wrap}
+.row .rsub{font-size:.68rem;color:var(--dim);margin-top:.32rem;line-height:1.5;word-break:break-word}
+.counts{margin-top:.55rem;font-size:.72rem;color:var(--dim)}
+.empty-list{color:var(--dim);font-size:.82rem;padding:.4rem 0;line-height:1.5}
+
+/* ── pills (scope / state) ─────────────────────────────────────────────── */
+.pill{display:inline-block;border-radius:999px;padding:.05rem .5rem;font-size:.66rem;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.pill.sc-read{color:var(--green);border-color:#14532d}
+.pill.sc-write{color:var(--amber);border-color:#78350f}
+.pill.sc-admin{color:var(--red);border-color:#7f1d1d}
+.pill.off{color:var(--red);border-color:#7f1d1d}
+.pill.ovr{color:var(--amber);border-color:#78350f}
+.pill.prot{color:var(--blue2);border-color:#1e3a8a}
+.pill.gate{color:var(--purple);border-color:#581c87}
+.pill.cur{color:var(--green);border-color:#14532d;margin-left:.35rem}
+.pill.ok{color:var(--green);border-color:#14532d}
+.pill.warn{color:var(--amber);border-color:#78350f}
+.pill.bad{color:var(--red);border-color:#7f1d1d}
+
+/* ── detail ────────────────────────────────────────────────────────────── */
+.detail.empty{color:var(--dim);font-size:.85rem}
+.detail h2.d-title{font-size:.95rem;margin:0 0 .4rem;line-height:1.3;word-break:break-all}
+.d-pills{display:flex;gap:.3rem;flex-wrap:wrap;margin-bottom:.4rem}
+.d-sub{font-size:.68rem;color:var(--dim);margin-bottom:.5rem}
+.dtabs{display:flex;gap:.3rem;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:.55rem;margin-bottom:.7rem}
+.dtab{background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:7px;padding:.22rem .7rem;font-size:.72rem;cursor:pointer;text-transform:capitalize}
+.dtab.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.d-body{min-width:0}
+.lbl{font-size:.62rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin:.85rem 0 .35rem}
+.lbl:first-child{margin-top:0}
+.note{font-size:.72rem;color:var(--dim);line-height:1.5;margin:.3rem 0;word-break:break-word}
+.note.warn{color:var(--amber)}
+.hint{font-size:.66rem;color:var(--dim);line-height:1.45;margin:.3rem 0 .5rem}
+.sub{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:.5rem .65rem;font-size:.72rem;line-height:1.5;max-height:20rem;overflow:auto}
+.b{font-weight:600;color:var(--txt)}
+.dim{color:var(--dim)}
+.ok{color:var(--green)}
+.warn{color:var(--amber)}
+.bad{color:var(--red)}
+.ta-r{text-align:right}
+
+/* descriptions, schemas and handler source: plain-text monospace, pre-wrap — there is
+   no markdown/highlighting library in any pane and adding one breaks the CSP rule. */
+.mono{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.55rem .7rem;font-size:.74rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin:0;max-height:20rem;overflow:auto;font-family:ui-monospace,monospace}
+.mono.tall{max-height:26rem}
+.mono.dashed{border-style:dashed}
+.mono.none{color:var(--dim);font-style:italic;font-family:inherit}
+.ta{width:100%;min-height:8rem;resize:vertical;background:var(--bg);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.5rem .65rem;font-family:ui-monospace,monospace;font-size:.76rem;line-height:1.5}
+
+.card{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:.6rem .75rem;margin-bottom:.7rem}
+.card-top{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+.card-h{font-size:.78rem;font-weight:600;color:var(--txt);margin-bottom:.25rem}
+.card-b{font-size:.72rem;color:var(--dim);line-height:1.5;margin-top:.25rem;word-break:break-word}
+.ptop{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;font-size:.78rem;color:var(--dim);margin-bottom:.7rem}
+
+.tbl{width:100%;border-collapse:collapse;font-size:.72rem}
+.tbl th{text-align:left;color:var(--dim);font-weight:600;font-size:.66rem;padding:.25rem .45rem}
+.tbl td{padding:.35rem .45rem;border-top:1px solid var(--line);vertical-align:top}
+
+.actions{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0 .3rem;align-items:center}
+button{border:0;border-radius:7px;padding:.42rem .8rem;font-size:.78rem;cursor:pointer;background:#334155;color:var(--txt)}
+button:hover{filter:brightness(1.12)}
+button.primary{background:var(--blue);color:#fff}
+button.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+button.danger{background:var(--red);color:#450a0a;font-weight:600}
+button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+button.sm{padding:.2rem .55rem;font-size:.7rem}
+button.r{margin-left:auto}
+button:disabled{opacity:.5;cursor:not-allowed}
+.out{font-family:ui-monospace,monospace;font-size:.72rem;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:.45rem .6rem;margin-top:.8rem;min-height:1.4rem;white-space:pre-wrap;color:var(--dim);max-height:9rem;overflow:auto}
+.out.err{color:var(--red)}
+
+/* ── status view ───────────────────────────────────────────────────────── */
+.srow{display:flex;align-items:center;gap:.5rem;font-size:.76rem;padding:.22rem 0}
+.sdot{width:.5rem;height:.5rem;border-radius:50%;flex:none;background:var(--dim)}
+.sdot.ok{background:var(--green)}
+.sdot.bad{background:var(--red)}
+.sdot.unk{background:var(--dim)}
+.slbl{color:var(--txt);width:7rem;flex:none}
+.sdet{color:var(--dim);word-break:break-word}
+
+/* ── full-screen fatal error (a hard call failure, surfaced verbatim) ───── */
+.fatal{position:fixed;inset:0;background:rgba(2,6,23,.92);display:flex;align-items:center;justify-content:center;padding:1.5rem;z-index:50}
+.fatal-card{background:var(--panel);border:1px solid var(--red);border-radius:12px;padding:1.4rem 1.6rem;max-width:44rem;width:100%}
+.fatal-h{font-size:1rem;font-weight:600;color:var(--red);margin-bottom:.7rem}
+.fatal-msg{font-family:ui-monospace,monospace;font-size:.78rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.7rem .85rem;white-space:pre-wrap;word-break:break-word;color:var(--txt);max-height:16rem;overflow:auto;margin:0 0 .9rem}
+
+/* ── embedded in the app shell: drop own chrome + background (sibling-pane contract) ── */
+body.embed{background:transparent;overflow:hidden}
+body.embed,html:has(body.embed){height:auto}
+body.embed header{display:none}
+body.embed main{margin:0;padding:.4rem;max-width:none}
+
+/* ── light theme (shell passes ?theme=light) ───────────────────────────── */
+body.theme-light{--bg:#ffffff;--panel:#f8fafc;--panel2:#f1f5f9;--line:#e2e8f0;--txt:#0f172a;--dim:#64748b}
+body.theme-light .mono,body.theme-light .ta,body.theme-light .sub{background:#fff}
+body.theme-light button{background:#e2e8f0;color:#0f172a}
+body.theme-light button.primary,body.theme-light button.on{background:var(--blue);color:#fff}
+body.theme-light button.ghost{background:#fff;border:1px solid var(--line);color:#475569}
+body.theme-light button.danger{background:var(--red);color:#fff}
+body.theme-light .pending{background:rgba(251,191,36,.14);border-color:#d97706}
+body.theme-light .pending.calm{background:var(--panel);border-color:var(--line)}
+body.theme-light .pending.broken{background:rgba(248,113,113,.12);border-color:#dc2626}

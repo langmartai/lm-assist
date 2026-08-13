@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — Clusters</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots, so a leading-slash href would break under one of them. -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header>
+  <h1>Clusters<span class="chip">assist-clusters</span><span class="chip">scope: lm-assist</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <div class="bar">
+    <span class="bar-lbl">this node</span>
+    <span id="my-cluster" class="pill cl cl-default">…</span>
+    <div class="bar-gap"></div>
+    <button id="btn-refresh" class="ghost">Refresh</button>
+  </div>
+  <div id="out" class="out">ready</div>
+  <!-- Machine-registry state (GET /hub/machines). Spans both columns because its two
+       consequences land in different panes: the platform indicators (detail) and the reach of
+       the assign dropdown (list). Filled by app.js with textContent only — it carries server
+       error text. -->
+  <div id="mach-note" class="note" hidden></div>
+
+  <section class="pane pane-list">
+    <div class="filters">
+      <input id="q" class="q" type="text" placeholder="filter cluster / description / node / gatewayId…" autocomplete="off">
+      <div class="chip-row" id="row-status"><span class="chip-lbl">status</span><span id="chips-status" class="chips"></span></div>
+    </div>
+    <div id="list" class="list">loading…</div>
+    <div id="counts" class="counts"></div>
+
+    <div class="d-sect">
+      <h3>Assign a node</h3>
+      <div class="form-row">
+        <!-- Full row (.wide) ALWAYS, not only while the registry is down: the option LABELS are
+             long (emoji · hostname · id · cluster · offline) on BOTH paths — measured, the healthy
+             list is the longer one, because the registry-only half adds "· no cluster record ·
+             offline" — and half of this 24rem column is 170px, which clipped all 20 node options
+             at every viewport. It is NOT what makes the warning readable — see #node-warn. -->
+        <label class="fld wide" id="fld-node">node
+          <select id="a-node" disabled><option value="">loading nodes…</option></select>
+          <!-- 🔴 …and a full row is still not enough. The widest real label needs 469px and this
+               column's content box is 350px, so the SELECTED option is truncated however the
+               field is sized. This span echoes the pick as wrapping text, so what you picked is
+               always readable even when the control cannot show it. textContent only — it carries
+               a server-supplied hostname. -->
+          <span id="node-pick" class="fld-pick" hidden></span>
+          <!-- 🔴 The degraded warning lives HERE, not in the <select>'s selected-option text.
+               A <select> renders exactly as much of that text as the control is WIDE and cannot
+               wrap it: measured in Chrome, "— pick a node · cluster map only, registry
+               unavailable —" needs a 354px control and the widened field gives 350px, so the
+               sentence was silently truncated (the trailing em-dash rendered as a stub). This
+               span is an ordinary wrapping block, so no width can clip it. The control keeps a
+               SHORT flag that fits. textContent only — one edit from carrying server text. -->
+          <span id="node-warn" class="fld-warn" hidden></span>
+        </label>
+        <label class="fld">cluster
+          <input id="a-cluster" type="text" list="cluster-names" placeholder="release / dev / …" autocomplete="off" maxlength="64">
+          <datalist id="cluster-names"></datalist>
+        </label>
+      </div>
+      <div class="actions"><button id="a-go" class="primary">Assign</button></div>
+      <div class="hint">A name that does not exist yet creates that cluster. Placement, leader election and
+        registry sync are all cluster-scoped, so moving a node re-homes it for the whole fleet —
+        the button asks once before it fires.</div>
+      <!-- A claim about where the options come from, and it stops being true the moment
+           /hub/machines fails — so paintNodeSrcHint() withdraws it rather than letting it stand
+           as static text next to a shrunken list. The replacement sentence is NOT printed here:
+           it belongs at the control it is about (#node-warn), and stating it twice, 40px apart,
+           would be noise rather than emphasis. -->
+      <div class="hint">
+        <span id="src-ok">The node list is the machine registry and the cluster map together.
+          <b>registry only</b> means the fleet has no cluster record for that node: while it stays
+          offline the server cannot resolve it and answers <code>BAD_NODE</code>, which this page
+          reports as it comes.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="pane pane-detail">
+    <div id="detail" class="detail empty">Select a cluster on the left to see its members, leader and description.</div>
+  </section>
+</main>
+<!-- The serving tier injects window.__VIEW_TOKEN__ / __UI_ID__ / __UI_KEY__ before these
+     scripts run; lmui.js captures them, app.js drives the UI. Both are self-hosted (CSP). -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

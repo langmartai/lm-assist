@@ -1,0 +1,21 @@
+{
+  "uiId": "assist-projects",
+  "name": "Projects",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/projects", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/ttyd/processes", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/ttyd/process/identify", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/ttyd/process/*/kill", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/sessions/batch-check", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/tasks/all", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/health", "verbs": ["GET"], "exact": true }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-projects",
+  "category": "Node",
+  "sortOrder": 100,
+  "managed": true
+}

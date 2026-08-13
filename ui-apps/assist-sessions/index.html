@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — Sessions</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots, so a leading-slash href would break under one of them. -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header>
+  <h1>Sessions<span class="chip">assist-sessions</span><span class="chip">scope: lm-assist</span></h1>
+  <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+</header>
+<main>
+  <section class="pane pane-list">
+    <div class="filters">
+      <input id="q" class="q" type="text" placeholder="filter id / project / summary / last prompt…" autocomplete="off">
+      <div class="frow">
+        <select id="f-project" class="sel" title="Project"><option value="">All projects</option></select>
+        <select id="f-time" class="sel" title="Last modified within">
+          <option value="all">All time</option>
+          <option value="today">Today</option>
+          <option value="week">This week</option>
+          <option value="month">This month</option>
+        </select>
+      </div>
+      <div class="chip-row">
+        <span class="chip-lbl">show</span>
+        <span class="chips">
+          <span class="fchip" id="t-running" data-on="0">running only</span>
+          <span class="fchip on" id="t-cmds" data-on="1">commands</span>
+        </span>
+        <button id="btn-refresh" class="ghost sm" title="Re-fetch the session list">refresh</button>
+      </div>
+    </div>
+    <div id="load-note" class="load-note" hidden></div>
+    <div id="list" class="list">loading…</div>
+    <div id="counts" class="counts">loading…</div>
+    <div class="more-row">
+      <button id="btn-more-rows" class="ghost sm" hidden>show +100 rows</button>
+      <button id="btn-fetch-more" class="ghost sm" hidden>fetch 300 more</button>
+      <button id="btn-fetch-all" class="ghost sm" hidden>fetch all</button>
+    </div>
+  </section>
+
+  <section class="pane pane-detail">
+    <div id="detail" class="detail empty">Select a session on the left.</div>
+  </section>
+</main>
+<!-- The serving tier injects window.__VIEW_TOKEN__ / __UI_ID__ / __UI_KEY__ before these
+     scripts run; lmui.js captures them, app.js drives the UI. Both are self-hosted (CSP). -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Title is rewritten to "Tasks — <hostname>" once the node identifies itself: a pane pinned
+     in a browser tab should say WHICH host it is showing, not just "Tasks". -->
+<title>Assist — Tasks (this node)</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots, so a leading-slash href would break under one of them. -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header>
+  <h1>Tasks<span class="chip">assist-tasks</span><span class="chip">scope: lm-assist</span></h1>
+  <div class="hdr-right">
+    <!-- Standalone-only: `body.embed header{display:none}`. The authoritative scope statement
+         therefore lives in the controls pane below, which survives embedding. -->
+    <span id="hdr-node" class="node">node …</span>
+    <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
+  </div>
+</header>
+<main>
+  <section class="pane pane-controls">
+    <!-- 🔴 The scope statement is FIRST and is not conditional on any fetch: "this node only"
+         is a property of the declared grant, not of a response. Only the node's NAME is
+         fetched, and it has its own loading / unnamed / error states. -->
+    <div id="scope" class="scope" data-state="loading">
+      <div class="scope-line"><span class="scope-k">node</span><span id="scope-node" class="scope-node">identifying this node…</span><span class="scope-only">this node only</span></div>
+      <div class="scope-note">Shows <b>this node's</b> task lists only (its own <code>~/.claude/tasks</code>).
+        No other host is queried, so every count below is this node's — not the fleet's.
+        There is no machine filter and no group-by-machine here.</div>
+    </div>
+    <div class="filters">
+      <input id="q" class="q" type="text" placeholder="filter subject / id / description / project / session…" autocomplete="off">
+      <div class="chip-row"><span class="chip-lbl">status</span><span id="chips-status" class="chips"></span></div>
+      <div class="chip-row"><span class="chip-lbl">group</span><span id="chips-group" class="chips"></span></div>
+      <div class="chip-row"><span class="chip-lbl">view</span><span id="chips-view" class="chips"></span></div>
+      <div class="chip-row"><span class="chip-lbl">project</span><select id="f-project" class="sel"></select></div>
+    </div>
+    <div id="summary" class="summary"></div>
+    <div id="counts" class="counts"></div>
+    <div class="live">
+      <label class="chk"><input type="checkbox" id="chk-auto" checked> auto-refresh</label>
+      <button id="btn-refresh" class="ghost">Refresh</button>
+      <span id="updated" class="upd"></span>
+    </div>
+    <div id="out" class="out">ready</div>
+  </section>
+
+  <section class="pane pane-board">
+    <div id="board" class="board">loading…</div>
+  </section>
+
+  <section class="pane pane-detail">
+    <div id="detail" class="detail empty">Select a task to see its description, dependencies and context.</div>
+  </section>
+</main>
+<!-- The serving tier injects window.__VIEW_TOKEN__ / __UI_ID__ / __UI_KEY__ before these
+     scripts run; lmui.js captures them, app.js drives the UI. Both are self-hosted (CSP). -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

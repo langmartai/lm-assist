@@ -1,0 +1,17 @@
+{
+  "uiId": "assist-mission-processes",
+  "name": "Mission Processes",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/mission/workflows", "verbs": ["GET"] },
+    { "service": "node", "pathPrefix": "/mission/workflows/*", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/workflows/*/rollback", "verbs": ["POST"], "exact": true }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-mission-processes",
+  "category": "Node",
+  "sortOrder": 140,
+  "managed": true
+}

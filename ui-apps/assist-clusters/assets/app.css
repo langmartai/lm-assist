@@ -1,0 +1,183 @@
+:root{
+  --bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;
+  --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
+}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
+
+/* 🔴 The UA's own `[hidden]{display:none}` is a plain attribute selector, so ANY class or id rule
+   that sets `display` outranks it — and this file sets `display` on most of its regions
+   (.note is grid-column'd, .chip-row is flex, .mem is flex). Without `!important` an element the
+   JS marks `hidden = true` stays on screen, which for #mach-note means a stale "loading…" or a
+   dismissed warning keeps asserting a state that is no longer true. Make the attribute win
+   globally rather than chasing one `.foo[hidden]` rule per region — the miss is silent, and every
+   region added later inherits the bug. */
+[hidden]{display:none!important}
+
+header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
+header h1{font-size:1rem;margin:0;font-weight:600}
+.chip{font-family:ui-monospace,monospace;font-size:.7rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.12rem .55rem;margin-left:.45rem;color:var(--dim)}
+#who{display:flex;align-items:center;gap:.4rem;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:.25rem .7rem;font-size:.8rem}
+#who .dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--green)}
+
+/* Two panes: cluster list (+ the fleet-level assign form) | detail. The toolbar and the
+   status line span both columns so a write's result is visible from either side.
+   Collapses to one column on narrow viewports. */
+main{display:grid;grid-template-columns:24rem minmax(0,1fr);gap:1rem;padding:1rem;align-items:start;max-width:80rem;margin:0 auto}
+@media (max-width:1000px){main{grid-template-columns:1fr}}
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.9rem 1rem;min-width:0}
+
+.bar{grid-column:1/-1;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.bar-lbl{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+.bar-gap{flex:1}
+
+/* ── filters + list ────────────────────────────────────────────────────── */
+.filters{margin-bottom:.7rem}
+.q{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.4rem .6rem;font-size:.82rem}
+.chip-row{display:flex;align-items:center;gap:.35rem;margin-top:.55rem;flex-wrap:wrap}
+.chip-lbl{font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);width:3rem;flex:none}
+.chips{display:flex;gap:.25rem;flex-wrap:wrap}
+.fchip{font-size:.7rem;border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:999px;padding:.1rem .5rem;cursor:pointer}
+.fchip.on{background:var(--blue);border-color:var(--blue);color:#fff}
+
+.list{display:flex;flex-direction:column;gap:.3rem;max-height:36rem;overflow:auto}
+.row{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:.5rem .6rem;cursor:pointer}
+.row:hover{border-color:var(--blue2)}
+.row.sel{border-color:var(--blue);box-shadow:inset 0 0 0 1px var(--blue)}
+.row .rt{display:flex;gap:.3rem;align-items:center;flex-wrap:wrap}
+.row .rmeta{display:flex;gap:.3rem;align-items:center;margin-top:.32rem;flex-wrap:wrap}
+.row .rcount{font-size:.68rem;color:var(--dim)}
+.row .rsub{font-size:.72rem;color:var(--dim);margin-top:.32rem;line-height:1.45;word-break:break-word}
+.rnodes{display:flex;gap:.25rem;flex-wrap:wrap;margin-top:.35rem}
+.node{font-family:ui-monospace,monospace;font-size:.64rem;color:var(--txt);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:.05rem .35rem;word-break:break-all}
+.node.off{color:var(--dim);opacity:.7}
+.node.more{color:var(--dim);font-family:inherit}
+.counts{margin-top:.55rem;font-size:.72rem;color:var(--dim)}
+.empty-list{color:var(--dim);font-size:.82rem;padding:.4rem 0;line-height:1.5}
+
+/* ── pills (cluster colour / status / role) ─────────────────────────────── */
+.pill{display:inline-block;border-radius:999px;padding:.05rem .5rem;font-size:.66rem;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.pill.cl{font-family:ui-monospace,monospace;font-size:.72rem;padding:.1rem .6rem}
+.pill.mine{color:var(--blue2);border-color:#1e3a8a}
+.pill.st{color:var(--amber);border-color:#78350f}
+.pill.lead{color:var(--amber);border-color:#78350f}
+/* Deterministic per-name palette — mirrors clusterBadge() in web/src/hooks/useClusters.ts. */
+.pill.cl-default{color:var(--dim)}
+.pill.cl0{color:var(--blue2);border-color:#1e3a8a}
+.pill.cl1{color:var(--green);border-color:#14532d}
+.pill.cl2{color:var(--purple);border-color:#581c87}
+.pill.cl3{color:#fb923c;border-color:#7c2d12}
+.pill.cl4{color:#22d3ee;border-color:#155e75}
+.pill.cl5{color:#f472b6;border-color:#831843}
+.pill.cl6{color:var(--amber);border-color:#78350f}
+.pill.cl7{color:#facc15;border-color:#713f12}
+
+/* ── detail ────────────────────────────────────────────────────────────── */
+.detail.empty{color:var(--dim);font-size:.85rem}
+.detail h2.d-title{font-size:1.02rem;margin:0 0 .5rem;line-height:1.3;word-break:break-word}
+.d-pills{display:flex;gap:.3rem;flex-wrap:wrap;margin-bottom:.6rem}
+.d-desc{font-size:.8rem;color:var(--dim);line-height:1.5;margin-bottom:.7rem;word-break:break-word}
+.d-meta{font-size:.72rem;color:var(--dim);line-height:1.6;margin-bottom:.7rem;word-break:break-all}
+.d-meta .k{color:var(--txt);font-weight:600}
+.d-sect{margin-top:.9rem}
+.d-sect h3{font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin:0 0 .4rem}
+
+/* ── one member row ────────────────────────────────────────────────────── */
+.mem{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:.4rem .6rem;margin-bottom:.35rem}
+.dotm{width:.5rem;height:.5rem;border-radius:50%;flex:none}
+.dotm.on{background:var(--green)}
+.dotm.off{background:var(--dim);opacity:.6}
+/* Platform indicator — present only for a member the machine registry knows, so it must not
+   reserve space when absent (no fixed width / no min-width). */
+.mem-plat{font-size:.85rem;line-height:1;flex:none}
+.mem-name{font-family:ui-monospace,monospace;font-size:.78rem;color:var(--txt);word-break:break-all}
+.mem-id{font-family:ui-monospace,monospace;font-size:.62rem;color:var(--dim);word-break:break-all;flex:1;min-width:8rem}
+.mem-x{font-size:.68rem;padding:.2rem .5rem}
+
+/* ── forms (assign + describe) ─────────────────────────────────────────── */
+.form-row{display:flex;gap:.6rem;flex-wrap:wrap}
+.fld{display:flex;flex-direction:column;gap:.22rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);flex:1;min-width:9rem}
+/* Own row. Used by #fld-node UNCONDITIONALLY (set in the markup, not toggled): its option labels
+   are "<emoji> <hostname> · <gatewayId> · <cluster>[ · offline]" and half a 24rem column is 170px,
+   which clips EVERY one of them. It is not what keeps the degraded warning legible — .fld-warn
+   below is, because no control width can clip it. */
+.fld.wide{flex:1 0 100%}
+.fld input,.fld select{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.35rem .5rem;font-size:.8rem;text-transform:none;letter-spacing:normal;width:100%;max-width:100%}
+/* The node <select> groups its options ("in the cluster map" / "registry only"); without these
+   the popup falls back to the UA's own colours and goes unreadable on the dark theme. */
+.fld select optgroup{background:var(--panel2);color:var(--dim);font-style:normal;font-size:.75rem}
+.fld select option{background:var(--panel2);color:var(--txt);font-style:normal}
+.fld select:disabled{opacity:.6;cursor:not-allowed}
+/* 🔴 The sentence a <select> CANNOT show. It sits inside the <label>, under the control, as an
+   ordinary wrapping block: `white-space:normal` + `overflow-wrap:anywhere` mean its text reflows
+   to whatever width the field has instead of being clipped to the control's, which is the whole
+   reason the warning moved out of the option text. `.fld` is uppercase/letter-spaced/.68rem for
+   the field CAPTION, so undo all three here exactly as `.fld input,.fld select` does — an
+   uppercased sentence is the other half of "unreadable". Amber, like .note.warn. */
+.fld .fld-warn{font-size:.66rem;line-height:1.45;color:var(--amber);text-transform:none;letter-spacing:normal;white-space:normal;overflow-wrap:anywhere;margin-top:.12rem}
+/* 🔴 The label a <select> STILL cannot show, even on its own row. Measured in Chrome on this
+   fleet: the widest real option ('🐧 ubuntu-Virtual-Machine (dev) · gw4-0065715a · no cluster
+   record · offline') needs a 469px control, and the widest this field can ever be is the list
+   column's content box — 350px on a desktop, 314px at a 380px viewport. 469 into 350 does not go
+   at any font size an operator can read, so the full text of the CURRENT PICK is echoed here as
+   an ordinary wrapping block: same escape hatch as .fld-warn above, dim rather than amber because
+   it confirms rather than warns. Undo the caption's uppercase/letter-spacing/size exactly as
+   `.fld input,.fld select` does. */
+.fld .fld-pick{font-size:.66rem;line-height:1.45;color:var(--dim);text-transform:none;letter-spacing:normal;white-space:normal;overflow-wrap:anywhere;margin-top:.12rem}
+.hint{font-size:.66rem;color:var(--dim);line-height:1.45;margin:.15rem 0 .2rem}
+
+.actions{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0 .3rem}
+button{border:0;border-radius:7px;padding:.42rem .8rem;font-size:.78rem;cursor:pointer;background:#334155;color:var(--txt)}
+button:hover{filter:brightness(1.12)}
+button.primary{background:var(--blue);color:#fff}
+button.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.out{grid-column:1/-1;font-family:ui-monospace,monospace;font-size:.72rem;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:.45rem .6rem;margin-top:.8rem;min-height:1.4rem;white-space:pre-wrap;color:var(--dim);max-height:9rem;overflow:auto}
+.out.err{color:var(--red)}
+/* An ARMED write button (two-click confirm). Same red as .out.err so "this one bites" reads
+   the same way everywhere on the page. */
+button.danger{background:var(--red);color:#450a0a}
+
+/* ── machine-registry notice (spans both columns) ───────────────────────── */
+.note{grid-column:1/-1;font-size:.72rem;line-height:1.5;color:var(--dim);background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:.45rem .6rem;margin-top:.5rem}
+.note.warn{border-color:var(--amber);color:var(--amber)}
+.note .note-sub{color:var(--dim);display:block;margin-top:.15rem}
+.note .note-btn{margin-top:.4rem;font-size:.68rem;padding:.2rem .55rem}
+/* The server's own verbatim text, kept next to the plain-English lead instead of replacing it. */
+.note .note-raw{font-family:ui-monospace,monospace;display:block;margin-top:.2rem;word-break:break-word}
+/* Hiding is handled by the global `[hidden]{display:none!important}` at the top of this file —
+   this rule's `grid-column` is exactly the kind of declaration that used to outrank the UA's. */
+
+/* ── full-screen fatal error (a hard call failure, surfaced verbatim) ───── */
+.fatal{position:fixed;inset:0;background:rgba(2,6,23,.92);display:flex;align-items:center;justify-content:center;padding:1.5rem;z-index:50}
+.fatal-card{background:var(--panel);border:1px solid var(--red);border-radius:12px;padding:1.4rem 1.6rem;max-width:44rem;width:100%}
+.fatal-h{font-size:1rem;font-weight:600;color:var(--red);margin-bottom:.7rem}
+.fatal-msg{font-family:ui-monospace,monospace;font-size:.78rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.7rem .85rem;white-space:pre-wrap;word-break:break-word;color:var(--txt);max-height:16rem;overflow:auto;margin:0 0 .9rem}
+
+/* ── embedded in the app shell: drop own chrome + background (sibling-pane contract) ── */
+body.embed{background:transparent;overflow:hidden}
+body.embed,html:has(body.embed){height:auto}
+body.embed header{display:none}
+body.embed main{margin:0;padding:.4rem;max-width:none}
+
+/* ── light theme (shell passes ?theme=light) ───────────────────────────── */
+body.theme-light{--bg:#ffffff;--panel:#f8fafc;--panel2:#f1f5f9;--line:#e2e8f0;--txt:#0f172a;--dim:#64748b}
+body.theme-light .node{background:#fff}
+body.theme-light .pill.cl0{color:#1d4ed8}
+body.theme-light .pill.cl1{color:#15803d}
+body.theme-light .pill.cl2{color:#7e22ce}
+body.theme-light .pill.cl3{color:#c2410c}
+body.theme-light .pill.cl4{color:#0e7490}
+body.theme-light .pill.cl5{color:#be185d}
+body.theme-light .pill.cl6,body.theme-light .pill.cl7,body.theme-light .pill.st,body.theme-light .pill.lead{color:#b45309}
+body.theme-light .pill.mine{color:#1d4ed8}
+body.theme-light button{background:#e2e8f0;color:#0f172a}
+body.theme-light button.primary{background:var(--blue);color:#fff}
+body.theme-light button.ghost{background:#fff;border:1px solid var(--line);color:#475569}
+body.theme-light button.danger{background:#dc2626;color:#fff}
+body.theme-light .note.warn{border-color:#b45309;color:#b45309}
+/* --amber is a dark-theme value; on white it is barely legible. Same substitution .note.warn
+   makes, so the two amber warnings stay the same colour as each other in both themes. */
+body.theme-light .fld .fld-warn{color:#b45309}
+body.theme-light .fld select optgroup{background:#fff;color:#64748b}
+body.theme-light .fld select option{background:#fff;color:#0f172a}

@@ -3,14 +3,9 @@
   "name": "Backlog",
   "scope": "lm-assist",
   "grant": [
-    {
-      "service": "node",
-      "pathPrefix": "/backlog",
-      "verbs": [
-        "GET",
-        "POST"
-      ]
-    }
+    { "service": "node", "pathPrefix": "/backlog", "verbs": ["GET", "POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/backlog/*", "verbs": ["GET", "POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/backlog/*/discuss", "verbs": ["POST"], "exact": true }
   ],
   "dev": {
     "port": 5601

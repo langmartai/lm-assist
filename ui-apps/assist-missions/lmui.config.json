@@ -1,0 +1,29 @@
+{
+  "uiId": "assist-missions",
+  "name": "Missions",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/mission", "verbs": ["GET", "POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/*", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/*", "verbs": ["PATCH"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/*/sessions", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/controller/trace", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/session/*/status", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/session/*/read", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/session/*/drive", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/session/*/answer", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/session/*/control", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mission/session/*/resume", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/scheduler/jobs/mission-controller/run", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/ccr/cloud/repos", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/ccr/cloud/branches", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/ccr/remote", "verbs": ["GET"], "exact": true }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-missions",
+  "category": "Node",
+  "sortOrder": 120,
+  "managed": true
+}

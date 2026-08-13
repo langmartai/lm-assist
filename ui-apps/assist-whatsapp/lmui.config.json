@@ -5,13 +5,7 @@
   "service": "ui-assist-whatsapp",
   "managed": true,
   "grant": [
-    {
-      "service": "node",
-      "pathPrefix": "/whatsapp",
-      "verbs": [
-        "GET",
-        "POST"
-      ]
-    }
+    { "service": "node", "pathPrefix": "/whatsapp", "verbs": ["GET"] },
+    { "service": "node", "pathPrefix": "/whatsapp/send", "verbs": ["POST"], "exact": true }
   ]
 }

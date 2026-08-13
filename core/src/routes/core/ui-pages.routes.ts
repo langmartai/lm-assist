@@ -16,6 +16,7 @@ import { reportStatusesOnce, uploadScreenshot } from '../../ui-pages/reporter';
 import { loadServicePorts, getHubConfig } from '../../hub-client/hub-config';
 import { isLocalTierRunning } from '../../ui-pages/local-tier/server';
 import { mintEntryToken } from '../../ui-pages/local-tier/token';
+import { navQueryFromObject } from '../../ui-pages/local-tier/nav';
 
 function uiAppsDirOverride(): string | undefined {
   return loadServicePorts().uiAppsDir;
@@ -76,8 +77,19 @@ export function createUiPagesRoutes(_ctx: RouteContext): RouteHandler[] {
           const localUiPort = localUiPortOf(ports)!;
           const ip = firstLanIp();
           if (!ip) return { success: false, error: 'no non-internal IPv4 address found on this node' };
+          // Optional deep link: the same param contract lmui.goto() uses, so an agent can
+          // hand a human a URL that lands on the right VIEW, not just the right pane.
+          // Reserved keys (lt/embed/theme/…) are dropped — 'lt' is minted right below.
+          const q = navQueryFromObject((req.body || {}).params);
+          if (!q.ok) return { success: false, error: q.reason };
           const token = mintEntryToken(uiId);
-          return { success: true, data: { url: `http://${ip}:${localUiPort}/ui/${uiId}/?lt=${token}`, expiresInSec: 600 } };
+          return {
+            success: true,
+            data: {
+              url: `http://${ip}:${localUiPort}/ui/${uiId}/?lt=${token}${q.qs ? `&${q.qs}` : ''}`,
+              expiresInSec: 600,
+            },
+          };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };
         }
