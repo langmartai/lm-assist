@@ -225,7 +225,55 @@
   // `embed`/`theme` are NOT part of this vocabulary: they are the shell's embedding contract
   // and lmui.goto REFUSES them (NAV_RESERVED), because the serving tier sets them itself.
   function gotoGraph(missionId) { lmui.goto('assist-mission-graph', missionId ? { mission: missionId } : undefined); }
-  function gotoProcesses(missionId) { lmui.goto('assist-mission-processes', missionId ? { mission: missionId } : undefined); }
+
+  // 🔴 "Processes ↗" used to send `{ mission }` — an EMITTED-only name, which is half the rule.
+  // assist-mission-processes cannot honour it and never could: the workflow registry is
+  // FLEET-WIDE, its docs are keyed by doc id, a Mission carries no workflow reference
+  // (core/src/mission/mission-model.ts), and that pane's grant reaches `/mission/workflows`
+  // ONLY — it cannot read a mission at all. So the target had nothing to filter or select by,
+  // the link opened on the default view, and the button was silently broken in exactly the way
+  // the vocabulary block above describes (same shape as the "Graph ↗" bug fixed earlier).
+  //
+  // The fix is not to widen that pane's grant (its narrow scope is the point — it EDITS the
+  // docs that steer Mission Control) and not to have it ignore the param. The resolution
+  // belongs HERE, where the mission is already loaded and already readable, and the wire
+  // carries `doc` — a pinned name the target already reads and acts on.
+  //
+  // Which doc governs a mission is not invented here; it is the routing rule the controller
+  // itself follows, transcribed from the `controller.pass` registry doc:
+  //     manageMode 'standby'     → observe.standby   (a HARD gate — the server refuses drives)
+  //     onboard:state analyzing  → onboard.analyze
+  //     onboard:state completed  → wrapup.completed
+  //     onboard:state stuck      → recover.stuck
+  //     otherwise, if onboarded  → drive.<onboard:work-type>
+  //     not onboarded            → controller.pass   (the standing pass directive it runs under)
+  // An unrecognised work-type falls back to controller.pass rather than emitting a doc id the
+  // registry never heard of: the target renders an honest "no such document" for a bad id, but
+  // sending it OUR guess is not worth showing the user an error for.
+  //
+  // ⚠️ This table is a MIRROR of an editable doc — controller.pass is `open`, so a controller or
+  // a human can rewrite the routing rule and this mapping will drift. It is a navigation hint,
+  // never an authority: the doc on screen is the truth, and the worst drift can do is open the
+  // wrong (still real) playbook. Re-read controller.pass if the routing here starts looking odd.
+  var PROCESS_DRIVE_TYPES = { 'design': 1, 'direct-impl': 1, 'bugfix': 1, 'feature': 1, 'multi-phase': 1 };
+  function firstTag(m, k) {
+    var v = m && m.tags && m.tags[k];
+    return (Array.isArray(v) && v.length) ? String(v[0]) : '';
+  }
+  /** The workflow doc that governs this mission right now. Never returns ''. */
+  function processDocFor(m) {
+    // Detail may not have landed yet (the button is bound before the fetch resolves). The
+    // standing pass directive is the honest answer for a mission we cannot classify.
+    if (!m || m.origin !== 'onboarded') return 'controller.pass';
+    if (m.manageMode === 'standby') return 'observe.standby';
+    var st = firstTag(m, 'onboard:state');
+    if (st === 'analyzing') return 'onboard.analyze';
+    if (st === 'completed') return 'wrapup.completed';
+    if (st === 'stuck') return 'recover.stuck';
+    var wt = firstTag(m, 'onboard:work-type');
+    return PROCESS_DRIVE_TYPES[wt] ? 'drive.' + wt : 'controller.pass';
+  }
+  function gotoProcesses(mission) { lmui.goto('assist-mission-processes', { doc: processDocFor(mission) }); }
 
   // ── internal routing ──────────────────────────────────────────────────────
   // The mission DETAIL is a view of THIS pane, not a sibling pane. `?mission=<id>` is the
@@ -1128,7 +1176,10 @@
     return '<div class="vhead"><span class="vtitle" id="md-title">…</span><span id="md-badges"></span>'
       + '<span class="spacer"></span>'
       + '<button class="ghost xs" id="md-graph" title="Show this mission in the Mission Graph pane">Graph ↗</button>'
-      + '<button class="ghost xs" id="md-procs" title="Show this mission in the Mission Processes pane">Processes ↗</button>'
+      // The label says DOC, not "this mission": the registry it opens is fleet-wide and has no
+      // per-mission view, so a label promising one would be the same lie the old param was.
+      // paintDetail names the exact doc in the tooltip once the mission has loaded.
+      + '<button class="ghost xs" id="md-procs" title="Open the process doc this mission runs under, in the Mission Processes pane">Process doc ↗</button>'
       + '<button class="ghost xs" id="md-back">◂ Controller</button></div>'
       + '<div id="md-err" class="cherr" hidden></div>'
       + '<div class="mdfields">'
@@ -1224,6 +1275,12 @@
     $('md-title').textContent = m.title || m.id;
     $('md-badges').innerHTML = '<span class="pill st-' + esc(m.status) + '">' + esc(m.status) + '</span>'
       + manageBadges(m) + '<span class="mono dim"> ' + esc(m.id) + '</span>';
+    // Name the destination doc now that the mission is known — the button's own claim, checkable
+    // before the click rather than only after it. (title, not innerHTML: never server text as markup.)
+    if ($('md-procs')) {
+      $('md-procs').title = 'Open ' + processDocFor(m) + ' — the process doc this mission runs '
+        + 'under — in the Mission Processes pane (the fleet-wide workflow registry)';
+    }
 
     // Reset the editors to the server's values ONLY when the user is not mid-edit — a 5 s
     // poll must never clobber typing (and `dirty` must survive it).
@@ -1522,7 +1579,8 @@
     } else if (state.view.kind === 'mission') {
       $('md-back').onclick = function () { setView('controller', null); };
       $('md-graph').onclick = function () { gotoGraph(state.view.id); };
-      $('md-procs').onclick = function () { gotoProcesses(state.view.id); };
+      // The MISSION, not its id — the doc is resolved from the mission's own tags/mode.
+      $('md-procs').onclick = function () { gotoProcesses(state.detail); };
       $('md-save').onclick = saveDetail;
       // These inputs are re-created by renderStage, so binding them here is not cumulative.
       // (The delegated #stage listener is attached ONCE at boot — #stage itself is never

@@ -391,6 +391,12 @@
           var want = deepLinkDoc();
           if (want) openDoc(want);
           else if (state.known[OVERVIEW_ID]) openDoc(OVERVIEW_ID);
+          // 🔴 Neither: paint the neutral state EXPLICITLY. This branch is reachable — measured,
+          // `process.overview` is not in this node's registry at all — and without this call the
+          // detail column keeps index.html's STATIC "Select a process doc to view it.", which is
+          // how a rejected off-vocabulary param went unreported: the note lives in paintDetail
+          // and paintDetail was never invoked on the one path that needs it.
+          else paintDetail();
         } else {
           paintDetail();
         }
@@ -698,7 +704,20 @@
     var id = state.selectedId;
     if (!id) {
       el.className = 'detail empty';
-      el.textContent = 'Select a process doc to view it.';
+      // A caller that sent a param this pane cannot honour gets told so HERE, on the very view
+      // its link landed on. Landing silently on the neutral state is what made the old
+      // "Processes ↗" button look like a working deep link while doing nothing at all.
+      var bad = unhonouredParam();
+      el.textContent = bad === 'mission'
+        ? 'This link carried "?mission=", which this pane cannot act on: the workflow registry '
+          + 'is fleet-wide and its documents are addressed by doc id — no document belongs to a '
+          + 'mission. Pick a process doc from the list, or ask the linking pane to resolve the '
+          + 'mission on its side and send "?doc=<id>".'
+        : bad === 'id'
+        ? 'This link carried "?id=", which is not a cross-pane parameter name. This pane opens a '
+          + 'document with "?doc=<id>". Pick a process doc from the list, or ask the linking pane '
+          + 'to send "?doc=" instead.'
+        : 'Select a process doc to view it.';
       reportHeight();
       return;
     }
@@ -940,18 +959,40 @@
     });
   }
 
-  // ── routing ───────────────────────────────────────────────────────────────
-  // `?doc=<id>` is the inbound deep link (what lmui.goto carries into this pane) and is kept
-  // in the address bar as the user navigates, so a reload lands back on the same doc.
-  // A sibling may also send `?mission=<id>`; this registry is fleet-wide, not per-mission, so
-  // that param is accepted and ignored rather than 404-ing the pane.
+  // ── routing — the INBOUND half of the PINNED cross-pane param vocabulary ──────────────────
+  // The vocabulary (see the block comment in ui-apps/assist-missions/assets/app.js) is:
+  //   session · project · mission · task · cluster · tool · dataset · skill · unit · doc
+  // plus the two generic modifiers `tab` and `q`. A pane READS the names that name entities it
+  // can actually display. This pane displays exactly one entity — a workflow DOC — so `doc` is
+  // the only name it reads.
+  //
+  // 🔴 It used to read `/[?&](?:doc|id)=/`. `id` is on the vocabulary's explicit BANNED list
+  // ("not sessionId, not id, not missionId, not highlight") and no pane emits it, so it is gone
+  // — an off-vocabulary alias that is also dead code is pure invitation for the next caller to
+  // spell it wrong and get away with it here but nowhere else.
+  //
+  // 🔴 `mission` is deliberately NOT read, and NOT silently swallowed either. This registry is
+  // fleet-wide: its docs are keyed by doc id (controller.pass, drive.feature, case.index, …),
+  // a Mission carries no workflow reference (core/src/mission/mission-model.ts), and this
+  // pane's grant reaches `/mission/workflows` ONLY — it could not resolve a mission id even if
+  // it wanted to, and widening that grant to make a deep link work would trade this pane's
+  // whole security posture for a convenience. So an inbound `?mission=` cannot be honoured, and
+  // the pane SAYS SO on screen (see the boot block) instead of quietly opening the default view
+  // and letting the caller believe the link worked. The caller's job is to resolve the mission
+  // to a doc on its side, where the mission is already loaded and already readable, and send
+  // `doc=` — which is exactly what assist-missions' "Process doc ↗" button now does.
+  //
   // An id this node does not have is NOT ignored: it is fetched like any other, and the route's
   // NOT_FOUND becomes the "no such document" state, with `?doc=` left in place so the URL says
-  // the same thing the screen does. `?mission=` and `?doc=` are different claims — one is a
-  // filter this pane has no use for, the other is "open this", and only the second can be wrong.
+  // the same thing the screen does.
   function deepLinkDoc() {
-    var m = /[?&](?:doc|id)=([^&]*)/.exec(location.search);
+    var m = /[?&]doc=([^&]*)/.exec(location.search);
     try { return m ? decodeURIComponent(m[1]) : ''; } catch (e) { return m ? m[1] : ''; }
+  }
+  /** An inbound param this pane cannot act on. Returns its NAME (for the on-screen note), or ''. */
+  function unhonouredParam() {
+    return /[?&]mission=[^&]/.test(location.search) ? 'mission'
+      : /[?&]id=[^&]/.test(location.search) ? 'id' : '';
   }
   function syncUrl() {
     try {

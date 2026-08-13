@@ -29,9 +29,28 @@ const defaultFilter: SessionFilter = {
   showCommands: true,
 };
 
-/** Returns true if the session's last user message indicates a command-only session */
+/**
+ * Returns true if the session's last user message indicates a command-only session.
+ *
+ * 🔴 This anchored on '<command-message>' until 2026-08-13 and could therefore never match.
+ * Claude Code writes a slash-command turn as a three-tag envelope whose FIRST tag is always
+ * '<command-name>':
+ *     <command-name>/model</command-name>
+ *     <command-message>model</command-message>
+ *     <command-args>opus</command-args>
+ * Measured over one node's complete session list (GET /projects/sessions, 6584 of 6584 rows,
+ * untruncated): startsWith('<command-message>') → 0 matches; startsWith('<command-name>') → 6;
+ * every one of the 6 contains both tags, none leads with '<command-message>'. So the
+ * "commands" filter in SessionSidebar toggled and filtered nothing.
+ *
+ * Anchored rather than a contains-check so a human message that merely QUOTES the envelope is
+ * not misread as a command session; on the measured corpus both forms select the same 6 rows.
+ *
+ * ui-apps/assist-sessions/assets/app.js carries a byte-for-byte port of this predicate — the
+ * dead filter shipped in both surfaces. Change them together.
+ */
 function isCommandSession(s: Session): boolean {
-  return !!s.lastUserMessage && s.lastUserMessage.trimStart().startsWith('<command-message>');
+  return !!s.lastUserMessage && s.lastUserMessage.trimStart().startsWith('<command-name>');
 }
 
 interface UseSessionsOptions {

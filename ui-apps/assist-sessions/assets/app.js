@@ -138,9 +138,29 @@
     return parts[parts.length - 1] || String(p);
   }
   function looksLikePath(v) { return /[\/\\]/.test(String(v || '')); }
-  // A command-only session (isCommandSession in useSessions.ts).
+  // A command-only session (isCommandSession in web/src/hooks/useSessions.ts — keep the two
+  // in step; this pane is a port of that hook, and the bug below shipped in BOTH).
+  //
+  // 🔴 The predicate used to anchor on '<command-message>' and could therefore never match.
+  // Claude Code writes a slash-command turn as a THREE-tag envelope and '<command-name>' is
+  // always the FIRST tag:
+  //     <command-name>/model</command-name>
+  //     <command-message>model</command-message>
+  //     <command-args>opus</command-args>
+  // Measured over this node's COMPLETE list (GET /projects/sessions, 6584 of 6584 sessions,
+  // no truncation): startsWith('<command-message>') → 0 matches; startsWith('<command-name>')
+  // → 6; contains-either → 6, and all 6 contain BOTH tags. There is not one session in the
+  // corpus where '<command-message>' comes first, so the old chip toggled its class and
+  // changed the list by exactly nothing.
+  //
+  // Anchored at the start rather than a contains-check on purpose: a contains-check would
+  // also match a human message that merely QUOTES the envelope (a bug report pasting these
+  // very tags is the obvious case), and "command-only session" is a claim about the shape of
+  // the whole message, not about a substring appearing somewhere in it. On this corpus both
+  // forms return the same 6 rows, so the anchor costs no recall and removes the false
+  // positive.
   function isCommandSession(s) {
-    return !!s.lastUserMessage && String(s.lastUserMessage).replace(/^\s+/, '').indexOf('<command-message>') === 0;
+    return !!s.lastUserMessage && String(s.lastUserMessage).replace(/^\s+/, '').indexOf('<command-name>') === 0;
   }
 
   // ── inbound params — the PINNED cross-pane vocabulary ─────────────────────
