@@ -9,6 +9,22 @@
       "verbs": [
         "GET"
       ]
+    },
+    {
+      "service": "node",
+      "pathPrefix": "/skills/reindex",
+      "verbs": [
+        "POST"
+      ],
+      "exact": true
+    },
+    {
+      "service": "node",
+      "pathPrefix": "/skills/refresh-inventory",
+      "verbs": [
+        "POST"
+      ],
+      "exact": true
     }
   ],
   "dev": {

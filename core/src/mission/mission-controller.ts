@@ -1836,6 +1836,29 @@ export function extractBridgeSid(jsonlTailLines: string[]): string | null {
   return null;
 }
 
+/**
+ * Pure: which cloud handle the controller record may carry.
+ *
+ * `discovered` — "a cloud session that was not in the ACCOUNT list 40 s ago" — is a GUESS, and
+ * the account list contains every `--remote-control` session on the account, including a
+ * human's. Adopting one binds `cs.cse` to a stranger, and every later cloud drive (the pass
+ * directive, cmd id and all) is enqueued into THEIR composer — observed twice, 2026-08-12/13.
+ *
+ * So the guess is only usable when there is no launched native session to ask. When there IS
+ * one, the only acceptable answer is the sid that session DECLARES in its own transcript
+ * (extractBridgeSid). Not declared yet → bind nothing: the supervisor's bridge-sid backfill
+ * fills it in on a later tick from the same authoritative source. A null cse costs one drive
+ * cadence over tmux; a wrong cse types into somebody's session.
+ */
+export function pickControllerCse(opts: {
+  nativeSessionId: string | null;
+  ownBridgeSid: string | null;
+  discovered: string | null;
+}): string | null {
+  if (opts.nativeSessionId) return opts.ownBridgeSid || null;
+  return opts.discovered || null;
+}
+
 export function discoverNewCse(
   baseline: string[],
   snapshots: Array<Array<{ sid: string; status?: string }>>,
@@ -2209,15 +2232,39 @@ export function registerMissionController(
             recordControl(cwd, { at: Date.now(), kind: 'lifecycle', event: resumeSid ? 'resumed' : 'launched', sessionId, tmux });
           }
         } catch { /* advisory */ }
-        // Poll cloudListAccount up to 20 times (~40s) for the new --remote-control cse to register.
+        // Poll up to 20 times (~40s) for the new --remote-control bridge to register.
+        //
+        // Ask the session we JUST LAUNCHED (its transcript declares its own bridge sid), not the
+        // account list. The account list holds every --remote-control session on the account —
+        // a human's included — so "the one that appeared during my launch window" could adopt a
+        // stranger's handle, and every later cloud drive landed in their composer (2026-08-12/13).
+        // The account poll survives only for the case with no native session id to ask.
         const POLL_ATTEMPTS = 20;
         const POLL_INTERVAL_MS = 2000;
+        const ownBridge = (): string | null => {
+          if (!sessionId) return null;
+          try {
+            const { sessionVerdict } = require('../terminal/cc-sessions') as typeof import('../terminal/cc-sessions');
+            const jsonl = sessionVerdict(sessionId).jsonl;
+            if (!jsonl) return null;
+            const fsmod = require('fs') as typeof import('fs');
+            return extractBridgeSid(fsmod.readFileSync(jsonl, 'utf-8').split('\n').slice(-400));
+          } catch { return null; }
+        };
+        let declared: string | null = null;
         let hit: { sid: string } | null = null;
-        for (let i = 0; i < POLL_ATTEMPTS && !hit; i++) {
+        for (let i = 0; i < POLL_ATTEMPTS && !declared && !hit; i++) {
           if (i > 0) await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+          declared = ownBridge();
+          if (declared || sessionId) continue;   // a native session answers for itself — never guess for it
           const cur = await cloudListAccount().catch(() => [] as Array<{ sid: string; status?: string }>);
           hit = pickNewSession(baselineArr, cur);
         }
+        const cse = pickControllerCse({
+          nativeSessionId: sessionId || null,
+          ownBridgeSid: declared,
+          discovered: hit ? hit.sid : null,
+        });
         const cs: ControllerSession = {
           node: thisNode(),
           // Keep the NATIVE session uuid as sessionId (the .jsonl that holds the full transcript) and
@@ -2225,8 +2272,8 @@ export function registerMissionController(
           // the bridge registered → the mission web chat read the controller via the cse (cloud path,
           // sparse client-events) and showed "No turns yet" while the 200-line native transcript was
           // unreachable. Fall back to the cse only when no native uuid resolved.
-          sessionId: sessionId || (hit ? hit.sid : ''),
-          cse: hit ? hit.sid : null,
+          sessionId: sessionId || (cse ?? ''),
+          cse,
           tmux,
           startedAt: Date.now(),
         };
