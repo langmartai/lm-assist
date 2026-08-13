@@ -10,6 +10,7 @@
  */
 
 import * as http from 'http';
+import { loopbackOptions } from '../utils/loopback-http';
 import { currentApiToken } from '../auth/api-token';
 import * as path from 'path';
 import { WebSocketClient } from './websocket-client';
@@ -437,7 +438,11 @@ export class ApiRelayHandler {
         if (lk === 'x-relay-source' || lk === 'x-lm-user-id') delete safeHeaders[k];
       }
 
-      const options: http.RequestOptions = {
+      // loopbackOptions → agent:false. Without it this used http.globalAgent, whose
+      // keepAlive default flipped to true in Node 19, and a relayed request could land on a
+      // pooled socket Core was closing at that instant: no response, then the caller's timeout.
+      // Measured as a 502 on a pane's button while Core answered direct probes in 1–4 ms.
+      const options: http.RequestOptions = loopbackOptions({
         hostname: '127.0.0.1',
         port: targetPort,
         path,
@@ -447,7 +452,7 @@ export class ApiRelayHandler {
           'x-relay-source': 'hub',
           'x-api-key': currentApiToken(),
         },
-      };
+      });
 
       // Only set Content-Type for requests with body (not for web app GETs where Accept might be text/html)
       const hdrs = options.headers as Record<string, string | string[] | undefined>;

@@ -84,6 +84,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import type { AddressInfo } from 'net';
 import { loadOrCreateSecret, mintViewToken, verifyViewToken, verifyViewTokenForProof, verifyEntryToken } from './token';
 import { readDeclaredGrant, grantAllows, resolveDataTarget } from './grants';
+import { loopbackOptions } from '../../utils/loopback-http';
 import { UI_ID_RE, sanitizeNavQuery } from './nav';
 import { listReportableUis } from '../manager';
 
@@ -626,7 +627,7 @@ async function serveAsset(
   }
 
   const target = `/ui-${uiId}/${tail.replace(/^\//, '')}${search}`;
-  const up = http.request({ host: '127.0.0.1', port: opts.uiWebPort, path: target, method: 'GET' }, (r) => {
+  const up = http.request(loopbackOptions({ host: '127.0.0.1', port: opts.uiWebPort, path: target, method: 'GET' }), (r) => {
     // XFO DENY so a pane's SECONDARY html (a sub-page under /ui/<uiId>/…) is not framable
     // either — serveDocument only covers index.html. CORP for the no-cors subresource path.
     const headers: OutHeaders = {
@@ -734,7 +735,7 @@ async function serveData(
   const headers: Record<string, string> = { 'x-api-key': opts.getApiToken() };
   const ct = headerStr(req.headers['content-type']);
   if (ct) headers['content-type'] = ct;
-  const up = http.request({ host: '127.0.0.1', port: opts.apiPort, path: target, method, headers }, (r) => {
+  const up = http.request(loopbackOptions({ host: '127.0.0.1', port: opts.apiPort, path: target, method, headers }), (r) => {
     const outHeaders: OutHeaders = { 'cross-origin-resource-policy': 'same-origin' };
     if (r.headers['content-type']) outHeaders['content-type'] = r.headers['content-type'] as string;
     res.writeHead(r.statusCode || 502, outHeaders);
@@ -848,7 +849,7 @@ function readBody(req: IncomingMessage, cap: number): Promise<Buffer | null> {
 
 function fetchBuffer(port: number, path: string): Promise<FetchResult> {
   return new Promise((resolve, reject) => {
-    const r = http.request({ host: '127.0.0.1', port, path, method: 'GET' }, (up) => {
+    const r = http.request(loopbackOptions({ host: '127.0.0.1', port, path, method: 'GET' }), (up) => {
       const chunks: Buffer[] = [];
       up.on('data', (c: Buffer) => chunks.push(c));
       up.on('end', () => resolve({ status: up.statusCode || 502, body: Buffer.concat(chunks) }));
