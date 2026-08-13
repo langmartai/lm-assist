@@ -114,6 +114,24 @@ served from anywhere the state file's `dir` points — on 117 that is how `hostd
 
 Then reload any pane that was already open in a browser.
 
+## assist-web-scoped panes are NOT deployed here at all (2026-08-13)
+
+Everything above is for **`scope: "lm-assist"`** panes — node data plane, node-hosted. The four
+**`scope: "assist-web"`** panes (assist-home, assist-api-keys, assist-machine, assist-whatsapp)
+talk only to assist-api, so they are **gateway-hosted**: registry `source='local'`, files on the
+SG box under `/home/opc/LangMartDesign/ui-gateway/ui-artifacts/<uiId>/`, serving with **no node
+online**. Their source lives in LangMartDesign `ui-apps/`.
+
+- `syncManagedUis` and the status heartbeat **skip `scope: assist-web`** (`reporter.ts`). Do not
+  remove that skip: one Core boot asserting them would flip the registration back to
+  `source='worker'` and re-tie the panes to that node.
+- Redeploying one of the four = build in LangMartDesign, then rsync `index.html` + `assets/` to
+  the SG path above. No registry change, no gateway restart — artifacts are read per request.
+- Their registry rows are `managed=true` (sticky) with **no file-of-record asserting them**;
+  grant/scope changes for these four are operator SQL on SG (`ui_registry`), like trust.
+- The copies still sitting in `~/.lmui/apps/` on a node are inert for serving via the hub (the
+  gateway never relays for a `source='local'` UI) but are still served by the node-local tier.
+
 If `panes check` reports `PANE SHIM CHECK SKIPPED — cannot resolve the canonical shim`, Core was
 built before this build step existed: run `./core.sh build` again. The check never reports "all
 clear" when it could not actually compare.
