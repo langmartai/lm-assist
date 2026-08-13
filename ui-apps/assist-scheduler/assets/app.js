@@ -315,6 +315,16 @@
     say('test-running "' + id + '"… (captures output; does not advance the schedule)');
     api('node', '/scheduler/jobs/' + encodeURIComponent(id) + '/run', { method: 'POST', body: { test: true } }).then(function (r) {
       if (!r.ok) { if ($('btn-test')) $('btn-test').disabled = false; say('test run failed — ' + r.error.code + ': ' + r.error.message, true); return; }
+      // A job slower than the server's reply budget answers `runPending` — the run STARTED and is
+      // still going, its outcome lands in the run log. (Before the server bounded this reply, such
+      // a job could only ever 502: stall-monitor takes 68-90s against a 30s data-plane cap.)
+      if (r.data && r.data.runPending) {
+        if ($('btn-test')) $('btn-test').disabled = false;
+        say('run started — still going after 20s; it continues in the background. Opening the run log; press Refresh for the result.');
+        state.logsOpen = false;   // toggleLogs() opens AND fetches; it closes when already open
+        toggleLogs();
+        return;
+      }
       // Response is the full job view with `lastRun` set to the captured test record.
       state.selected = r.data || state.selected;
       state.lastWasTest = true;

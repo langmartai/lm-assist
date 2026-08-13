@@ -20,6 +20,43 @@ import { getScheduledJobs } from '../../scheduler/scheduled-jobs';
 
 const JOB_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+/**
+ * How long POST /run waits for the job before answering anyway. Deliberately UNDER the tightest
+ * proxy in front of this route — the pane data plane destroys an upstream at 30 s
+ * (ui-pages/local-tier/server.ts) — because a reply that arrives after the proxy gave up is a 502
+ * no matter how correct it is.
+ */
+export const RUN_REPLY_BUDGET_MS = 20_000;
+
+/**
+ * Pure-ish: the job view to reply with, bounded. Resolves with whatever `running` produced if it
+ * finishes inside the budget; otherwise resolves a `runPending` view so the caller learns the run
+ * STARTED (its outcome lands in the run log) instead of waiting past a proxy's patience.
+ * `now`/`timer` are injectable so a test does not sleep 20 s.
+ */
+export async function runReplyWithinBudget(
+  id: string,
+  running: Promise<unknown>,
+  budgetMs: number = RUN_REPLY_BUDGET_MS,
+): Promise<Record<string, unknown> | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const pending = new Promise<'pending'>((resolve) => {
+    timer = setTimeout(() => resolve('pending'), budgetMs);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+  try {
+    const winner = await Promise.race([running.then((j) => ({ job: j })), pending]);
+    if (winner === 'pending') {
+      return { id, runPending: true, detail:
+        `run started and is still going after ${Math.round(budgetMs / 1000)}s — it continues in the background; ` +
+        'poll GET /scheduler/jobs/' + id + '/logs for the result' };
+    }
+    return (winner as { job: unknown }).job as Record<string, unknown> | null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function sanitizeConfig(c: unknown): Record<string, any> | undefined {
   if (c == null) return undefined;
   if (typeof c !== 'object' || Array.isArray(c)) return undefined;
@@ -99,18 +136,31 @@ export function createSchedulerRoutes(_ctx: RouteContext): RouteHandler[] {
     // POST /scheduler/jobs/:id/run — run now. Body: { dryRun?: true (force preview), test?: true (verify run —
     // captures full output but doesn't advance the schedule / run count) }. Returns the job with `lastRun`
     // (exitCode, durationMs, stdout, stderr) so the caller can verify the result.
+    //
+    // 🔴 The reply is BOUNDED (RUN_REPLY_BUDGET_MS). This handler used to await the whole job, and a
+    // job that outlives the caller's timeout could never answer: measured 2026-08-13, `stall-monitor`
+    // takes 68–90 s while the pane data plane caps an upstream at 30 s, so the Scheduler pane's
+    // "Test run" button returned 502 for it EVERY time — the run itself was fine and the runLog
+    // recorded it seconds later. Past the budget the run keeps going and the reply carries
+    // `runPending: true` instead of `lastRun`; the result lands in the run log the caller already
+    // polls. Fast jobs (the common case) are unaffected and still answer with their captured output.
     {
       method: 'POST',
       pattern: /^\/scheduler\/jobs\/(?<id>[^/?]+)\/run$/,
       handler: async (req) => {
         const id = req.params.id;
         const b = req.body || {};
-        const job = await getScheduledJobs().runJob(id, {
+        const running = getScheduledJobs().runJob(id, {
           force: true,
           dryRunForced: b.dryRun === true,
           trigger: b.test === true ? 'test' : 'manual',
         });
+        // A run that outlives the budget must not become an unhandled rejection when nobody is
+        // awaiting it any more — it is still a real run and the runLog is still its record.
+        running.catch(() => {});
+        const job = await runReplyWithinBudget(id, running);
         if (!job) return { success: false, error: { code: 'NOT_FOUND', message: `No job "${id}"` } };
+        if ((job as { runPending?: boolean }).runPending) return { success: true, data: job };
         if (job.disabledByEnv) {
           // runJob refused (the LM_DISABLE_JOBS kill switch is checked at run time and outranks
           // even an explicit manual run). Say so — returning the unchanged job view here looked
