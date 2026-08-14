@@ -5,7 +5,10 @@
 views, sidebar placement, data plane, and the safety rails. Companion to the
 [gateway auth model](2026-08-04-pluggable-ui-gateway-design.md) (identity/tokens/grants)
 and `docs/ui-panes-deploy.md` (deployment). This spec describes only the contract a pane
-observes; the hub shell's internals are not lm-assist's to document.
+observes; the hub shell's internals are not lm-assist's to document. The vendor-neutral
+form of the serving/embedding contract is normative in the public AUIS spec
+(agentic-ui-spec `SPEC.md` — embedding 5.5, presentation metadata 2.11, since v0.3);
+this document adds the lm-assist house patterns on top.
 
 ## 1. The serving contract
 
