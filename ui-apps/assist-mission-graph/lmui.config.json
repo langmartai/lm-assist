@@ -15,6 +15,6 @@
   },
   "service": "ui-assist-mission-graph",
   "category": "Node",
-  "sortOrder": 130,
+  "sortOrder": 40,
   "managed": true
 }

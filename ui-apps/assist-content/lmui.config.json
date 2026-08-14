@@ -13,6 +13,6 @@
   },
   "service": "ui-assist-content",
   "category": "Node",
-  "sortOrder": 80,
+  "sortOrder": 90,
   "managed": true
 }

@@ -16,6 +16,6 @@
   },
   "service": "ui-assist-projects",
   "category": "Node",
-  "sortOrder": 100,
+  "sortOrder": 120,
   "managed": true
 }

@@ -23,6 +23,6 @@
   },
   "service": "ui-assist-memory",
   "category": "Node",
-  "sortOrder": 30,
+  "sortOrder": 80,
   "managed": true
 }

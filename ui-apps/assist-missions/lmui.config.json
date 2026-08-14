@@ -24,6 +24,6 @@
   },
   "service": "ui-assist-missions",
   "category": "Node",
-  "sortOrder": 120,
+  "sortOrder": 30,
   "managed": true
 }

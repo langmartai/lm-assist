@@ -32,6 +32,6 @@
   },
   "service": "ui-assist-skills",
   "category": "Node",
-  "sortOrder": 110,
+  "sortOrder": 130,
   "managed": true
 }

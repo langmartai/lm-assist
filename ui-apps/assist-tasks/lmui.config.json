@@ -11,6 +11,6 @@
   },
   "service": "ui-assist-tasks",
   "category": "Node",
-  "sortOrder": 90,
+  "sortOrder": 60,
   "managed": true
 }

@@ -14,6 +14,6 @@
   },
   "service": "ui-assist-clusters",
   "category": "Node",
-  "sortOrder": 60,
+  "sortOrder": 140,
   "managed": true
 }

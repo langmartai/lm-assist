@@ -13,6 +13,6 @@
   },
   "service": "ui-assist-scheduler",
   "category": "Node",
-  "sortOrder": 40,
+  "sortOrder": 110,
   "managed": true
 }

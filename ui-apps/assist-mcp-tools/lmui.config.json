@@ -19,6 +19,6 @@
   "dev": { "port": 5601 },
   "service": "ui-assist-mcp-tools",
   "category": "Node",
-  "sortOrder": 70,
+  "sortOrder": 150,
   "managed": true
 }
