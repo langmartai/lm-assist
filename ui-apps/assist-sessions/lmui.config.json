@@ -6,7 +6,15 @@
     { "service": "node", "pathPrefix": "/projects", "verbs": ["GET"], "exact": true },
     { "service": "node", "pathPrefix": "/projects/sessions", "verbs": ["GET"], "exact": true },
     { "service": "node", "pathPrefix": "/projects/*/sessions", "verbs": ["GET"], "exact": true },
-    { "service": "node", "pathPrefix": "/sessions/*", "verbs": ["GET"], "exact": true }
+    { "service": "node", "pathPrefix": "/sessions/*", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/sessions/*/subagents", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/sessions/*/summary", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/sessions/*/skills", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/plans/*", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/sessions/*/session-dag", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/sessions/*/related", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/sessions/*/dag", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/dag/unified/*", "verbs": ["GET"], "exact": true }
   ],
   "dev": {
     "port": 5601

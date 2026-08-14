@@ -422,6 +422,12 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
   // the <select> dropdown shows "All projects" visually but the React state still holds the
   // stale value, causing 0 results.
   useEffect(() => {
+    // Judge "no longer exists" only against the COMPLETE list. While the list is a
+    // truncated first slice (initialLimit), a valid project is usually absent from it —
+    // measured on a 6602-session node the top-10 slice spans ONE of 75 projects — and
+    // clearing here silently killed 74/75 project deep-links before the background fill
+    // landed. The effect re-runs when the fill updates allSessions.
+    if (listTruncated) return;
     if (filters.projectName && allSessions.length > 0 && projectNames.length > 0) {
       const match = allSessions.some(
         s => s.projectName === filters.projectName || s.projectPath === filters.projectName
@@ -430,7 +436,7 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
         setFilters({ projectName: null });
       }
     }
-  }, [filters.projectName, allSessions, projectNames, setFilters]);
+  }, [filters.projectName, allSessions, projectNames, setFilters, listTruncated]);
 
   // Apply client-side filters
   const sessions = useMemo(() => {

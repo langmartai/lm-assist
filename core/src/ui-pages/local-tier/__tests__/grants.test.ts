@@ -347,22 +347,31 @@ const PANE_CALLS: Record<string, { must: Array<[string, string]>; mustNot: Array
       ['POST', '/scheduler/jobs/j-1/run']],
     mustNot: [['POST', '/scheduler/jobs'], ['POST', '/scheduler/jobs/j-1'], ['DELETE', '/scheduler/jobs/j-1']],
   },
-  // Read off assets/app.js, which has exactly THREE `api('node', …)` call sites — :341
-  // (`/projects`), :310 (`/projects/sessions` or `/projects/<key>/sessions`, one or the other per
-  // `state.source`) and :427 (`/sessions/<id>`). Four routes, all GET, no writes anywhere. The
-  // `fetch('/auth/me')` at :754 is the tier's own origin surface, not a data-plane call, so it is
-  // not grant-bearing; `lmui.goto(…)` at :695 is navigation, not a call.
+  // The pane is the ORIGINAL web sessions page bundled (built from web/src/components/sessions
+  // via its pane adapter). Read-only surface: list + detail (`/sessions/<id>`, which also
+  // incidentally covers the 2-segment GET `/sessions/batch-check` poll and `/sessions/summaries`),
+  // the detail-tab leaves (subagents / summary / skills / plans), and the FlowGraph quartet
+  // (session-dag / related / dag / /dag/unified). The Console tab is NOT ported — it would need
+  // session-driving POSTs. `fetch('/auth/me')` is the tier's own origin surface, not grant-bearing.
   'assist-sessions': {
     must: [['GET', '/projects'], ['GET', '/projects/sessions'],
-      ['GET', '/projects/-home-ubuntu-lm-assist/sessions'], ['GET', '/sessions/sid-1']],
+      ['GET', '/projects/-home-ubuntu-lm-assist/sessions'], ['GET', '/sessions/sid-1'],
+      ['GET', '/sessions/batch-check'], ['GET', '/sessions/summaries'],
+      ['GET', '/sessions/sid-1/subagents'], ['GET', '/sessions/sid-1/summary'],
+      ['GET', '/sessions/sid-1/skills'], ['GET', '/plans/2026-08-14-foo.md'],
+      ['GET', '/sessions/sid-1/session-dag'], ['GET', '/sessions/sid-1/related'],
+      ['GET', '/sessions/sid-1/dag'], ['GET', '/dag/unified/sid-1']],
     // 🔴 A session browser that could POST is a session DRIVER. The queue routes are the sharp
     // ones: `POST /sessions/<id>/queue` injects a prompt into a live Claude Code session, and
     // `/rename` rewrites how every other surface names it (sessions.routes.ts:342, :522). The
     // bare `GET /sessions` is out too — the pane pages via /projects/sessions, and the leaf rule
-    // keeps the whole-node dump it never asked for out of reach.
+    // keeps the whole-node dump it never asked for out of reach. The new 3-segment leaves are
+    // exact, so deeper routes (`/sessions/<id>/subagents/<agent>`) stay unreachable.
     mustNot: [['POST', '/sessions/sid-1/queue'], ['POST', '/sessions/sid-1/rename'],
       ['POST', '/sessions/sid-1'], ['DELETE', '/sessions/sid-1'],
       ['GET', '/sessions'], ['GET', '/sessions/sid-1/conversation'],
+      ['POST', '/sessions/batch-check'], ['GET', '/sessions/sid-1/subagents/agent-1'],
+      ['POST', '/ttyd/session/sid-1/start'],
       ['POST', '/projects'], ['POST', '/projects/sessions'],
       ['GET', '/projects/costs'], ['GET', '/projects/p-1'], ['GET', '/projects/p-1/tasks']],
   },

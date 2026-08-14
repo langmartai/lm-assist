@@ -681,6 +681,14 @@ export interface SubagentSessionData {
   parentSessionId: string;
   /** Parent message UUID - links to specific message in parent session that spawned this subagent */
   parentUuid?: string;
+  /**
+   * Position in the PARENT session's timeline, resolved server-side from parentUuid
+   * for agents with no Task invocation (compact / prompt_suggestion / aside_question).
+   * Without these, a client without the raw message stream cannot place — or show —
+   * the agent's conversation at all.
+   */
+  lineIndex?: number;
+  turnIndex?: number;
   /** Working directory */
   cwd: string;
   /** Agent type */
@@ -4596,6 +4604,44 @@ export class AgentSessionStore extends EventEmitter {
             session.parentUuid = invocation.parentUuid;
           }
         }
+      }
+    }
+
+    // Position agents that have NO Task invocation (compact / prompt_suggestion /
+    // aside_question): resolve parentUuid → lineIndex/turnIndex here, where the parent's
+    // raw stream is cached anyway. Clients used to do this from their own copy of the
+    // raw messages — a client on the compact chat-extras payload has none, and its
+    // uuid lookup silently dropped these agents' conversations from the timeline.
+    const unpositioned = sessions.filter(s => s.parentUuid && s.lineIndex === undefined);
+    if (unpositioned.length > 0) {
+      try {
+        const sessionPath = this.getSessionPath(sessionId, resolvedCwd);
+        const cache = getSessionCache();
+        const [raw, cacheData] = await Promise.all([
+          cache.getRawMessages(sessionPath),
+          cache.getSessionData(sessionPath),
+        ]);
+        if (raw) {
+          const uuidLine = new Map<string, number>();
+          for (const m of raw) {
+            if (m?.uuid && m.lineIndex !== undefined) uuidLine.set(m.uuid, m.lineIndex);
+          }
+          const marks = [...(cacheData?.userPrompts || []), ...(cacheData?.responses || [])]
+            .map(x => ({ line: x.lineIndex, turn: x.turnIndex }))
+            .sort((a, b) => a.line - b.line);
+          for (const s of unpositioned) {
+            const line = uuidLine.get(s.parentUuid!);
+            if (line === undefined) continue;
+            s.lineIndex = line;
+            let turn = 0;
+            for (let i = marks.length - 1; i >= 0; i--) {
+              if (marks[i].line <= line) { turn = marks[i].turn; break; }
+            }
+            s.turnIndex = turn;
+          }
+        }
+      } catch {
+        // Positioning is an enrichment — the agent list itself must still return.
       }
     }
 

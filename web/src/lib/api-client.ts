@@ -1776,7 +1776,9 @@ function mapSubagentSession(s: any): import('./types').SubagentSession {
 // Mirrors admin-web SessionDetailView.tsx lines 1059-1296
 // ============================================
 
-function transformSessionResponse(raw: any, sessionId: string): SessionDetail {
+// Exported for the assist-sessions pane bundle (ui-apps/assist-sessions), which reuses
+// this exact transform over the compact chat-extras payload — keep it the single source.
+export function transformSessionResponse(raw: any, sessionId: string): SessionDetail {
   const allMessages: SessionMessage[] = [];
 
   // 1. User prompts -> type: 'human'
