@@ -144,6 +144,10 @@ export function createUiPagesRoutes(_ctx: RouteContext): RouteHandler[] {
             artifactDir: uiId,            // registration validation wants a name; worker source reads from the host
           };
           if (b.grant !== undefined) entry.grant = b.grant;
+          // Advisory host-nav placement (AUIS 2.11) — forwarded only when well-formed,
+          // so a junk value degrades to the gateway defaults instead of a refused write.
+          if (typeof b.category === 'string' && b.category.trim()) entry.category = b.category.trim();
+          if (Number.isFinite(Number(b.sortOrder))) entry.sortOrder = Math.trunc(Number(b.sortOrder));
           const r = await gatewayCall('POST', '/registry/uis', entry);
           // The response carries the uiKey the UI is addressed by and the origin it is
           // served at; keep both so later reads do not have to re-derive either.

@@ -79,6 +79,8 @@ export const uiRegisterToolDef = {
         type: 'array',
         description: 'Declared grant RULES (bare array, at least one — the gateway requires it), e.g. [{"service":"platform","pathPrefix":"/api/models","verbs":["GET"]}]. Services must belong to the scope (langmart→platform, lm-assist→node). More access can be requested at runtime.',
       },
+      category: { type: 'string', description: 'Host-nav group (advisory, AUIS 2.11). Omit = the generic group.' },
+      sortOrder: { type: 'number', description: 'Host-nav position within/across groups (advisory; default 100; ordered sortOrder,name).' },
     },
     required: ['uiId', 'grant'],
   },
@@ -202,6 +204,8 @@ async function handleUiRegister(args: Record<string, unknown>): Promise<McpToolR
     if (args.name) body.name = String(args.name);
     if (args.scope) body.scope = String(args.scope);
     if (args.grant !== undefined) body.grant = args.grant;
+    if (args.category) body.category = String(args.category);
+    if (args.sortOrder !== undefined) body.sortOrder = Number(args.sortOrder);
     const d = await workerPost<{ gatewayStatus: number; response: unknown; uiKey: string | null; url: string | null }>('/ui-pages/register', body);
     if (d.gatewayStatus >= 300) return err(`gateway refused (${d.gatewayStatus}): ${JSON.stringify(d.response)}`);
     const key = d.uiKey ? `\nuiKey (how the gateway addresses it): ${d.uiKey}` : '';
