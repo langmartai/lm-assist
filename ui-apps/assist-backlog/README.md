@@ -40,6 +40,27 @@ discussion-note box. Type / status / priority are select fields carrying the mod
 (`idea|feature|issue|bug|task`, `open|discussing|accepted|deferred|rejected|planned|implemented`,
 `low|med|high|critical`).
 
+## Graph view
+
+A `List | Graph` tab bar switches to a whole-graph rendering of `GET /backlog/graph`
+(covered by the same `node:/backlog/*` leaf rule — no grant change). Plain hand-rolled
+SVG, because the pane's CSP forbids any external chart library:
+
+- **Nodes** = items, colored by status, radius by priority; degree-0 items sit in a grid
+  strip under the force-laid (Fruchterman–Reingold) linked subgraph so they don't scatter
+  the layout. **Edges** are typed — kind → CSS class; directed kinds (`depends-on`,
+  `blocks`, `parent-of`, `spawned-mission`) get a computed arrowhead polygon (SVG markers
+  can't take per-kind CSS color reliably).
+- Interactions: wheel-zoom (clamped), background pan, node drag (incident edges follow),
+  hover dims everything but the node's neighborhood, click opens an info card whose
+  "open details" jumps back to the list view with that item loaded.
+- The graph is fetched lazily on first tab switch and re-fetched after any successful
+  create/edit/note (`G.loaded = false`) or via the toolbar's refresh; "include removed"
+  is a separate toggle from the list's (separate fetches, per-view state).
+- 🔴 The loading/error overlay (`.g-msg`) sets `display:flex`, which would silently beat
+  the `hidden` attribute's UA `display:none` and eat every pointer event over the SVG —
+  `.g-msg[hidden]{display:none}` restores it. Keep that rule when touching the CSS.
+
 ## Deploy
 
 The integrator registers it; the manual path is:

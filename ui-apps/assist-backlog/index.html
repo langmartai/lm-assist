@@ -13,7 +13,28 @@
   <h1>Backlog<span class="chip">assist-backlog</span><span class="chip">scope: lm-assist</span></h1>
   <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
 </header>
+<nav class="tabs" id="tabs">
+  <button id="tab-list" class="tab on" type="button">List</button>
+  <button id="tab-graph" class="tab" type="button">Graph</button>
+</nav>
 <main>
+  <section class="pane pane-graph" id="graph-pane" hidden>
+    <div class="g-toolbar">
+      <span id="g-stats" class="g-stats">…</span>
+      <label class="chk"><input type="checkbox" id="g-removed"> include removed</label>
+      <span class="g-sp"></span>
+      <button id="g-fit" class="ghost" type="button">fit</button>
+      <button id="g-relayout" class="ghost" type="button">re-layout</button>
+      <button id="g-refresh" class="ghost" type="button">refresh</button>
+    </div>
+    <div id="g-wrap" class="g-wrap">
+      <svg id="g-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="g-msg" class="g-msg" hidden></div>
+      <div id="g-card" class="g-card" hidden></div>
+      <div id="g-legend" class="g-legend"></div>
+    </div>
+  </section>
+
   <section class="pane pane-list">
     <div class="filters">
       <input id="q" class="q" type="text" placeholder="filter title / id / tag…" autocomplete="off">
