@@ -2,7 +2,7 @@
   --bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
-/* fill the shell content panel: the pane iframe is flex-1 (lmui:height = liveness only), so 100vh in embed IS the panel height */
+/* fill the shell content panel: the shell panel-fixes the pane iframe (lmui:height = liveness only), so 100vh in embed IS the panel height */
 :root{--vh-cap:calc(100vh - 27rem)}
 body.embed{--vh-cap:calc(100vh - 21.3rem)}
 *{box-sizing:border-box}

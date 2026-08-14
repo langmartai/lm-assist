@@ -57,8 +57,10 @@ check` is what tells you whether the *deployed* ones did.
 
 ## Pane sizing — fill the shell's content panel
 
-The assist-web shell (`/p/<uiId>`) gives the pane iframe the **full content panel**
-(`flex-1 min-h-0`); the pane's `lmui:height` postMessage is a **liveness signal only**,
+> Full authoring reference: `docs/superpowers/specs/2026-08-14-pane-authoring-reference-design.md`.
+
+The hub shell (`/p/<uiId>`) gives the pane iframe the **full content panel**;
+the pane's `lmui:height` postMessage is a **liveness signal only**,
 not sizing. Consequences every pane must honor:
 
 - **`100vh` inside the embed IS the panel height.** Size the primary content region(s)

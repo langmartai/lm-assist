@@ -5,7 +5,7 @@
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
-/* fill the shell content panel: the pane iframe is flex-1 (lmui:height = liveness only), so 100vh in embed IS the panel height */
+/* fill the shell content panel: the shell panel-fixes the pane iframe (lmui:height = liveness only), so 100vh in embed IS the panel height */
 :root{--vh-cap:calc(100vh - 19rem)}
 body.embed{--vh-cap:calc(100vh - 14.6rem)}
 

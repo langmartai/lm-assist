@@ -45,8 +45,8 @@ discussion-note box. Type / status / priority are select fields carrying the mod
 The **Graph is the landing view** — a `Graph | List` tab bar (graph first; the list is
 fetched lazily on first List-tab entry) renders `GET /backlog/graph` (covered by the same
 `node:/backlog/*` leaf rule — no grant change). In graph mode the 80rem content cap is
-lifted and the canvas fills the viewport height (standalone; the embedded pane keeps its
-fixed height — vh inside the shell's iframe is the very height reportHeight defines). It uses the HOUSE
+lifted and the canvas fills the viewport height in BOTH modes — the shell panel-fixes the
+pane iframe, so 100vh in the embed IS the panel height (`lmui:height` is liveness only). It uses the HOUSE
 graph pattern, ported from `assist-mission-graph` (itself from
 `web/src/lib/mission-layout.ts`) so every graph surface lays out and feels the same:
 

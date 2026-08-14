@@ -2,7 +2,7 @@
   --bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
-/* fill the shell content panel: the pane iframe is flex-1 (lmui:height = liveness only), so 100vh in embed IS the panel height */
+/* fill the shell content panel: the shell panel-fixes the pane iframe (lmui:height = liveness only), so 100vh in embed IS the panel height */
 :root{--vh-cap:calc(100vh - 24rem)}
 body.embed{--vh-cap:calc(100vh - 18.3rem)}
 *{box-sizing:border-box}
@@ -117,7 +117,7 @@ body.view-graph .tabs{max-width:none}
 .g-sel{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.25rem .4rem;font-size:.74rem}
 .g-canvas{position:relative;overflow:hidden;height:34rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;touch-action:none;cursor:grab}
 /* Fill the viewport below the surrounding chrome in BOTH modes. The assist-web shell
-   gives the pane iframe the FULL content panel (flex-1; lmui:height is liveness only),
+   gives the pane iframe the FULL content panel (lmui:height is liveness only),
    so 100vh inside the embed IS the panel height — the offset differs only because the
    embed hides the header. The bare 34rem above is a fallback for any other embedder. */
 body:not(.embed) .g-canvas{height:calc(100vh - 13.5rem);min-height:22rem}

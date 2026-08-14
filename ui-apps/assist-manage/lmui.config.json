@@ -9,5 +9,7 @@
     { "service": "node", "pathPrefix": "/ui-pages/control", "verbs": ["POST"], "exact": true },
     { "service": "node", "pathPrefix": "/ui-pages/registry/*", "verbs": ["DELETE"], "exact": true }
   ],
-  "managed": true
+  "managed": true,
+  "category": "Tools",
+  "sortOrder": 10
 }
