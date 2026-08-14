@@ -55,6 +55,30 @@ check` is what tells you whether the *deployed* ones did.
 
 **Full procedure and rationale: [docs/ui-panes-deploy.md](../docs/ui-panes-deploy.md).**
 
+## Pane sizing — fill the shell's content panel
+
+The assist-web shell (`/p/<uiId>`) gives the pane iframe the **full content panel**
+(`flex-1 min-h-0`); the pane's `lmui:height` postMessage is a **liveness signal only**,
+not sizing. Consequences every pane must honor:
+
+- **`100vh` inside the embed IS the panel height.** Size the primary content region(s)
+  with the shared var pattern (all 15 plain-JS panes carry it, assist-backlog is the
+  reference):
+  ```css
+  :root{--vh-cap:calc(100vh - <A>rem)}       /* A = standalone chrome around the region */
+  body.embed{--vh-cap:calc(100vh - <B>rem)}  /* B ≈ A − 4.4 (header 3.2 + main-padding 1.2);
+                                                backlog's − 5.7 also reclaims its external tabs bar */
+  ```
+  Fixed-height canvases → `height:var(--vh-cap)` + a `min-height` floor; capped lists →
+  `max-height:max(var(--vh-cap), <floor>rem)` so short content stays compact. Compute A
+  from the pane's actual markup, generous by ~1rem.
+- 🔴 **`body.embed{overflow:hidden}` is a RELIC — it must be `auto`.** The hidden came
+  from the old content-sized-iframe contract (scrollbar feedback guard). With the iframe
+  panel-fixed, `hidden` makes everything past `100vh` UNREACHABLE (measured: the tasks
+  kanban had 2000+ px of clipped, unscrollable board). All panes now say `overflow:auto`.
+- The four bundled `assist-web` panes (home, api-keys, machine, whatsapp) are Tailwind
+  full-height apps (`html,body{height:100%}`) — already compliant, nothing to retrofit.
+
 ## The grant language
 
 Each app declares its data-plane ceiling in its own `lmui.config.json`:

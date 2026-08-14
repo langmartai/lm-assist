@@ -2,6 +2,9 @@
   --bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
+/* fill the shell content panel: the pane iframe is flex-1 (lmui:height = liveness only), so 100vh in embed IS the panel height */
+:root{--vh-cap:calc(100vh - 13.5rem)}
+body.embed{--vh-cap:calc(100vh - 9.1rem)}
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
@@ -87,7 +90,7 @@ main{display:grid;grid-template-columns:16rem minmax(0,1fr) 20rem;gap:1rem;paddi
 .khead{display:flex;align-items:center;gap:.35rem;margin-bottom:.4rem;font-size:.72rem;font-weight:600}
 .kdot{width:.5rem;height:.5rem;border-radius:50%;background:currentColor;flex:none}
 .klbl{flex:1;min-width:0;color:var(--txt)}
-.kbody{display:flex;flex-direction:column;gap:.35rem;max-height:32rem;overflow:auto}
+.kbody{display:flex;flex-direction:column;gap:.35rem;max-height:max(var(--vh-cap),18rem);overflow:auto}
 .kempty{color:var(--dim);font-size:.7rem;text-align:center;padding:.6rem 0}
 
 .card{border:1px solid var(--line);border-left:3px solid var(--line);background:var(--panel);border-radius:7px;padding:.4rem .5rem;cursor:pointer}
@@ -102,7 +105,7 @@ main{display:grid;grid-template-columns:16rem minmax(0,1fr) 20rem;gap:1rem;paddi
 .dep-blk{color:var(--blue2)}
 
 /* ── list view ─────────────────────────────────────────────────────────── */
-.list{display:flex;flex-direction:column;gap:.2rem}
+.list{display:flex;flex-direction:column;gap:.2rem;max-height:max(var(--vh-cap),18rem);overflow:auto}
 .row{display:grid;grid-template-columns:3rem minmax(0,1fr) auto 8rem;gap:.5rem;align-items:center;border:1px solid var(--line);border-left:3px solid var(--line);background:var(--panel2);border-radius:7px;padding:.35rem .55rem;cursor:pointer}
 @media (max-width:640px){.row{grid-template-columns:3rem minmax(0,1fr);row-gap:.2rem}.row .rproj{grid-column:1 / -1}}
 .row:hover{border-color:var(--blue2)}
@@ -166,7 +169,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .fatal-msg{font-family:ui-monospace,monospace;font-size:.78rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.7rem .85rem;white-space:pre-wrap;word-break:break-word;color:var(--txt);max-height:16rem;overflow:auto;margin:0 0 .9rem}
 
 /* ── embedded in the app shell: drop own chrome + background (sibling-pane contract) ── */
-body.embed{background:transparent;overflow:hidden}
+/* overflow:hidden was the OLD content-sized-iframe contract (scrollbar feedback guard);
+   the shell now fixes the iframe to the panel, so overflowing flow-content must SCROLL,
+   not vanish */
+body.embed{background:transparent;overflow:auto}
 body.embed,html:has(body.embed){height:auto}
 body.embed header{display:none}
 body.embed main{margin:0;padding:.4rem;max-width:none}

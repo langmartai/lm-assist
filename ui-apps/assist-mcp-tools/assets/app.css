@@ -2,6 +2,11 @@
   --bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
+/* fill the shell content panel: the pane iframe is flex-1 (lmui:height = liveness only), so 100vh in embed IS the panel height */
+/* 26rem = header 3.2 + main paddings 2 + pending 2.5 + ledger 2 + tabs 1.7 + main gaps 2.4 + pane paddings 1.8
+   + filters 7.9 + counts 1.6 + ~1 slack; the embed offset drops the header (3.2) and shrinks main padding (1.2). */
+:root{--vh-cap:calc(100vh - 26rem)}
+body.embed{--vh-cap:calc(100vh - 21.5rem)}
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
@@ -79,7 +84,7 @@ main{display:flex;flex-direction:column;gap:.8rem;padding:1rem;max-width:82rem;m
    must never share a name; the collision is invisible until both happen to land on one node. */
 .selbox{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.22rem .4rem;font-size:.74rem;max-width:11rem}
 
-.list{display:flex;flex-direction:column;gap:.3rem;max-height:36rem;overflow:auto}
+.list{display:flex;flex-direction:column;gap:.3rem;max-height:var(--vh-cap);overflow:auto}
 .grp{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.5rem}
 .grp-h{font-size:.66rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);padding:.25rem 0 .1rem}
 .grp-n{font-weight:400}
@@ -132,7 +137,7 @@ main{display:flex;flex-direction:column;gap:.8rem;padding:1rem;max-width:82rem;m
 /* descriptions, schemas and handler source: plain-text monospace, pre-wrap — there is
    no markdown/highlighting library in any pane and adding one breaks the CSP rule. */
 .mono{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.55rem .7rem;font-size:.74rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin:0;max-height:20rem;overflow:auto;font-family:ui-monospace,monospace}
-.mono.tall{max-height:26rem}
+.mono.tall{max-height:var(--vh-cap)}
 .mono.dashed{border-style:dashed}
 .mono.none{color:var(--dim);font-style:italic;font-family:inherit}
 .ta{width:100%;min-height:8rem;resize:vertical;background:var(--bg);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.5rem .65rem;font-family:ui-monospace,monospace;font-size:.76rem;line-height:1.5}
@@ -176,7 +181,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .fatal-msg{font-family:ui-monospace,monospace;font-size:.78rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.7rem .85rem;white-space:pre-wrap;word-break:break-word;color:var(--txt);max-height:16rem;overflow:auto;margin:0 0 .9rem}
 
 /* ── embedded in the app shell: drop own chrome + background (sibling-pane contract) ── */
-body.embed{background:transparent;overflow:hidden}
+/* overflow:hidden was the OLD content-sized-iframe contract (scrollbar feedback guard);
+   the shell now fixes the iframe to the panel, so overflowing flow-content must SCROLL,
+   not vanish */
+body.embed{background:transparent;overflow:auto}
 body.embed,html:has(body.embed){height:auto}
 body.embed header{display:none}
 body.embed main{margin:0;padding:.4rem;max-width:none}

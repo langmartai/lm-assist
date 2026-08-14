@@ -2,6 +2,9 @@
   --bg:#0f172a;--panel:#1e293b;--panel2:#0b1220;--line:#334155;--txt:#e2e8f0;--dim:#94a3b8;
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
+/* fill the shell content panel: the pane iframe is flex-1 (lmui:height = liveness only), so 100vh in embed IS the panel height */
+:root{--vh-cap:calc(100vh - 27rem)}
+body.embed{--vh-cap:calc(100vh - 21.3rem)}
 *{box-sizing:border-box}
 /* 🔴 A class/element `display` rule OUTRANKS the UA sheet's `[hidden]{display:none}` — the UA
    sheet is the weakest origin, so ANY author rule beats it. Half this pane's regions are
@@ -35,7 +38,7 @@ main{display:grid;grid-template-columns:22rem minmax(0,1fr);gap:1rem;padding:1re
 .fchip{font-size:.7rem;border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:999px;padding:.1rem .5rem;cursor:pointer;font-family:ui-monospace,monospace}
 .fchip.on{background:var(--blue);border-color:var(--blue);color:#fff}
 
-.list{display:flex;flex-direction:column;gap:.3rem;max-height:36rem;overflow:auto}
+.list{display:flex;flex-direction:column;gap:.3rem;max-height:max(var(--vh-cap),18rem);overflow:auto}
 .grp{font-size:.66rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin:.65rem 0 .1rem}
 .grp .grp-n{font-weight:400}
 .row{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:.45rem .6rem;cursor:pointer}
@@ -85,7 +88,7 @@ main{display:grid;grid-template-columns:22rem minmax(0,1fr);gap:1rem;padding:1re
 .inv-body{margin:0;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,monospace;font-size:.7rem;line-height:1.5;color:var(--dim);max-height:14rem;overflow:auto}
 
 /* doc bodies: markdown rendered as PLAIN TEXT pre-wrap — no md/mermaid library */
-.content{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.6rem .75rem;font-size:.76rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin:0;max-height:40rem;overflow:auto;font-family:ui-monospace,monospace}
+.content{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.6rem .75rem;font-size:.76rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin:0;max-height:max(var(--vh-cap),16rem);overflow:auto;font-family:ui-monospace,monospace}
 a.doclink{color:var(--blue2);border-bottom:1px dotted var(--blue2);cursor:pointer;text-decoration:none}
 a.doclink:hover{color:#fff;border-bottom-color:#fff}
 
@@ -140,7 +143,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .fatal-msg{font-family:ui-monospace,monospace;font-size:.78rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:.7rem .85rem;white-space:pre-wrap;word-break:break-word;color:var(--txt);max-height:16rem;overflow:auto;margin:0 0 .9rem}
 
 /* ── embedded in the app shell: drop own chrome + background (sibling-pane contract) ── */
-body.embed{background:transparent;overflow:hidden}
+/* overflow:hidden was the OLD content-sized-iframe contract (scrollbar feedback guard);
+   the shell now fixes the iframe to the panel, so overflowing flow-content must SCROLL,
+   not vanish */
+body.embed{background:transparent;overflow:auto}
 body.embed,html:has(body.embed){height:auto}
 body.embed header{display:none}
 body.embed main{margin:0;padding:.4rem;max-width:none}
