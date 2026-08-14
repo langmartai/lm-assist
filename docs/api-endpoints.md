@@ -116,7 +116,9 @@ Server-sent events with `execution_update` events. Omit `executionId` for all ev
 | Param | Default | Description |
 |-------|---------|-------------|
 | `cwd` | default project | Project directory to search in |
-| `includeRawMessages` | false | Include raw JSONL lines |
+| `includeRawMessages` | false | Include raw JSONL lines (HEAVY: measured 7.8 MB vs 512 KB on a 2707-turn session — prefer the two compact params below for chat views) |
+| `includeToolResults` | false | Compact `toolResults[]`: result text per `tool_use` id (`{toolUseId, content, isError?, truncated?, fullLength?, lineIndex}`), window-filtered, server-capped at 4000 chars/entry |
+| `includeSystemMessages` | false | Compact `systemMessages[]`: system/summary rows (`{type, subtype?, content, lineIndex, timestamp?, durationMs?}`), server-capped at 2000 chars/entry |
 | `includeReads` | false | Include read-only file operations |
 | `fromLineIndex` / `toLineIndex` | — | Filter by JSONL line range |
 | `fromTurnIndex` / `toTurnIndex` | — | Filter by turn range |

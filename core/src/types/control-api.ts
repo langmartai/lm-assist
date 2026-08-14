@@ -1123,6 +1123,10 @@ export interface SessionsApi {
   getSession(sessionId: string, options?: {
     cwd?: string;
     includeRawMessages?: boolean;
+    /** Include compact per-tool_use result texts (toolResults[]) without the raw message stream */
+    includeToolResults?: boolean;
+    /** Include compact system/summary rows (systemMessages[]) without the raw message stream */
+    includeSystemMessages?: boolean;
     /** Include read-only file operations in fileChanges (excluded by default) */
     includeReads?: boolean;
     // ─── Line Index Filters (JSONL file line number) ───
@@ -1380,6 +1384,29 @@ export interface SessionDataResponse {
     commitMessage?: string;
     pr?: string;
     turnIndex?: number;
+  }>;
+  /**
+   * Compact tool results (only when includeToolResults=true): result text per
+   * tool_use id, window-filtered like every other array and server-capped —
+   * exists because includeRawMessages is 15x the payload for the same information.
+   */
+  toolResults?: Array<{
+    toolUseId: string;
+    content: string;
+    isError?: boolean;
+    truncated?: boolean;
+    fullLength?: number;
+    lineIndex?: number;
+  }>;
+  /** Compact system/summary rows (only when includeSystemMessages=true), server-capped */
+  systemMessages?: Array<{
+    type: 'system' | 'summary';
+    subtype?: string;
+    content: string;
+    truncated?: boolean;
+    lineIndex?: number;
+    timestamp?: string;
+    durationMs?: number;
   }>;
 }
 

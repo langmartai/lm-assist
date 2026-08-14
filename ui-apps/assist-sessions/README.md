@@ -51,12 +51,29 @@ mechanical slash→dash transform of the path (`/home/ubuntu/.nvm/…/lm-assist/
 | **Console tab** (`tabs/ConsoleTab.tsx`) | It is a live terminal — ttyd/WebSocket attach to a running PID. **Streaming across the pane data plane is a separate, still-blocked backlog item.** Nothing here opens a socket. |
 | **The unified batch poll loop** (`SessionBrowser.tsx`) + the staleness watchdog | Live-refresh machinery. It also needs `POST /sessions/batch-check` — a write verb for a read, which would widen a deliberately GET-only grant. Replaced by explicit **refresh** buttons on the list and the detail. |
 | **Plans, Skills, Commands, FlowGraph tabs** | Each needs a route outside this grant (`/plans/*`, `/skills/*`, `/sessions/:id/dag`). Deliberately not requested — a tab is not worth a wider ceiling. |
-| **Raw-message JSON** (`includeRawMessages=true`) | Measured 2.1 MB vs 253 KB on the same 245-turn session, for text the pre-parsed arrays already carry. The JSON tab dumps the *fetched* detail instead (capped at 240 000 chars, and says so). |
+| **Raw-message JSON** (`includeRawMessages=true`) | Measured 2.1 MB vs 253 KB on the same 245-turn session (and 7.8 MB vs 512 KB on a 2707-turn one), for text the pre-parsed arrays already carry. Tool results and system rows come from the COMPACT `includeToolResults` / `includeSystemMessages` params instead (server-capped, window-filtered; +236 KB on that same big session). The JSON tab dumps the *fetched* detail (capped at 240 000 chars, and says so). |
 | Machine picker / multi-node | A pane is served **by one node** and its data plane targets that node. There is no `machineId` to pick. |
 | Mobile stack navigation, fullscreen, localStorage tab memory | Shell concerns; the pane is a two-column grid that collapses to one column under 900 px. |
 
 Everything the detail route actually returns **is** rendered: eleven tabs — Chat, Thinking,
 Tools, Files, Git, DB, Tasks, Agents, Team, Meta, JSON.
+
+## Rendering parity with the original sessions page (2026-08-15)
+
+The Chat/Thinking/Tools views render like the original `web/` page, not as raw `<pre>` dumps:
+
+- **Markdown** for user / assistant / thinking / system bodies via a built-in escape-first
+  renderer (`md()` in `app.js`): fences, headings, lists (one nesting level), GFM tables,
+  blockquotes, links (`http(s)` only), bold/italic/strike/inline code. The whole source is
+  HTML-escaped BEFORE structure is recognized — no input can open a tag.
+- **Tool calls** get the original's smart one-liner (`Update(/path/file.ts)`, ported
+  `formatToolCall`), a per-tool structured detail (Edit ±diff preview, Write line count,
+  Bash long-command + description, Task prompt, TodoWrite checklist, ExitPlanMode plan), and
+  the paired **tool result** (color-coded by tool, error-flagged, honest cap notice).
+- **System rows** appear in Chat: housekeeping subtypes (`turn_duration`, `stop_hook_summary`,
+  `init`) as thin one-liners, real content (compact boundaries etc.) as full markdown rows.
+- Slash-command prompts collapse their XML envelope to the command actually typed, badged
+  with their `promptType` (`command`, `command_output`, `system_caveat`, `hook_result`).
 
 ## Inbound params (read on load from `location.search`)
 

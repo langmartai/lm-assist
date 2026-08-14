@@ -52,6 +52,8 @@
   }
 
   var $ = function (id) { return document.getElementById(id); };
+  // Server-data-keyed lookups must not fall through to Object.prototype.
+  function own(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -444,7 +446,11 @@
     state.detailState = 'loading';
     paintList();
     paintDetail();
-    return api('node', '/sessions/' + encodeURIComponent(sid) + '?lastNUserPrompts=' + state.prompts)
+    // includeToolResults/includeSystemMessages are the COMPACT chat extras (server-capped,
+    // window-filtered): measured 748KB vs 7.8MB for includeRawMessages on a 2707-turn
+    // session at the default window. Never switch this to includeRawMessages.
+    return api('node', '/sessions/' + encodeURIComponent(sid) + '?lastNUserPrompts=' + state.prompts
+      + '&includeToolResults=true&includeSystemMessages=true')
       .then(function (r) {
         if (state.selectedId !== sid) return;           // a newer click won
         if (!r.ok) {
@@ -477,34 +483,332 @@
   }
   function emptyTab(what) { return '<div class="empty-list">No ' + esc(what) + ' in the loaded window.</div>'; }
   function pre(text, cls) { return '<pre class="blk' + (cls ? ' ' + cls : '') + '">' + esc(text) + '</pre>'; }
+  function tcut(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; }
 
-  // Compact one tool input to a single line without ever rendering it as HTML.
-  function toolSummary(input) {
-    if (input == null) return '';
-    if (typeof input === 'string') return input;
-    var s;
-    try { s = JSON.stringify(input); } catch (e) { s = String(input); }
-    return s.length > 400 ? s.slice(0, 400) + ' …' : s;
+  // ── markdown (ported from the original sessions page, which renders user/
+  //    assistant/system bodies as GFM) ─────────────────────────────────────
+  // Safe by construction: the WHOLE source is esc()'d first, then structure is
+  // recognized on the escaped text — no input character can open a tag; only
+  // this renderer's own literals become HTML. Escaping introduces no '|', '*',
+  // '`', '#' or newlines, so the block/inline grammar sees the original shape.
+  function mdInline(s) {
+    // s is already escaped. Code spans are cut out FIRST and their content is
+    // emitted untouched — emphasis/link passes only ever see non-code segments.
+    function emphasized(seg) {
+      seg = seg.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      seg = seg.replace(/(^|[\s(])\*([^*\s](?:[^*]*[^*\s])?)\*/g, '$1<em>$2</em>');
+      seg = seg.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+      // Links: [text](http…) only, scheme-checked; quotes are already escaped so
+      // the attribute cannot be broken out of.
+      seg = seg.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      return seg;
+    }
+    // Code spans pair by GFM's rule: a run of N backticks closes with the next
+    // run of EXACTLY N (so `` `x` `` nests a literal backtick). Unpaired runs
+    // stay literal backticks.
+    var toks = s.split(/(`+)/);
+    var acc = '', k = 0;
+    while (k < toks.length) {
+      var tok = toks[k];
+      if (tok.charAt(0) !== '`') { acc += emphasized(tok); k++; continue; }
+      var close = -1;
+      for (var c = k + 2; c < toks.length; c += 2) {
+        if (toks[c] === tok) { close = c; break; }
+      }
+      if (close < 0) { acc += tok; k++; continue; }
+      var code = toks.slice(k + 1, close).join('');
+      // GFM strips ONE leading+trailing space when both are present and content remains
+      if (code.length > 2 && code.charAt(0) === ' ' && code.charAt(code.length - 1) === ' ') code = code.slice(1, -1);
+      acc += '<code>' + code + '</code>';
+      k = close + 1;
+    }
+    return acc;
+  }
+  // Block-level renderer over ESCAPED lines; blockquotes recurse (depth-capped).
+  function mdBlocks(lines, depth) {
+    var out = [], i = 0, m;
+    var pbuf = [];
+    function inlineJoined(arr) {
+      // Inline over the JOINED text so emphasis/code spans cross soft breaks,
+      // then soft breaks become <br>.
+      return mdInline(arr.join('\n')).replace(/\n/g, '<br>');
+    }
+    function para() {
+      if (pbuf.length) out.push('<p>' + inlineJoined(pbuf) + '</p>');
+      pbuf.length = 0;
+    }
+    while (i < lines.length) {
+      var ln = lines[i];
+      // fenced code block: 3+ backticks, up to 3 leading spaces (lists indent
+      // their fences); closes on a same-or-longer run
+      if ((m = ln.match(/^ {0,3}(`{3,})(\S*)\s*$/))) {
+        para();
+        var fenceLen = m[1].length;
+        var lang = m[2];
+        var body = [];
+        i++;
+        var closeRe = /^ {0,3}(`{3,})\s*$/;
+        var cm;
+        while (i < lines.length && !((cm = lines[i].match(closeRe)) && cm[1].length >= fenceLen)) {
+          body.push(lines[i]); i++;
+        }
+        i++; // past the closing fence (or EOF)
+        out.push('<pre class="md-code"' + (lang ? ' data-lang="' + lang + '"' : '') + '><code>'
+          + body.join('\n') + '</code></pre>');
+        continue;
+      }
+      // blank line = paragraph break
+      if (!ln.trim()) { para(); i++; continue; }
+      // heading
+      if ((m = ln.match(/^(#{1,6})\s+(.*)$/))) {
+        para();
+        out.push('<div class="md-h md-h' + m[1].length + '">' + mdInline(m[2]) + '</div>');
+        i++; continue;
+      }
+      // hr
+      if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(ln)) { para(); out.push('<hr>'); i++; continue; }
+      // blockquote run — strip the markers and RECURSE so quoted lists/fences render
+      if (/^\s*&gt;/.test(ln)) {
+        para();
+        var q = [];
+        while (i < lines.length && /^\s*&gt;/.test(lines[i])) {
+          q.push(lines[i].replace(/^\s*&gt;\s?/, ''));
+          i++;
+        }
+        out.push('<blockquote>' + (depth < 4
+          ? mdBlocks(q, depth + 1)
+          : '<p>' + inlineJoined(q) + '</p>') + '</blockquote>');
+        continue;
+      }
+      // table: a |-row whose next line is the separator row
+      if (ln.indexOf('|') >= 0 && i + 1 < lines.length
+          && /^[\s|:-]+$/.test(lines[i + 1]) && lines[i + 1].indexOf('-') >= 0
+          && lines[i + 1].indexOf('|') >= 0) {
+        para();
+        var cells = function (row) {
+          // \| is an escaped pipe inside a cell (GFM) — hide it from the split
+          // behind \x01 (esc() never emits control chars) and restore afterwards
+          return row.replace(/\\\|/g, '\x01').replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|')
+            .map(function (c) { return mdInline(c.trim()).replace(/\x01/g, '|'); });
+        };
+        var t = '<div class="md-tblwrap"><table><thead><tr>'
+          + cells(ln).map(function (c) { return '<th>' + c + '</th>'; }).join('') + '</tr></thead><tbody>';
+        i += 2;
+        while (i < lines.length && lines[i].indexOf('|') >= 0 && lines[i].trim()) {
+          t += '<tr>' + cells(lines[i]).map(function (c) { return '<td>' + c + '</td>'; }).join('') + '</tr>';
+          i++;
+        }
+        out.push(t + '</tbody></table></div>');
+        continue;
+      }
+      // list run (one nesting level: 2+ spaces of indent). The consuming match IS
+      // the loop condition, so a line the guard liked but the consumer rejects can
+      // never spin — it falls through to the paragraph fallback below.
+      if (/^(\s*)([-*+]|\d{1,9}\.)\s+/.test(ln)) {
+        para();
+        var items = [];
+        while (i < lines.length && (m = lines[i].match(/^(\s*)([-*+]|\d{1,9}\.)\s+(.*)$/))) {
+          items.push({ deep: m[1].length >= 2, num: parseInt(m[2], 10), text: mdInline(m[3]) });
+          i++;
+        }
+        if (items.length) {
+          var top = !isNaN(items[0].num);
+          // "released in\n2024. It…" is an ordered item in GFM too — keep the
+          // number via start= so the text's meaning survives (digits only, safe).
+          var h = top ? '<ol' + (items[0].num !== 1 ? ' start="' + items[0].num + '"' : '') + '>' : '<ul>';
+          var j = 0;
+          while (j < items.length) {
+            h += '<li>' + items[j].text; // an orphan deep first item just flattens
+            j++;
+            if (j < items.length && items[j].deep) {
+              var sub = !isNaN(items[j].num);
+              h += (sub ? '<ol' + (items[j].num !== 1 ? ' start="' + items[j].num + '"' : '') + '>' : '<ul>');
+              while (j < items.length && items[j].deep) { h += '<li>' + items[j].text + '</li>'; j++; }
+              h += (sub ? '</ol>' : '</ul>');
+            }
+            h += '</li>';
+          }
+          out.push(h + (top ? '</ol>' : '</ul>'));
+          continue;
+        }
+      }
+      pbuf.push(ln);
+      i++;
+    }
+    para();
+    return out.join('');
+  }
+  function md(src) {
+    // Normalize exotic line endings FIRST: a stray \r once made a guard regex
+    // match a line its consuming regex then rejected — an infinite loop that
+    // hard-froze the pane.
+    var text = String(src == null ? '' : src)
+      .replace(/\r\n?/g, '\n').replace(/[\u2028\u2029]/g, '\n');
+    return '<div class="md">' + mdBlocks(esc(text).split('\n'), 0) + '</div>';
+  }
+
+  // ── tool display (ported from the original page's formatToolCall +
+  //    ToolCallDetail + ToolResultBlock) ───────────────────────────────────
+  function fmtTool(name, input) {
+    var inp = input || {};
+    switch (name) {
+      case 'Read': return { name: 'Read', args: String(inp.file_path || inp.path || '') };
+      case 'Edit': return { name: 'Update', args: String(inp.file_path || inp.path || '') };
+      case 'Write': return { name: 'Write', args: String(inp.file_path || inp.path || '') };
+      case 'NotebookEdit': return { name: 'NotebookEdit', args: String(inp.notebook_path || '') };
+      case 'Bash': return { name: 'Bash', args: tcut(inp.command || inp.cmd || '', 120) };
+      case 'Grep': return { name: 'Grep', args: 'pattern="' + (inp.pattern || '') + '"' + (inp.path ? ', path=' + inp.path : '') };
+      case 'Glob': return { name: 'Glob', args: String(inp.pattern || '') + (inp.path ? ', path=' + inp.path : '') };
+      case 'Task': return { name: 'Task[' + (inp.subagent_type || 'agent') + ']', args: String(inp.description || '') };
+      case 'TaskCreate': return { name: 'TaskCreate', args: String(inp.subject || '') };
+      case 'TaskUpdate': return { name: 'TaskUpdate', args: '#' + (inp.taskId || '') + (inp.status ? ', status=' + inp.status : '') };
+      case 'TaskList': return { name: 'TaskList', args: '' };
+      case 'TaskGet': return { name: 'TaskGet', args: '#' + (inp.taskId || '') };
+      case 'TodoWrite': return { name: 'TodoWrite', args: (inp.todos && inp.todos.length ? inp.todos.length + ' todos' : '') };
+      case 'WebFetch': return { name: 'WebFetch', args: tcut(inp.url || '', 70) };
+      case 'WebSearch': return { name: 'WebSearch', args: '"' + (inp.query || '') + '"' };
+      case 'Skill': return { name: 'Skill', args: String(inp.skill || inp.command || '') };
+      case 'AskUserQuestion': return { name: 'AskUser', args: '' };
+      case 'EnterPlanMode': return { name: 'EnterPlan', args: '' };
+      case 'ExitPlanMode': return { name: 'ExitPlan', args: String(inp.planTitle || '') };
+      case 'Teammate': return { name: 'Team.' + (inp.operation || 'spawnTeam'), args: String(inp.team_name || '') };
+      case 'SendMessage': return {
+        name: 'Team.' + (inp.type || 'message'),
+        args: ((inp.recipient ? '→' + inp.recipient + ' ' : '') + tcut(inp.summary || inp.content || '', 60)).replace(/\s+$/, ''),
+      };
+    }
+    if (name && name.indexOf('mcp__') === 0) {
+      return { name: name.replace('mcp__', '').split('__').join('.'), args: '' };
+    }
+    // Generic fallback: surface the most likely primary argument instead of raw JSON.
+    var keys = ['command', 'path', 'file_path', 'url', 'query', 'pattern', 'prompt', 'description', 'subject', 'id'];
+    for (var i = 0; i < keys.length; i++) {
+      if (inp[keys[i]] != null && typeof inp[keys[i]] !== 'object') return { name: name || '?', args: tcut(inp[keys[i]], 90) };
+    }
+    return { name: name || '?', args: '' };
+  }
+
+  function diffLines(text, cls, sign) {
+    var ls = String(text).split('\n');
+    var extra = ls.length > 5 ? ls.length - 5 : 0;
+    var h = ls.slice(0, 5).map(function (l) {
+      return '<div class="diff-line ' + cls + '">' + sign + ' ' + esc(l) + '</div>';
+    }).join('');
+    if (extra) h += '<div class="diff-line tool-note">… ' + extra + ' more line' + (extra === 1 ? '' : 's') + '</div>';
+    return h;
+  }
+
+  // Structured input detail for the tools whose shape earns more than the one-liner.
+  function toolDetailHtml(name, inp) {
+    inp = inp || {};
+    if (name === 'Edit') {
+      return '<div class="tool-detail">'
+        + (inp.old_string ? diffLines(inp.old_string, 'diff-remove', '-') : '')
+        + (inp.new_string ? diffLines(inp.new_string, 'diff-add', '+') : '') + '</div>';
+    }
+    if (name === 'Write') {
+      var n = String(inp.content || '').split('\n').length;
+      return '<div class="tool-detail"><span class="tool-note">' + fmtNum(n) + ' line' + (n === 1 ? '' : 's') + ' written</span></div>';
+    }
+    if (name === 'Bash' && (String(inp.command || '').length > 120 || inp.description)) {
+      return '<div class="tool-detail">'
+        + (String(inp.command || '').length > 120 ? '<div class="tool-cmd">' + esc(tcut(inp.command, 600)) + '</div>' : '')
+        + (inp.description ? '<div class="tool-note">' + esc(inp.description) + '</div>' : '') + '</div>';
+    }
+    if (name === 'Task' && inp.prompt) {
+      return '<div class="tool-detail"><div class="tool-note">' + esc(tcut(inp.prompt, 400)) + '</div></div>';
+    }
+    if (name === 'ExitPlanMode' && (inp.planSummary || inp.planTitle)) {
+      return '<div class="tool-detail">'
+        + (inp.planTitle ? '<div><strong>' + esc(inp.planTitle) + '</strong></div>' : '')
+        + (inp.planSummary ? '<div class="tool-note">' + esc(tcut(inp.planSummary, 300)) + '</div>' : '') + '</div>';
+    }
+    if (name === 'TodoWrite' && inp.todos && inp.todos.length) {
+      return '<div class="tool-detail">' + inp.todos.map(function (t) {
+        t = t || {};
+        var mark = t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '▸' : '○';
+        return '<div class="todo-line tk-' + esc(t.status || 'pending') + '">' + mark + ' ' + esc(t.content || '') + '</div>';
+      }).join('') + '</div>';
+    }
+    return '';
+  }
+
+  // The paired tool_result (from the compact toolResults array — the server caps
+  // each entry, this only renders what arrived and SAYS when it was capped).
+  function toolResultHtml(name, tr) {
+    if (!tr) return '';
+    var txt = String(tr.content || '').replace(/\s+$/, '');
+    if (!txt || txt === '{}' || txt === 'null') return '';
+    var shownLen = txt.length;
+    if ((txt.charAt(0) === '{' || txt.charAt(0) === '[') && !tr.truncated) {
+      try { txt = JSON.stringify(JSON.parse(txt), null, 2); } catch (e) { /* not JSON — show as-is */ }
+    }
+    var cls = tr.isError ? 'err' : name === 'Bash' ? 'bash' : name === 'Read' ? 'read'
+      : (name === 'Grep' || name === 'Glob') ? 'search' : '';
+    var cap = tr.truncated
+      ? '<div class="tres-cap">server-capped — showing ' + esc(fmtNum(shownLen)) + ' of ' + esc(fmtNum(tr.fullLength || shownLen)) + ' chars</div>'
+      : '';
+    return '<div class="tres' + (cls ? ' ' + cls : '') + '">'
+      + (tr.isError ? '<div class="tres-cap err-lbl">tool returned an error</div>' : '')
+      + '<pre>' + esc(txt) + '</pre>' + cap + '</div>';
   }
 
   function tabBody(d) {
     var t = state.tab, i, out;
     if (t === 'chat') {
-      // Merge the pre-parsed arrays into one timeline on lineIndex. The route's raw
-      // messages are NOT requested: includeRawMessages=true is a 2.1MB response on a
-      // 245-turn session vs 253KB without it, for text this view already has.
+      // Merge the pre-parsed arrays into one timeline on lineIndex, with the compact
+      // chat extras: tool results pair onto their tool_use by id, system rows get
+      // their own thin entries. The raw message stream is still NOT requested.
+      var resFor = Object.create(null); // server-keyed lookup — no prototype to collide with
+      (d.toolResults || []).forEach(function (r) { if (r && r.toolUseId) resFor[r.toolUseId] = r; });
       var ev = [];
-      (d.userPrompts || []).forEach(function (p) { ev.push({ i: p.lineIndex, k: 'user', turn: p.turnIndex, text: p.text, ts: p.timestamp }); });
-      (d.responses || []).forEach(function (p) { ev.push({ i: p.lineIndex, k: 'asst', turn: p.turnIndex, text: p.text }); });
+      (d.userPrompts || []).forEach(function (p) { ev.push({ i: p.lineIndex, k: 'user', turn: p.turnIndex, text: p.text, ts: p.timestamp, pt: p.promptType }); });
+      (d.responses || []).forEach(function (p) { ev.push({ i: p.lineIndex, k: 'asst', turn: p.turnIndex, text: p.text, err: p.isApiError }); });
       (d.thinkingBlocks || []).forEach(function (p) { ev.push({ i: p.lineIndex, k: 'think', turn: p.turnIndex, text: p.thinking }); });
-      (d.toolUses || []).forEach(function (p) { ev.push({ i: p.lineIndex, k: 'tool', turn: p.turnIndex, name: p.name, text: toolSummary(p.input) }); });
+      (d.toolUses || []).forEach(function (p) { ev.push({ i: p.lineIndex, k: 'tool', turn: p.turnIndex, name: p.name, input: p.input, res: resFor[p.id] }); });
+      (d.systemMessages || []).forEach(function (m) { ev.push({ i: m.lineIndex, k: 'sys', sub: m.subtype || m.type, text: m.content, ts: m.timestamp }); });
       ev.sort(function (a, b) { return (a.i || 0) - (b.i || 0); });
       if (!ev.length) return emptyTab('messages');
+      // Housekeeping subtypes render as one thin line, real system content as a full row.
+      var SYS_THIN = { turn_duration: 1, stop_hook_summary: 1, init: 1 };
       out = ev.map(function (e) {
-        var label = e.k === 'user' ? 'user' : e.k === 'asst' ? 'assistant' : e.k === 'think' ? 'thinking' : ('tool · ' + (e.name || ''));
-        return '<div class="msg ' + e.k + '"><div class="mhead"><span class="mwho">' + esc(label) + '</span>'
+        if (e.k === 'tool') {
+          var f = fmtTool(e.name, e.input);
+          return '<div class="msg tool"><div class="mhead"><span class="tcall"><span class="tname">' + esc(f.name)
+            + '</span><span class="targs">(' + esc(f.args) + ')</span></span>'
+            + '<span class="rid">turn ' + esc(e.turn) + ' · line ' + esc(e.i) + '</span></div>'
+            + toolDetailHtml(e.name, e.input) + toolResultHtml(e.name, e.res) + '</div>';
+        }
+        if (e.k === 'sys') {
+          if (own(SYS_THIN, e.sub)) {
+            return '<div class="msg sys thin"><span class="mwho">sys</span>'
+              + '<span class="pill pt-sys">' + esc(e.sub) + '</span>'
+              + '<span class="sys-txt">' + esc(e.text || '') + '</span>'
+              + '<span class="rid">line ' + esc(e.i) + '</span></div>';
+          }
+          return '<div class="msg sys"><div class="mhead"><span class="mwho">system</span>'
+            + (e.sub ? '<span class="pill pt-sys">' + esc(e.sub) + '</span>' : '')
+            + '<span class="rid">line ' + esc(e.i) + (e.ts ? ' · ' + esc(ago(e.ts)) : '') + '</span></div>'
+            + md(e.text) + '</div>';
+        }
+        var label = e.k === 'user' ? 'user' : e.k === 'asst' ? 'assistant' : 'thinking';
+        var badge = '';
+        var text = e.text || '';
+        if (e.k === 'user' && e.pt && e.pt !== 'user') {
+          badge = '<span class="pill pt-command">' + esc(e.pt) + '</span>';
+          if (e.pt === 'command') {
+            // Slash-command envelope → the command the user actually typed.
+            // Lazy bodies: args may themselves contain '<' (e.g. "/ask what does <T> mean")
+            var cn = /<command-name>([\s\S]*?)<\/command-name>/.exec(text);
+            var ca = /<command-args>([\s\S]*?)<\/command-args>/.exec(text);
+            if (cn) text = cn[1].trim() + (ca && ca[1].trim() ? ' ' + ca[1].trim() : '');
+          }
+        }
+        if (e.k === 'asst' && e.err) badge = '<span class="pill st-err">api error</span>';
+        return '<div class="msg ' + e.k + '"><div class="mhead"><span class="mwho">' + esc(label) + '</span>' + badge
           + '<span class="rid">turn ' + esc(e.turn) + ' · line ' + esc(e.i) + (e.ts ? ' · ' + esc(ago(e.ts)) : '') + '</span></div>'
-          + '<pre class="mbody">' + esc(e.text || '') + '</pre></div>';
+          + md(text) + '</div>';
       }).join('');
       return out;
     }
@@ -513,20 +817,24 @@
       if (!th.length) return emptyTab('thinking blocks');
       return th.map(function (b) {
         return '<div class="msg think"><div class="mhead"><span class="rid">turn ' + esc(b.turnIndex)
-          + ' · line ' + esc(b.lineIndex) + '</span></div><pre class="mbody">' + esc(b.thinking || '') + '</pre></div>';
+          + ' · line ' + esc(b.lineIndex) + '</span></div>' + md(b.thinking || '') + '</div>';
       }).join('');
     }
     if (t === 'tools') {
       var tu = d.toolUses || [];
       if (!tu.length) return emptyTab('tool uses');
+      var resFor2 = Object.create(null);
+      (d.toolResults || []).forEach(function (r) { if (r && r.toolUseId) resFor2[r.toolUseId] = r; });
       var byName = {};
       tu.forEach(function (u) { byName[u.name] = (byName[u.name] || 0) + 1; });
       var tally = Object.keys(byName).sort(function (a, b) { return byName[b] - byName[a]; })
         .map(function (n) { return '<span class="pill">' + esc(n) + ' ×' + esc(byName[n]) + '</span>'; }).join('');
       return '<div class="d-pills">' + tally + '</div>' + tu.map(function (u) {
-        return '<div class="itm"><div class="ihead"><span class="pill kind">' + esc(u.name) + '</span>'
+        var f = fmtTool(u.name, u.input);
+        return '<div class="itm"><div class="ihead"><span class="tcall"><span class="tname">' + esc(f.name)
+          + '</span><span class="targs">(' + esc(f.args) + ')</span></span>'
           + '<span class="rid">turn ' + esc(u.turnIndex) + ' · line ' + esc(u.lineIndex) + '</span></div>'
-          + '<pre class="mbody mono">' + esc(toolSummary(u.input)) + '</pre></div>';
+          + toolDetailHtml(u.name, u.input) + toolResultHtml(u.name, resFor2[u.id]) + '</div>';
       }).join('');
     }
     if (t === 'files') {
@@ -688,7 +996,7 @@
     }
     if (d.hasMore) {
       banners += '<div class="load-note warn">This is the last ' + state.prompts + ' user prompts of '
-        + fmtNum(d.totalUserPrompts) + ' — earlier turns are NOT loaded.</div>';
+        + esc(fmtNum(d.totalUserPrompts)) + ' — earlier turns are NOT loaded.</div>';
     }
 
     var head = '<div class="d-head"><h2 class="d-title">' + esc(name) + '</h2>'

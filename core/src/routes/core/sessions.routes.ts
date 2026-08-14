@@ -609,9 +609,13 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /sessions/:sessionId - Get session
-    // Query params: cwd, includeRawMessages, includeReads, fromLineIndex, toLineIndex, fromTurnIndex, toTurnIndex,
+    // Query params: cwd, includeRawMessages, includeToolResults, includeSystemMessages, includeReads,
+    //               fromLineIndex, toLineIndex, fromTurnIndex, toTurnIndex,
     //               fromUserPromptIndex, toUserPromptIndex, lastNUserPrompts (deprecated), unlimited,
     //               ifModifiedSince (ISO timestamp — returns notModified if session file unchanged)
+    // Note: includeToolResults/includeSystemMessages return COMPACT server-capped arrays
+    //       (toolResults[], systemMessages[]) — use them instead of includeRawMessages when a
+    //       chat view needs tool outputs; the raw stream is ~15x the payload for the same data.
     // Note: By default, returns last 50 user prompts. Use unlimited=true to get all data.
     // Note: By default, read-only file operations are excluded from fileChanges. Use includeReads=true to include them.
     {
@@ -624,6 +628,8 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
           {
             cwd: req.query.cwd,
             includeRawMessages: req.query.includeRawMessages === 'true',
+            includeToolResults: req.query.includeToolResults === 'true',
+            includeSystemMessages: req.query.includeSystemMessages === 'true',
             // Line index filters (accept both fromLineIndex and fromLine aliases)
             fromLineIndex: (req.query.fromLineIndex || req.query.fromLine) ? parseInt(req.query.fromLineIndex || req.query.fromLine, 10) : undefined,
             toLineIndex: (req.query.toLineIndex || req.query.toLine) ? parseInt(req.query.toLineIndex || req.query.toLine, 10) : undefined,

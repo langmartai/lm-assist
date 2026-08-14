@@ -24,6 +24,113 @@ export interface SessionsApiDeps {
   sessionMonitor: AgentSessionMonitor;
 }
 
+// ─── Compact chat extras (includeToolResults / includeSystemMessages) ───────
+// Chat views need the result text of each tool call and the system/summary rows,
+// but includeRawMessages ships the ENTIRE raw stream to get them: measured
+// 7.4MB vs 482KB on a 2707-turn session at lastNUserPrompts=25. These derive the
+// same information from the (already window-filtered) raw messages and cap each
+// entry, so the caller pays KBs, not MBs.
+
+const TOOL_RESULT_CAP = 4000;
+const SYSTEM_MESSAGE_CAP = 2000;
+
+/** Truncate without splitting a surrogate pair at the cut. */
+function sliceSafe(s: string, n: number): string {
+  if (s.length <= n) return s;
+  let end = n;
+  const code = s.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end--;
+  return s.slice(0, end);
+}
+
+export function extractCompactToolResults(rawMessages: any[] | undefined, onlyIds?: Set<string>): Array<{
+  toolUseId: string;
+  content: string;
+  isError?: boolean;
+  truncated?: boolean;
+  fullLength?: number;
+  lineIndex?: number;
+}> | undefined {
+  if (!rawMessages || rawMessages.length === 0) return undefined;
+  if (onlyIds && onlyIds.size === 0) return undefined;
+  const out: any[] = [];
+  for (const msg of rawMessages) {
+    if (!msg || msg.type !== 'user') continue;
+    const content = msg.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || block.type !== 'tool_result' || !block.tool_use_id) continue;
+      if (onlyIds && !onlyIds.has(block.tool_use_id)) continue;
+      let text = '';
+      let images = 0;
+      if (typeof block.content === 'string') {
+        text = block.content;
+      } else if (Array.isArray(block.content)) {
+        const parts: string[] = [];
+        for (const b of block.content) {
+          if (b?.type === 'text' && b.text) parts.push(b.text);
+          else if (b?.type === 'image') images++;
+        }
+        text = parts.join('\n');
+      }
+      if (images > 0) text = (text ? text + '\n' : '') + `[${images} image${images === 1 ? '' : 's'}]`;
+      const truncated = text.length > TOOL_RESULT_CAP;
+      out.push({
+        toolUseId: block.tool_use_id,
+        content: truncated ? sliceSafe(text, TOOL_RESULT_CAP) : text,
+        isError: block.is_error === true ? true : undefined,
+        truncated: truncated ? true : undefined,
+        fullLength: truncated ? text.length : undefined,
+        lineIndex: msg.lineIndex,
+      });
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+export function extractCompactSystemMessages(rawMessages: any[] | undefined): Array<{
+  type: 'system' | 'summary';
+  subtype?: string;
+  content: string;
+  truncated?: boolean;
+  lineIndex?: number;
+  timestamp?: string;
+  durationMs?: number;
+}> | undefined {
+  if (!rawMessages || rawMessages.length === 0) return undefined;
+  const out: any[] = [];
+  for (const msg of rawMessages) {
+    if (!msg || (msg.type !== 'system' && msg.type !== 'summary')) continue;
+    let content = '';
+    if (msg.type === 'system') {
+      if (msg.subtype === 'turn_duration' && typeof msg.durationMs === 'number') {
+        const secs = Math.round(msg.durationMs / 1000);
+        const mins = Math.floor(secs / 60);
+        content = `Turn duration: ${mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`}`;
+      } else if (typeof msg.content === 'string' && msg.content) {
+        content = msg.content;
+      } else {
+        content = msg.subtype ? `System: ${msg.subtype}` : 'System';
+      }
+    } else {
+      content = (typeof msg.summary === 'string' && msg.summary)
+        || (typeof msg.content === 'string' && msg.content)
+        || 'Summary';
+    }
+    const truncated = content.length > SYSTEM_MESSAGE_CAP;
+    out.push({
+      type: msg.type,
+      subtype: msg.subtype || undefined,
+      content: truncated ? sliceSafe(content, SYSTEM_MESSAGE_CAP) : content,
+      truncated: truncated ? true : undefined,
+      lineIndex: msg.lineIndex,
+      timestamp: msg.timestamp || undefined,
+      durationMs: typeof msg.durationMs === 'number' ? msg.durationMs : undefined,
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
   const { sessionStore, sessionMonitor } = deps;
 
@@ -98,6 +205,10 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
     getSession: async (sessionId: string, options?: {
       cwd?: string;
       includeRawMessages?: boolean;
+      /** Include compact per-tool_use result texts (toolResults[]) without the raw message stream */
+      includeToolResults?: boolean;
+      /** Include compact system/summary rows (systemMessages[]) without the raw message stream */
+      includeSystemMessages?: boolean;
       /** Include read-only file operations in fileChanges (excluded by default) */
       includeReads?: boolean;
       // ─── Line Index Filters (JSONL file line number) ───
@@ -245,6 +356,11 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
             responses: cacheData?.responses.filter(r => r.lineIndex >= fromLine) || [],
             thinkingBlocks: cacheData?.thinkingBlocks.filter(t => t.lineIndex >= fromLine) || [],
             rawMessages: options?.includeRawMessages ? rawMessages : undefined,
+            // Delta semantics: extras cover the NEW lines (>= fromLine) with no id
+            // pairing — a result for a tool call fetched in a previous window must
+            // still arrive, its toolUse is already on the client.
+            toolResults: options?.includeToolResults ? extractCompactToolResults(rawMessages) : undefined,
+            systemMessages: options?.includeSystemMessages ? extractCompactSystemMessages(rawMessages) : undefined,
             // Tasks, todos, plans, subagents (not filtered by lineIndex — always return all for context)
             tasks: cacheData?.tasks || [],
             todos: cacheData?.todos || [],
@@ -276,9 +392,12 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
           }, start);
         }
 
+        // Chat extras derive from raw messages server-side, so raw parsing is needed
+        // even when the caller did not ask for the raw stream itself.
+        const wantChatExtras = !!(options?.includeToolResults || options?.includeSystemMessages);
         const data = await sessionStore.readSession(sessionId, {
           cwd: options?.cwd,
-          includeRawMessages: options?.includeRawMessages,
+          includeRawMessages: options?.includeRawMessages || wantChatExtras,
         });
 
         if (!data) {
@@ -309,6 +428,10 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
         }
 
         let rawMessages = data.rawMessages;
+        // Unfiltered raw reference: a tool_use near the window edge can have its
+        // tool_result on a line AFTER the window's last prompt/response line, so
+        // results are paired by id against the RETURNED toolUses, over ALL raw lines.
+        const rawAll = data.rawMessages;
         let userPrompts = data.userPrompts;
         let toolUses = data.toolUses;
         let responses = data.responses;
@@ -370,6 +493,11 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
               rawMessages = rawMessages.filter((m: any) =>
                 m.lineIndex >= minLineInTurn && m.lineIndex <= maxLineInTurn
               );
+            } else {
+              // A turn window that matches nothing IS an empty window. Leaving raw
+              // unfiltered here shipped a 4MB full-session payload from the compact
+              // extras on the routine "poll beyond the last turn" idiom.
+              rawMessages = [];
             }
           }
           if (userPrompts) userPrompts = userPrompts.filter(turnFilter);
@@ -470,7 +598,16 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
           todos: data.todos,
           tasks: data.tasks,
           thinkingBlocks,
-          rawMessages,
+          // Raw stream only when explicitly requested — chat extras may have forced
+          // raw parsing above, and leaking the stream would defeat their purpose.
+          rawMessages: options?.includeRawMessages ? rawMessages : undefined,
+          // toolResults pair by id with the toolUses actually returned (window-true by
+          // construction, and a result landing past the window's last line still pairs);
+          // systemMessages ride the window-filtered raw stream.
+          toolResults: options?.includeToolResults
+            ? extractCompactToolResults(rawAll, new Set((toolUses || []).map((t: any) => t.id).filter(Boolean)))
+            : undefined,
+          systemMessages: options?.includeSystemMessages ? extractCompactSystemMessages(rawMessages) : undefined,
           // ─── Subagents (with parent session indices) ───
           subagents,
           totalSubagents,
