@@ -21,14 +21,25 @@
   <section class="pane pane-graph" id="graph-pane" hidden>
     <div class="g-toolbar">
       <span id="g-stats" class="g-stats">…</span>
-      <label class="chk"><input type="checkbox" id="g-removed"> include removed</label>
+      <label class="chk"><input type="checkbox" id="g-removed" autocomplete="off"> include removed</label>
+      <select id="g-strategy" class="g-sel" autocomplete="off" title="Hubs: most-connected item centered per group. Clusters: left-to-right dependency flow.">
+        <option value="hubs">Hubs</option>
+        <option value="clusters">Clusters</option>
+      </select>
       <span class="g-sp"></span>
-      <button id="g-fit" class="ghost" type="button">fit</button>
-      <button id="g-relayout" class="ghost" type="button">re-layout</button>
+      <button id="g-zoom-out" class="ghost" type="button" title="Zoom out">−</button>
+      <span id="g-zoom-pct" class="g-stats">100%</span>
+      <button id="g-zoom-in" class="ghost" type="button" title="Zoom in">+</button>
+      <button id="g-fit" class="ghost" type="button" title="Fit — or double-click the canvas">fit</button>
       <button id="g-refresh" class="ghost" type="button">refresh</button>
     </div>
-    <div id="g-wrap" class="g-wrap">
-      <svg id="g-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    <!-- House graph pattern (assist-mission-graph): absolutely-positioned cards over an
+         SVG edge layer inside ONE transformed stage — pan/zoom is a CSS transform. -->
+    <div id="g-canvas" class="g-canvas">
+      <div id="g-stage" class="g-stage">
+        <svg id="g-edges" class="g-edges" width="0" height="0"><defs id="g-defs"></defs><g id="g-edge-g"></g></svg>
+        <div id="g-cards" class="g-cards"></div>
+      </div>
       <div id="g-msg" class="g-msg" hidden></div>
       <div id="g-card" class="g-card" hidden></div>
       <div id="g-legend" class="g-legend"></div>
@@ -40,7 +51,7 @@
       <input id="q" class="q" type="text" placeholder="filter title / id / tag…" autocomplete="off">
       <div class="chip-row"><span class="chip-lbl">status</span><span id="chips-status" class="chips"></span></div>
       <div class="chip-row"><span class="chip-lbl">type</span><span id="chips-type" class="chips"></span></div>
-      <label class="chk"><input type="checkbox" id="show-removed"> include removed</label>
+      <label class="chk"><input type="checkbox" id="show-removed" autocomplete="off"> include removed</label>
     </div>
     <div id="list" class="list">loading…</div>
     <div id="counts" class="counts"></div>

@@ -43,23 +43,30 @@ discussion-note box. Type / status / priority are select fields carrying the mod
 ## Graph view
 
 A `List | Graph` tab bar switches to a whole-graph rendering of `GET /backlog/graph`
-(covered by the same `node:/backlog/*` leaf rule — no grant change). Plain hand-rolled
-SVG, because the pane's CSP forbids any external chart library:
+(covered by the same `node:/backlog/*` leaf rule — no grant change). It uses the HOUSE
+graph pattern, ported from `assist-mission-graph` (itself from
+`web/src/lib/mission-layout.ts`) so every graph surface lays out and feels the same:
 
-- **Nodes** = items, colored by status, radius by priority; degree-0 items sit in a grid
-  strip under the force-laid (Fruchterman–Reingold) linked subgraph so they don't scatter
-  the layout. **Edges** are typed — kind → CSS class; directed kinds (`depends-on`,
-  `blocks`, `parent-of`, `spawned-mission`) get a computed arrowhead polygon (SVG markers
-  can't take per-kind CSS color reliably).
-- Interactions: wheel-zoom (clamped), background pan, node drag (incident edges follow),
-  hover dims everything but the node's neighborhood, click opens an info card whose
-  "open details" jumps back to the list view with that item loaded.
-- The graph is fetched lazily on first tab switch and re-fetched after any successful
-  create/edit/note (`G.loaded = false`) or via the toolbar's refresh; "include removed"
-  is a separate toggle from the list's (separate fetches, per-view state).
-- 🔴 The loading/error overlay (`.g-msg`) sets `display:flex`, which would silently beat
-  the `hidden` attribute's UA `display:none` and eat every pointer event over the SVG —
-  `.g-msg[hidden]{display:none}` restores it. Keep that rule when touching the CSS.
+- **Stage**: absolutely-positioned item cards over an inline SVG edge layer inside ONE
+  transformed stage — pan/zoom is a CSS transform (drag / wheel / pinch / ± buttons /
+  fit / double-click), never a viewBox.
+- **Layout is deterministic, no physics**: union-find components, then per component
+  either radial around the highest-degree hub (**Hubs**, default — the backlog is mostly
+  hub-and-spoke) or layered left→right flow (**Clusters**); standalone items pack into a
+  sqrt grid; blocks shelf-pack. Same data → same picture, every load.
+- **Cards** carry the readable title, type/status/priority pills and link/note/review
+  counts; the left border is the status accent. **Edges** are typed — kind → color/dash
+  from one palette shared by lines, per-kind arrow markers, and the legend (light theme
+  swaps in 600-series hues).
+- Click a card → select: 1-hop neighborhood stays lit (rest dims), edges to the selection
+  go hot, an info card offers "open details" → the list view's detail pane. Click again
+  or close to deselect.
+- The graph is fetched lazily on first tab switch, latest-wins sequenced, and re-fetched
+  after any successful create/edit/note; "include removed" is per-view state.
+- 🔴 `[hidden]{display:none!important}` (top of app.css) is load-bearing: an author
+  `display:flex` on `.g-msg` would otherwise beat the hidden attribute and the overlay
+  would silently eat every pointer event — the same trap assist-mission-graph and
+  assist-data already documented. Keep the rule when touching the CSS.
 
 ## Deploy
 

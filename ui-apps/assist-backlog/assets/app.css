@@ -3,6 +3,9 @@
   --blue:#3b82f6;--blue2:#60a5fa;--amber:#fbbf24;--green:#4ade80;--red:#f87171;--purple:#c084fc;
 }
 *{box-sizing:border-box}
+/* The hidden ATTRIBUTE must beat any class display (an author display:flex silently wins
+   over the UA's [hidden] rule otherwise) — same fix as assist-mission-graph / assist-data. */
+[hidden]{display:none!important}
 body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
 
 header{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.1rem;background:var(--panel2);border-bottom:1px solid var(--line)}
@@ -100,59 +103,40 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .tab.on{background:var(--blue);border-color:var(--blue);color:#fff}
 main.graph-mode{grid-template-columns:1fr}
 
-/* ── graph view ────────────────────────────────────────────────────────── */
+/* ── graph view — house pattern (stage + cards + edge layer, per assist-mission-graph) ── */
 .g-toolbar{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;margin-bottom:.55rem}
 .g-toolbar .chk{margin-top:0}
 .g-stats{font-size:.74rem;color:var(--dim)}
 .g-sp{flex:1}
-.g-wrap{position:relative;background:var(--panel2);border:1px solid var(--line);border-radius:8px;height:34rem;overflow:hidden}
-#g-svg{width:100%;height:100%;display:block;cursor:grab;touch-action:none}
-#g-svg.panning{cursor:grabbing}
-.g-node{cursor:pointer}
-.g-node circle{fill:#475569;stroke:#94a3b8;stroke-width:1.5}
-.g-node text{font-size:11px;fill:var(--dim);pointer-events:none;user-select:none}
-.g-node.st-accepted circle,.g-node.st-planned circle{fill:#1d4ed8;stroke:#60a5fa}
-.g-node.st-implemented circle{fill:#15803d;stroke:#4ade80}
-.g-node.st-deferred circle{fill:#92400e;stroke:#fbbf24}
-.g-node.st-rejected circle{fill:#991b1b;stroke:#f87171}
-.g-node.removed{opacity:.45}
-.g-node.removed circle{stroke-dasharray:3 2;stroke:var(--red)}
-.g-node.removed text{text-decoration:line-through}
-.g-node.sel circle{stroke:#fff;stroke-width:2.5}
-.g-edge line{stroke:#64748b;stroke-width:1.3}
-.g-edge polygon{fill:#64748b}
-.g-edge.k-depends-on line{stroke:#60a5fa}.g-edge.k-depends-on polygon{fill:#60a5fa}
-.g-edge.k-blocks line{stroke:#f87171}.g-edge.k-blocks polygon{fill:#f87171}
-.g-edge.k-parent-of line{stroke:#94a3b8;stroke-width:2}.g-edge.k-parent-of polygon{fill:#94a3b8}
-.g-edge.k-relates-to line{stroke-dasharray:5 4}
-.g-edge.k-duplicate-of line{stroke:#fbbf24;stroke-dasharray:2 3}
-.g-edge.k-spawned-mission line{stroke:#c084fc;stroke-dasharray:6 3}.g-edge.k-spawned-mission polygon{fill:#c084fc}
-#g-svg.hovering .g-node:not(.hl){opacity:.18}
-#g-svg.hovering .g-edge:not(.hl){opacity:.08}
-#g-svg.hovering .g-node.removed:not(.hl){opacity:.1}
+.g-sel{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.25rem .4rem;font-size:.74rem}
+.g-canvas{position:relative;overflow:hidden;height:34rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;touch-action:none;cursor:grab}
+body:not(.embed) .g-canvas{height:40rem}
+.g-canvas:active{cursor:grabbing}
+.g-stage{position:absolute;left:0;top:0;transform-origin:0 0}
+.g-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+.g-cards{position:absolute;left:0;top:0}
+.g-node-card{position:absolute;overflow:hidden;border-radius:6px;border:1px solid var(--line);border-left-width:4px;background:var(--bg);padding:.28rem .5rem;cursor:pointer}
+.g-node-card.dim{opacity:.22}
+.g-node-card.sel{box-shadow:0 0 0 2px var(--blue)}
+.g-node-card.removed{opacity:.5}
+.g-node-card.removed .gc-title{text-decoration:line-through}
+.gc-title{font-weight:500;font-size:.74rem;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gc-meta{display:flex;gap:.25rem;align-items:center;flex-wrap:wrap;margin-top:.22rem}
+.gc-meta .pill{font-size:.6rem;padding:0 .4rem}
+.gc-rel{margin-top:.18rem;font-size:.62rem;color:var(--dim);white-space:nowrap;overflow:hidden}
 .g-msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.7rem;background:rgba(2,6,23,.55);font-size:.82rem;color:var(--dim);padding:1rem;text-align:center;z-index:4}
 .g-msg.err{color:var(--red)}
-/* display:flex would beat the UA's [hidden]{display:none} — restore hidden's meaning */
-.g-msg[hidden],.g-card[hidden]{display:none}
 .g-card{position:absolute;top:.6rem;right:.6rem;width:17.5rem;max-width:calc(100% - 1.2rem);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.7rem .8rem;z-index:5;box-shadow:0 8px 24px rgba(0,0,0,.35)}
 .g-card-t{font-size:.86rem;font-weight:600;line-height:1.3;word-break:break-word;margin-bottom:.35rem}
 .g-card .actions{margin-top:.6rem}
 .g-legend{position:absolute;left:.6rem;bottom:.6rem;background:rgba(15,23,42,.82);border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem;font-size:.62rem;color:var(--dim);z-index:3;display:flex;flex-direction:column;gap:.22rem;pointer-events:none}
 .g-legend .lg-row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
 .g-legend .lg{display:inline-flex;align-items:center;gap:.25rem;white-space:nowrap}
-.g-legend .sw{width:.55rem;height:.55rem;border-radius:50%;display:inline-block}
+.g-legend .sw{width:.55rem;height:.55rem;border-radius:2px;display:inline-block}
 .g-legend .ln{width:1rem;height:0;border-top:2px solid;display:inline-block}
 body.theme-light .g-msg{background:rgba(241,245,249,.7)}
 body.theme-light .g-legend{background:rgba(248,250,252,.9)}
-body.theme-light .g-node text{fill:#475569}
-body.theme-light .g-node.sel circle{stroke:#0f172a}
-/* edge pastels are tuned for the dark canvas — swap to 600-series hues (≥4.3:1 on #f1f5f9);
-   keep in sync with paintLegend's light palette */
-body.theme-light .g-edge.k-depends-on line{stroke:#2563eb}body.theme-light .g-edge.k-depends-on polygon{fill:#2563eb}
-body.theme-light .g-edge.k-blocks line{stroke:#b91c1c}body.theme-light .g-edge.k-blocks polygon{fill:#b91c1c}
-body.theme-light .g-edge.k-parent-of line{stroke:#475569}body.theme-light .g-edge.k-parent-of polygon{fill:#475569}
-body.theme-light .g-edge.k-duplicate-of line{stroke:#b45309}
-body.theme-light .g-edge.k-spawned-mission line{stroke:#7c3aed}body.theme-light .g-edge.k-spawned-mission polygon{fill:#7c3aed}
+body.theme-light .g-node-card{background:#fff}
 
 /* ── full-screen fatal error (a hard call failure, surfaced verbatim) ───── */
 .fatal{position:fixed;inset:0;background:rgba(2,6,23,.92);display:flex;align-items:center;justify-content:center;padding:1.5rem;z-index:50}

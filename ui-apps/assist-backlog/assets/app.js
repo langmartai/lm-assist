@@ -65,7 +65,7 @@
 
   function ago(ms) {
     var m = Math.floor((Date.now() - ms) / 60000);
-    if (!isFinite(m) || m < 0) return new Date(ms).toISOString();
+    if (!isFinite(m) || m < 0 || !ms) return ms ? new Date(ms).toISOString() : '—';
     if (m < 1) return 'just now';
     if (m < 60) return m + 'm ago';
     if (m < 1440) return Math.floor(m / 60) + 'h ago';
@@ -300,19 +300,34 @@
     });
   }
 
-  // ── graph view (GET /backlog/graph → force layout → hand-rolled SVG) ──────
-  // No chart library: pane CSP forbids external hosts, so layout + render are local.
-  // Nodes are colored by STATUS, sized by PRIORITY; edges are typed (kind → CSS class,
-  // directed kinds get a computed arrowhead polygon — SVG markers can't take per-kind
-  // CSS color reliably). Isolated items go to a grid strip under the force-laid graph.
+  // ── graph view (GET /backlog/graph → deterministic layout → card/edge stage) ──
+  // House pattern: layout math + the cards-over-an-SVG-edge-layer stage are ported from
+  // assist-mission-graph (itself ported from web/src/lib/mission-layout.ts), so every
+  // graph pane lays out and feels the same. Pan/zoom is a CSS transform on ONE stage.
+  // Backlog-specific: typed edges (kind → color/dash, directed kinds get a per-kind
+  // arrow marker) and status-accented cards sized NODE_W×NODE_H.
+  var NODE_W = 200, NODE_H = 66, GAP = 28, NODE_GAP = 24, LAYER_GAP = 80;
+  var MIN_ZOOM = 0.05, MAX_ZOOM = 3;
   var G = {
-    nodes: [], edges: [], byId: {}, pos: {},
+    nodes: [], edges: [], byId: {},
     loaded: false, includeRemoved: false, sel: null,
-    W: 1200, H: 700, vb: { x: 0, y: 0, w: 1200, h: 700 },
-    els: {}, edgeEls: [],
+    strategy: 'hubs',                  // hubs = radial per component; clusters = layered flow
+    layout: null, pan: { x: 0, y: 0 }, zoom: 1, seq: 0,
   };
-  var NODE_R = { low: 6, med: 7, high: 9, critical: 11 };
+  var STATUS_COLOR = {
+    open: '#94a3b8', discussing: '#94a3b8', accepted: '#60a5fa', planned: '#3b82f6',
+    implemented: '#4ade80', deferred: '#fbbf24', rejected: '#f87171',
+  };
+  // Edge palette: pastels for the dark canvas, 600-series for light (thin lines need the
+  // contrast; card accents above are 4px and read fine on both). Markers + legend share it.
+  var KIND_COLOR = THEME === 'light'
+    ? { 'depends-on': '#2563eb', 'blocks': '#b91c1c', 'parent-of': '#475569', 'relates-to': '#64748b', 'duplicate-of': '#b45309', 'spawned-mission': '#7c3aed' }
+    : { 'depends-on': '#60a5fa', 'blocks': '#f87171', 'parent-of': '#94a3b8', 'relates-to': '#64748b', 'duplicate-of': '#fbbf24', 'spawned-mission': '#c084fc' };
+  var KIND_DASH = { 'relates-to': '5 4', 'duplicate-of': '2 3', 'spawned-mission': '6 3' };
   var DIRECTED = { 'depends-on': 1, 'blocks': 1, 'parent-of': 1, 'spawned-mission': 1 };
+  // Own-property lookup only: status/kind are server data — a bare MAP[k] returns
+  // Object.prototype members for k='constructor' etc., and these feed attribute markup.
+  function own(map, k, dflt) { return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : dflt; }
 
   function gMsg(text, isErr, retry) {
     var m = $('g-msg');
@@ -336,204 +351,369 @@
       G.byId = {};
       G.nodes.forEach(function (nd) { G.byId[nd.id] = nd; });
       G.loaded = true;
-      gDrag = null;                              // a live drag would act on rebuilt elements
-      $('g-svg').classList.remove('panning');
+      gDrag.on = false; gDrag.moved = false; gPinch = null;  // a live drag must not pan from pre-reload origins
       if (G.sel && !G.byId[G.sel]) { G.sel = null; $('g-card').hidden = true; }
-      layoutGraph();
-      renderGraph();
+      paintGraph();
       if (G.sel) showGraphCard(G.sel);           // refresh a surviving open card
-      fitGraph();
+      fitToView();
       gMsg(G.nodes.length ? null : 'backlog is empty — nothing to draw yet');
     }).catch(function (e) {                      // api() never rejects — this catches render throws
       if (seq === G.seq) gMsg('graph render failed — ' + String(e && e.message || e), true, true);
     });
   }
 
-  // Fruchterman–Reingold on the linked subgraph; degree-0 items in a bottom strip.
-  function layoutGraph() {
-    G.pos = {};
-    if (!G.nodes.length) return;
-    var deg = {};
-    G.nodes.forEach(function (nd) { deg[nd.id] = 0; });
-    G.edges.forEach(function (e) { deg[e.from]++; deg[e.to]++; });
-    var linked = G.nodes.filter(function (nd) { return deg[nd.id] > 0; });
-    var loose = G.nodes.filter(function (nd) { return deg[nd.id] === 0; });
-
-    var perRow = Math.max(1, Math.floor((G.W - 100) / 160));
-    var stripRows = Math.ceil(loose.length / perRow);
-    var stripH = loose.length ? stripRows * 56 + 30 : 0;
-    var H = Math.max(260, G.H - stripH - 30);   // linked-band height (clamped)
-    // The strip must stay BELOW the band even when its height clamps — a big strip
-    // otherwise climbs INTO the graph; fitGraph absorbs the overflow past G.H.
-    var stripTop = Math.max(H + 30, G.H - stripH + 30);
-    loose.forEach(function (nd, i) {
-      G.pos[nd.id] = {
-        x: 100 + (i % perRow) * 160 + (Math.floor(i / perRow) % 2) * 45,
-        y: stripTop + Math.floor(i / perRow) * 56,
-      };
-    });
-
-    var m = linked.length;
-    if (!m) return;
-    var W = G.W;
-    linked.forEach(function (nd, i) {           // deterministic start: circle by index
-      var a = (i / m) * Math.PI * 2;
-      G.pos[nd.id] = { x: W / 2 + Math.cos(a) * W / 4 + (i % 7) * 5, y: H / 2 + Math.sin(a) * H / 4 + (i % 5) * 5 };
-    });
-    var k = Math.sqrt((W * H) / m) * 0.95;
-    var t = W / 10;
-    var iters = Math.max(40, Math.min(260, Math.floor(30000 / m))); // O(m²)/iter — scale the budget down
-    for (var iter = 0; iter < iters; iter++) {
-      var disp = {};
-      linked.forEach(function (nd) { disp[nd.id] = { x: 0, y: 0 }; });
-      for (var i = 0; i < m; i++) {
-        for (var j = i + 1; j < m; j++) {
-          var pa = G.pos[linked[i].id], pb = G.pos[linked[j].id];
-          var dx = pa.x - pb.x, dy = pa.y - pb.y;
-          var d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-          var f = (k * k) / d / d;
-          disp[linked[i].id].x += dx * f; disp[linked[i].id].y += dy * f;
-          disp[linked[j].id].x -= dx * f; disp[linked[j].id].y -= dy * f;
-        }
-      }
-      G.edges.forEach(function (e) {
-        var da = disp[e.from], db = disp[e.to];
-        if (!da || !db) return;
-        var pa = G.pos[e.from], pb = G.pos[e.to];
-        var dx = pa.x - pb.x, dy = pa.y - pb.y;
-        var d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-        var f = d / k;
-        da.x -= dx * f; da.y -= dy * f;
-        db.x += dx * f; db.y += dy * f;
-      });
-      linked.forEach(function (nd) {
-        var dv = disp[nd.id];
-        var d = Math.sqrt(dv.x * dv.x + dv.y * dv.y) || 0.01;
-        var p = G.pos[nd.id];
-        p.x = Math.max(70, Math.min(W - 70, p.x + (dv.x / d) * Math.min(d, t)));
-        p.y = Math.max(45, Math.min(H - 40, p.y + (dv.y / d) * Math.min(d, t)));
-      });
-      t = Math.max(1.5, t * 0.96);
+  // ── layout math (ported from assist-mission-graph → web/src/lib/mission-layout.ts) ──
+  /** Union-find connected components over the UNDIRECTED edge set. */
+  function components(ids, edges) {
+    var parent = new Map(), i;
+    for (i = 0; i < ids.length; i++) parent.set(ids[i], ids[i]);
+    function find(x) {
+      var r = x;
+      while (parent.get(r) !== r) r = parent.get(r);
+      while (parent.get(x) !== r) { var n = parent.get(x); parent.set(x, r); x = n; }
+      return r;
     }
+    for (i = 0; i < edges.length; i++) {
+      var e = edges[i];
+      if (!parent.has(e.from) || !parent.has(e.to)) continue;
+      var ra = find(e.from), rb = find(e.to);
+      if (ra !== rb) parent.set(ra, rb);
+    }
+    var groups = new Map();
+    for (i = 0; i < ids.length; i++) {
+      var r = find(ids[i]);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r).push(ids[i]);
+    }
+    var out = [];
+    groups.forEach(function (g) { out.push(g); });
+    return out;
   }
 
-  function arrowPoints(a, b, toId) {
-    var r = (NODE_R[(G.byId[toId] || {}).priority] || 7) + 2;
-    var dx = b.x - a.x, dy = b.y - a.y;
-    var d = Math.sqrt(dx * dx + dy * dy) || 1;
-    var ux = dx / d, uy = dy / d;
-    var tx = b.x - ux * r, ty = b.y - uy * r;
-    var bx = tx - ux * 7, by = ty - uy * 7;
-    return tx.toFixed(1) + ',' + ty.toFixed(1)
-      + ' ' + (bx - uy * 3.5).toFixed(1) + ',' + (by + ux * 3.5).toFixed(1)
-      + ' ' + (bx + uy * 3.5).toFixed(1) + ',' + (by - ux * 3.5).toFixed(1);
+  function highestDegree(ids, edges) {
+    var idSet = new Set(ids), deg = new Map();
+    ids.forEach(function (id) { deg.set(id, 0); });
+    edges.forEach(function (e) {
+      if (!idSet.has(e.from) || !idSet.has(e.to)) return;
+      deg.set(e.from, deg.get(e.from) + 1);
+      deg.set(e.to, deg.get(e.to) + 1);
+    });
+    var best = ids[0], bd = -1;
+    ids.forEach(function (id) { var d = deg.get(id); if (d > bd) { bd = d; best = id; } });
+    return best;
   }
 
-  function renderGraph() {
-    var svg = $('g-svg');
-    var parts = ['<g id="g-edges">'];
-    G.edges.forEach(function (e, i) {
-      var a = G.pos[e.from], b = G.pos[e.to];
-      if (!a || !b) return;
-      parts.push('<g class="g-edge k-' + esc(e.kind) + '" data-i="' + i + '">'
-        + '<line x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '"></line>'
-        + (DIRECTED[e.kind] ? '<polygon points="' + arrowPoints(a, b, e.to) + '"></polygon>' : '')
-        + '<title>' + esc(e.from + ' —' + e.kind + '→ ' + e.to) + '</title></g>');
+  /** Left→right layered flow: BFS layering by in-degree, wide layers wrapped into sub-columns.
+   *  Cycles and unreachable nodes land in a final catch-all layer (never dropped). */
+  function layoutFlow(ids, edges) {
+    var idSet = new Set(ids), indeg = new Map(), adj = new Map();
+    ids.forEach(function (id) { indeg.set(id, 0); adj.set(id, []); });
+    edges.forEach(function (e) {
+      if (!idSet.has(e.from) || !idSet.has(e.to)) return;
+      adj.get(e.from).push(e.to);
+      indeg.set(e.to, indeg.get(e.to) + 1);
     });
-    parts.push('</g><g id="g-nodes">');
-    G.nodes.forEach(function (nd) {
-      var p = G.pos[nd.id];
-      if (!p) return;
-      var r = NODE_R[nd.priority] || 7;
-      var label = nd.title;
-      if (label.length > 26) {
-        var cut = 25;
-        var cc = label.charCodeAt(cut - 1);
-        if (cc >= 0xD800 && cc <= 0xDBFF) cut--;  // don't split a surrogate pair
-        label = label.slice(0, cut) + '…';
-      }
-      parts.push('<g class="g-node st-' + esc(nd.status) + (nd.removed ? ' removed' : '') + (G.sel === nd.id ? ' sel' : '')
-        + '" data-id="' + esc(nd.id) + '" transform="translate(' + p.x.toFixed(1) + ',' + p.y.toFixed(1) + ')">'
-        + '<circle r="' + r + '"></circle>'
-        + '<text y="' + (r + 12) + '" text-anchor="middle">' + esc(label) + '</text>'
-        + '<title>' + esc(nd.title + '\n' + nd.id + ' · ' + nd.type + ' · ' + nd.status + ' · ' + nd.priority) + '</title></g>');
-    });
-    parts.push('</g>');
-    svg.innerHTML = parts.join('');
-    G.els = {};
-    G.edgeEls = [];
-    var nodeEls = svg.querySelectorAll('.g-node');
-    for (var i = 0; i < nodeEls.length; i++) G.els[nodeEls[i].getAttribute('data-id')] = nodeEls[i];
-    var edgeEls = svg.querySelectorAll('.g-edge');
-    for (var j = 0; j < edgeEls.length; j++) {
-      var e = G.edges[Number(edgeEls[j].getAttribute('data-i'))];
-      if (e) G.edgeEls.push({ el: edgeEls[j], from: e.from, to: e.to, kind: e.kind });
+    var layers = [], visited = new Set();
+    var queue = ids.filter(function (id) { return indeg.get(id) === 0; });
+    while (queue.length) {
+      layers.push(queue.slice());
+      queue.forEach(function (id) { visited.add(id); });
+      var next = [];
+      queue.forEach(function (id) {
+        adj.get(id).forEach(function (c) {
+          if (visited.has(c)) return;
+          var rem = indeg.get(c) - 1;
+          indeg.set(c, rem);
+          if (rem <= 0 && next.indexOf(c) === -1) next.push(c);
+        });
+      });
+      queue = next;
     }
+    var left = ids.filter(function (id) { return !visited.has(id); });
+    if (left.length) layers.push(left);
+
+    var maxLayer = 1;
+    layers.forEach(function (l) { maxLayer = Math.max(maxLayer, l.length); });
+    var perCol = maxLayer <= 6 ? maxLayer : Math.max(4, Math.ceil(Math.sqrt(maxLayer * 1.5)));
+    var grid = layers.map(function (l) {
+      return l.length <= perCol
+        ? { subCols: 1, rows: l.length }
+        : { subCols: Math.ceil(l.length / perCol), rows: Math.min(l.length, perCol) };
+    });
+    var starts = [0], i;
+    for (i = 1; i < layers.length; i++) {
+      var pgrid = grid[i - 1];
+      starts.push(starts[i - 1] + pgrid.subCols * NODE_W + (pgrid.subCols - 1) * NODE_GAP + LAYER_GAP);
+    }
+    var maxRows = 1;
+    grid.forEach(function (g) { maxRows = Math.max(maxRows, g.rows); });
+    var crossAll = maxRows * NODE_H + (maxRows - 1) * NODE_GAP;
+
+    var pos = new Map();
+    layers.forEach(function (layer, li) {
+      var g = grid[li];
+      var size = g.rows * NODE_H + (g.rows - 1) * NODE_GAP;
+      var crossStart = Math.max(0, (crossAll - size) / 2);
+      layer.forEach(function (id, ni) {
+        pos.set(id, {
+          x: starts[li] + Math.floor(ni / perCol) * (NODE_W + NODE_GAP),
+          y: crossStart + (ni % perCol) * (NODE_H + NODE_GAP)
+        });
+      });
+    });
+    var last = grid[grid.length - 1];
+    return {
+      pos: pos,
+      w: starts[starts.length - 1] + last.subCols * NODE_W + (last.subCols - 1) * NODE_GAP,
+      h: crossAll
+    };
+  }
+
+  /** Radial: centerId in the middle, others on concentric rings by hop distance. A crowded
+   *  ring is pushed out far enough that its circumference fits every card. */
+  function layoutRadial(ids, edges, centerId) {
+    var idSet = new Set(ids), adj = new Map();
+    ids.forEach(function (id) { adj.set(id, []); });
+    edges.forEach(function (e) {
+      if (!idSet.has(e.from) || !idSet.has(e.to)) return;
+      adj.get(e.from).push(e.to);
+      adj.get(e.to).push(e.from);
+    });
+    var ring = new Map([[centerId, 0]]);
+    var frontier = [centerId], seen = new Set([centerId]);
+    while (frontier.length) {
+      var next = [];
+      frontier.forEach(function (u) {
+        adj.get(u).forEach(function (v) {
+          if (seen.has(v)) return;
+          seen.add(v); ring.set(v, ring.get(u) + 1); next.push(v);
+        });
+      });
+      frontier = next;
+    }
+    var maxRing = 0;
+    ring.forEach(function (r) { maxRing = Math.max(maxRing, r); });
+    ids.forEach(function (id) { if (!ring.has(id)) ring.set(id, maxRing + 1); }); // disconnected guard
+    maxRing = 0;
+    ring.forEach(function (r) { maxRing = Math.max(maxRing, r); });
+
+    var byRing = new Map();
+    ids.forEach(function (id) {
+      var r = ring.get(id);
+      if (!byRing.has(r)) byRing.set(r, []);
+      byRing.get(r).push(id);
+    });
+    var step = Math.max(NODE_W, NODE_H) + GAP + 40;
+    var radii = [0], r2;
+    for (r2 = 1; r2 <= maxRing; r2++) {
+      var n = (byRing.get(r2) || []).length;
+      radii[r2] = Math.max(radii[r2 - 1] + step, n > 1 ? (n * (NODE_W + GAP)) / (2 * Math.PI) : 0);
+    }
+    var c = radii[maxRing] + Math.max(NODE_W, NODE_H);
+    var pos = new Map();
+    byRing.forEach(function (members, r) {
+      if (r === 0) { pos.set(members[0], { x: c - NODE_W / 2, y: c - NODE_H / 2 }); return; }
+      var radius = radii[r];
+      members.forEach(function (id, i) {
+        var ang = (2 * Math.PI * i) / members.length - Math.PI / 2;
+        pos.set(id, { x: c + radius * Math.cos(ang) - NODE_W / 2, y: c + radius * Math.sin(ang) - NODE_H / 2 });
+      });
+    });
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    pos.forEach(function (p) {
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + NODE_W); maxY = Math.max(maxY, p.y + NODE_H);
+    });
+    pos.forEach(function (p) { p.x -= minX; p.y -= minY; });
+    return { pos: pos, w: maxX - minX, h: maxY - minY };
+  }
+
+  /** Pack standalone items into a sqrt-ish grid. */
+  function layoutSingletons(ids) {
+    var cols = Math.max(1, Math.ceil(Math.sqrt(ids.length)));
+    var pos = new Map();
+    ids.forEach(function (id, i) {
+      pos.set(id, { x: (i % cols) * (NODE_W + GAP), y: Math.floor(i / cols) * (NODE_H + GAP) });
+    });
+    var rows = Math.ceil(ids.length / cols);
+    return { pos: pos, w: cols * NODE_W + (cols - 1) * GAP, h: rows * NODE_H + (rows - 1) * GAP };
+  }
+
+  /** Shelf bin-pack blocks left→right, wrapping at a target width derived from total area. */
+  function packBlocks(blocks) {
+    var total = 0;
+    blocks.forEach(function (b) { total += b.w * b.h; });
+    var targetW = Math.max(800, Math.sqrt(total * 1.6));
+    var positions = new Map();
+    var x = 0, y = 0, rowH = 0, maxW = 0;
+    blocks.forEach(function (b) {
+      if (x > 0 && x + b.w > targetW) { x = 0; y += rowH + GAP * 2; rowH = 0; }
+      var bx = x, by = y;
+      b.pos.forEach(function (p, id) { positions.set(id, { x: bx + p.x, y: by + p.y }); });
+      x += b.w + GAP * 2;
+      rowH = Math.max(rowH, b.h);
+      maxW = Math.max(maxW, x - GAP * 2);
+    });
+    return { positions: positions, width: maxW, height: y + rowH };
+  }
+
+  function computeLayout(nodes, edges, strategy) {
+    var ids = nodes.map(function (n) { return n.id; });
+    if (!ids.length) return { positions: new Map(), width: 0, height: 0 };
+    var comps = components(ids, edges);
+    var multi = comps.filter(function (c) { return c.length > 1; });
+    var singles = comps.filter(function (c) { return c.length === 1; }).map(function (c) { return c[0]; });
+    var blocks = multi.map(function (comp) {
+      var b = strategy === 'clusters' ? layoutFlow(comp, edges) : layoutRadial(comp, edges, highestDegree(comp, edges));
+      b.ids = comp;
+      return b;
+    });
+    blocks.sort(function (a, b) { return b.ids.length - a.ids.length; });
+    if (singles.length) blocks.push(layoutSingletons(singles));
+    var packed = packBlocks(blocks);
+    var pad = 20, out = new Map();
+    packed.positions.forEach(function (p, id) { out.set(id, { x: p.x + pad, y: p.y + pad }); });
+    return { positions: out, width: packed.width + pad * 2, height: packed.height + pad * 2 };
+  }
+
+  /** Point on a card's border toward (tx,ty), so edges meet card edges, not centers. */
+  function borderPoint(x, y, tx, ty) {
+    var cx = x + NODE_W / 2, cy = y + NODE_H / 2, dx = tx - cx, dy = ty - cy;
+    if (dx === 0 && dy === 0) return { x: cx, y: cy };
+    var sx = dx !== 0 ? (NODE_W / 2) / Math.abs(dx) : Infinity;
+    var sy = dy !== 0 ? (NODE_H / 2) / Math.abs(dy) : Infinity;
+    var s = Math.min(sx, sy);
+    return { x: cx + dx * s, y: cy + dy * s };
+  }
+
+  // ── stage rendering ───────────────────────────────────────────────────────
+  function neighborhood(sel) {
+    if (!sel) return null;
+    var set = new Set([sel]);
+    G.edges.forEach(function (e) {
+      if (e.from === sel) set.add(e.to);
+      if (e.to === sel) set.add(e.from);
+    });
+    return set;
+  }
+
+  function nodeCardHtml(nd, p, deg, connected) {
+    var accent = own(STATUS_COLOR, nd.status, '#94a3b8');
+    var dim = connected && !connected.has(nd.id);
+    var sel = nd.id === G.sel;
+    var c = nd.counts || {};
+    var bits = [];
+    if (deg) bits.push('⛓' + deg);
+    if (c.discussion) bits.push(c.discussion + ' note' + (c.discussion === 1 ? '' : 's'));
+    if (c.reviews) bits.push(c.reviews + ' review' + (c.reviews === 1 ? '' : 's'));
+    return '<div class="g-node-card' + (sel ? ' sel' : '') + (dim ? ' dim' : '') + (nd.removed ? ' removed' : '')
+      + '" data-nid="' + esc(nd.id) + '" title="' + esc(nd.title + ' — ' + nd.id) + '"'
+      + ' style="left:' + Math.round(p.x) + 'px;top:' + Math.round(p.y) + 'px;width:' + NODE_W + 'px;height:' + NODE_H + 'px;border-left-color:' + accent + '">'
+      + '<div class="gc-title">' + esc(nd.title) + '</div>'
+      + '<div class="gc-meta"><span class="pill ty">' + esc(nd.type) + '</span>'
+      + '<span class="pill st-' + esc(nd.status) + '">' + esc(nd.status) + '</span>'
+      + '<span class="pill pr-' + esc(nd.priority) + '">' + esc(nd.priority) + '</span></div>'
+      + (bits.length ? '<div class="gc-rel">' + esc(bits.join(' · ')) + '</div>' : '')
+      + '</div>';
+  }
+
+  function paintGraph() {
+    G.layout = computeLayout(G.nodes, G.edges, G.strategy);
+    var pos = G.layout.positions;
+
+    // One arrow marker per DIRECTED kind, colored from the shared palette (our constants,
+    // not user data — user strings never reach the defs markup).
+    $('g-defs').innerHTML = Object.keys(DIRECTED).map(function (k) {
+      return '<marker id="bk-arrow-' + k + '" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">'
+        + '<polygon points="0 0, 9 3.5, 0 7" fill="' + (KIND_COLOR[k] || '#64748b') + '"></polygon></marker>';
+    }).join('');
+
+    var connected = neighborhood(G.sel);
+    $('g-edge-g').innerHTML = G.edges.map(function (e) {
+      var a = pos.get(e.from), b = pos.get(e.to);
+      if (!a || !b) return '';
+      var p1 = borderPoint(a.x, a.y, b.x + NODE_W / 2, b.y + NODE_H / 2);
+      var p2 = borderPoint(b.x, b.y, a.x + NODE_W / 2, a.y + NODE_H / 2);
+      var hot = !!G.sel && (e.from === G.sel || e.to === G.sel);
+      var dash = own(KIND_DASH, e.kind, '');
+      return '<line x1="' + p1.x.toFixed(1) + '" y1="' + p1.y.toFixed(1) + '" x2="' + p2.x.toFixed(1) + '" y2="' + p2.y.toFixed(1) + '"'
+        + ' stroke="' + own(KIND_COLOR, e.kind, '#64748b') + '" stroke-width="' + (hot ? 2.2 : 1.4) + '"'
+        + (dash ? ' stroke-dasharray="' + dash + '"' : '')
+        + ' stroke-opacity="' + (hot ? 0.95 : (G.sel ? 0.15 : 0.65)) + '"'
+        + (own(DIRECTED, e.kind, 0) ? ' marker-end="url(#bk-arrow-' + e.kind + ')"' : '')
+        + '></line>';
+    }).join('');
+    var svg = $('g-edges');
+    svg.setAttribute('width', String(Math.ceil(G.layout.width)));
+    svg.setAttribute('height', String(Math.ceil(G.layout.height)));
+
+    var degs = new Map();
+    G.edges.forEach(function (e) {
+      degs.set(e.from, (degs.get(e.from) || 0) + 1);
+      degs.set(e.to, (degs.get(e.to) || 0) + 1);
+    });
+    $('g-cards').innerHTML = G.nodes.map(function (nd) {
+      var p = pos.get(nd.id);
+      return p ? nodeCardHtml(nd, p, degs.get(nd.id) || 0, connected) : '';
+    }).join('');
+
+    var stage = $('g-stage');
+    stage.style.width = Math.ceil(G.layout.width) + 'px';
+    stage.style.height = Math.ceil(G.layout.height) + 'px';
+    applyTransform();
     $('g-stats').textContent = G.nodes.length + ' item' + (G.nodes.length === 1 ? '' : 's')
       + ' · ' + G.edges.length + ' link' + (G.edges.length === 1 ? '' : 's');
     paintLegend();
+    reportHeight();
   }
 
   function paintLegend() {
-    // node fills are dark saturated hues that read on both themes; edge colors are
-    // pastels tuned for the dark canvas, so light theme swaps in 600-series hues
-    // (must match the body.theme-light .g-edge overrides in app.css)
-    var st = [['open / discussing', '#475569'], ['accepted / planned', '#1d4ed8'], ['implemented', '#15803d'], ['deferred', '#92400e'], ['rejected', '#991b1b']];
-    var kn = THEME === 'light'
-      ? [['depends-on', '#2563eb'], ['blocks', '#b91c1c'], ['parent-of', '#475569'], ['relates-to', '#64748b'], ['duplicate-of', '#b45309'], ['spawned-mission', '#7c3aed']]
-      : [['depends-on', '#60a5fa'], ['blocks', '#f87171'], ['parent-of', '#94a3b8'], ['relates-to', '#64748b'], ['duplicate-of', '#fbbf24'], ['spawned-mission', '#c084fc']];
+    var st = [['open / discussing', '#94a3b8'], ['accepted / planned', '#3b82f6'], ['implemented', '#4ade80'], ['deferred', '#fbbf24'], ['rejected', '#f87171']];
     $('g-legend').innerHTML =
       '<div class="lg-row">' + st.map(function (s) { return '<span class="lg"><span class="sw" style="background:' + s[1] + '"></span>' + s[0] + '</span>'; }).join('') + '</div>'
-      + '<div class="lg-row">' + kn.map(function (s) { return '<span class="lg"><span class="ln" style="border-color:' + s[1] + '"></span>' + s[0] + '</span>'; }).join('') + '</div>';
+      + '<div class="lg-row">' + Object.keys(KIND_COLOR).map(function (k) { return '<span class="lg"><span class="ln" style="border-color:' + KIND_COLOR[k] + '"></span>' + k + '</span>'; }).join('') + '</div>';
   }
 
-  function applyVB() {
-    $('g-svg').setAttribute('viewBox', G.vb.x.toFixed(1) + ' ' + G.vb.y.toFixed(1) + ' ' + G.vb.w.toFixed(1) + ' ' + G.vb.h.toFixed(1));
+  // ── pan / zoom / select (transform on the stage, per the house pattern) ──
+  function applyTransform() {
+    $('g-stage').style.transform = 'translate(' + G.pan.x + 'px,' + G.pan.y + 'px) scale(' + G.zoom + ')';
+    $('g-zoom-pct').textContent = Math.round(G.zoom * 100) + '%';
   }
 
-  function fitGraph() {
-    var xs = [], ys = [];
-    G.nodes.forEach(function (nd) { var p = G.pos[nd.id]; if (p) { xs.push(p.x); ys.push(p.y); } });
-    if (!xs.length) { G.vb = { x: 0, y: 0, w: G.W, h: G.H }; applyVB(); return; }
-    var minX = Math.min.apply(null, xs) - 90, maxX = Math.max.apply(null, xs) + 90;
-    var minY = Math.min.apply(null, ys) - 50, maxY = Math.max.apply(null, ys) + 60;
-    G.vb = { x: minX, y: minY, w: Math.max(240, maxX - minX), h: Math.max(180, maxY - minY) };
-    applyVB();
+  function fitToView() {
+    if (!G.layout || !G.layout.width) return;
+    var r = $('g-canvas').getBoundingClientRect();
+    // Hidden pane → 0×0 rect. Remember the skipped fit; switchView consumes it on entry.
+    if (!r.width || !r.height) { G.pendingFit = true; return; }
+    G.pendingFit = false;
+    // Fit never zooms IN past 100% — a 1-item graph at MAX_ZOOM is a blurry wall of card.
+    var z = Math.min(Math.max(Math.min((r.width - 20) / G.layout.width, (r.height - 20) / G.layout.height), MIN_ZOOM), 1);
+    G.zoom = z;
+    G.pan = {
+      x: Math.max(0, (r.width - G.layout.width * z) / 2),
+      y: Math.max(0, (r.height - G.layout.height * z) / 2)
+    };
+    applyTransform();
   }
 
-  // client px → viewBox coords (uniform scale + letterbox offsets of xMidYMid meet)
-  function svgPoint(clientX, clientY) {
-    var rect = $('g-svg').getBoundingClientRect();
-    var s = Math.min(rect.width / G.vb.w, rect.height / G.vb.h) || 1;
-    var ox = (rect.width - G.vb.w * s) / 2, oy = (rect.height - G.vb.h * s) / 2;
-    return { x: G.vb.x + (clientX - rect.left - ox) / s, y: G.vb.y + (clientY - rect.top - oy) / s };
+  function zoomAt(factor, fx, fy) {
+    var nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, G.zoom * factor));
+    var ratio = nz / G.zoom;
+    G.pan = { x: fx - (fx - G.pan.x) * ratio, y: fy - (fy - G.pan.y) * ratio };
+    G.zoom = nz;
+    applyTransform();
   }
 
-  function moveNode(id, x, y) {
-    G.pos[id] = { x: x, y: y };
-    var el = G.els[id];
-    if (el) el.setAttribute('transform', 'translate(' + x.toFixed(1) + ',' + y.toFixed(1) + ')');
-    G.edgeEls.forEach(function (ee) {
-      if (ee.from !== id && ee.to !== id) return;
-      var a = G.pos[ee.from], b = G.pos[ee.to];
-      if (!a || !b) return;
-      var ln = ee.el.querySelector('line');
-      ln.setAttribute('x1', a.x.toFixed(1)); ln.setAttribute('y1', a.y.toFixed(1));
-      ln.setAttribute('x2', b.x.toFixed(1)); ln.setAttribute('y2', b.y.toFixed(1));
-      var poly = ee.el.querySelector('polygon');
-      if (poly) poly.setAttribute('points', arrowPoints(a, b, ee.to));
-    });
-  }
-
-  function paintGraphSel() {
-    Object.keys(G.els).forEach(function (id) { G.els[id].classList.toggle('sel', id === G.sel); });
+  function selectNode(id) {
+    G.sel = id;
+    paintGraph();                                // deterministic layout → same positions, new dim/sel state
+    if (id) showGraphCard(id);
+    else { $('g-card').hidden = true; }
   }
 
   function showGraphCard(id) {
     var nd = G.byId[id];
     if (!nd) return;
-    G.sel = id;
-    paintGraphSel();
     var card = $('g-card');
     var tags = (nd.tags || []).map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; }).join('');
     card.innerHTML = '<div class="g-card-t">' + esc(nd.title) + '</div>'
@@ -549,85 +729,92 @@
       + '<button class="ghost" id="g-close" type="button">close</button></div>';
     card.hidden = false;
     $('g-open').onclick = function () { switchView('list'); openItem(id); };
-    $('g-close').onclick = function () { card.hidden = true; G.sel = null; paintGraphSel(); };
+    $('g-close').onclick = function () { selectNode(null); };
   }
 
-  function hoverGraph(id, on) {
-    var svg = $('g-svg');
-    // clear FIRST, every time — node→node moves with no background in between
-    // would otherwise accumulate .hl until half the graph is "highlighted"
-    svg.querySelectorAll('.hl').forEach(function (el) { el.classList.remove('hl'); });
-    if (!on) { svg.classList.remove('hovering'); return; }
-    svg.classList.add('hovering');
-    var keep = {}; keep[id] = 1;
-    G.edgeEls.forEach(function (ee) {
-      if (ee.from === id || ee.to === id) { ee.el.classList.add('hl'); keep[ee.from] = 1; keep[ee.to] = 1; }
-    });
-    Object.keys(keep).forEach(function (nid) { if (G.els[nid]) G.els[nid].classList.add('hl'); });
-  }
-
-  // drag a node / pan the background / wheel-zoom — one pointer state machine.
-  // One gesture at a time, keyed by pointerId: a second finger is inert (no pinch,
-  // but no viewport thrash either), and pointercancel/lostpointercapture end the
-  // gesture like pointerup does — minus the tap action.
-  var gDrag = null;
+  var gDrag = { on: false, moved: false };
+  var gPinch = null;
   function wireGraph() {
-    var svg = $('g-svg');
-    svg.addEventListener('pointerdown', function (e) {
-      if (e.button !== 0 || gDrag) return;       // primary button only (touch/pen report 0)
-      var node = e.target.closest ? e.target.closest('.g-node') : null;
-      if (node) {
-        var id = node.getAttribute('data-id');
-        var p = svgPoint(e.clientX, e.clientY);
-        gDrag = { pid: e.pointerId, id: id, ox: p.x - G.pos[id].x, oy: p.y - G.pos[id].y, sx: e.clientX, sy: e.clientY, moved: false };
-      } else {
-        gDrag = { pid: e.pointerId, pan: true, sx: e.clientX, sy: e.clientY, vb0: { x: G.vb.x, y: G.vb.y }, moved: false };
-        svg.classList.add('panning');
-      }
-      svg.setPointerCapture(e.pointerId);
-      e.preventDefault();
+    var cv = $('g-canvas');
+    // The info card and msg overlay float INSIDE the canvas — a press on their buttons
+    // must not start a pan, and a wheel/dblclick over them must not move the viewport.
+    function onOverlay(t) { return !!(t && t.closest && t.closest('.g-card, .g-msg')); }
+    $('g-cards').addEventListener('click', function (e) {
+      if (gDrag.moved) return;
+      var card = e.target.closest ? e.target.closest('.g-node-card') : null;
+      if (!card || !card.dataset.nid) return;
+      selectNode(card.dataset.nid === G.sel ? null : card.dataset.nid);
     });
-    svg.addEventListener('pointermove', function (e) {
-      if (!gDrag) {
-        var node = e.target.closest ? e.target.closest('.g-node') : null;
-        hoverGraph(node ? node.getAttribute('data-id') : null, !!node);
-        return;
-      }
-      if (e.pointerId !== gDrag.pid) return;
-      // 3px slop before a press counts as a drag — a touch tap always rolls 1-2px,
-      // and without this the tap-opens-card path (checked on pointerup) never fires
-      if (!gDrag.moved && Math.abs(e.clientX - gDrag.sx) + Math.abs(e.clientY - gDrag.sy) <= 3) return;
-      gDrag.moved = true;
-      if (gDrag.pan) {
-        var rect = svg.getBoundingClientRect();
-        var s = Math.min(rect.width / G.vb.w, rect.height / G.vb.h) || 1;
-        G.vb.x = gDrag.vb0.x - (e.clientX - gDrag.sx) / s;
-        G.vb.y = gDrag.vb0.y - (e.clientY - gDrag.sy) / s;
-        applyVB();
-      } else {
-        var p = svgPoint(e.clientX, e.clientY);
-        moveNode(gDrag.id, p.x - gDrag.ox, p.y - gDrag.oy);
-      }
+    cv.addEventListener('mousedown', function (e) {
+      if (e.button !== 0 || onOverlay(e.target)) return;
+      gDrag = { on: true, moved: false, x: e.clientX, y: e.clientY, px: G.pan.x, py: G.pan.y };
     });
-    function endDrag(e, isTapEligible) {
-      if (!gDrag || e.pointerId !== gDrag.pid) return;
-      svg.classList.remove('panning');
-      if (isTapEligible && !gDrag.moved && gDrag.id) showGraphCard(gDrag.id);
-      gDrag = null;
-    }
-    svg.addEventListener('pointerup', function (e) { endDrag(e, true); });
-    svg.addEventListener('pointercancel', function (e) { endDrag(e, false); });
-    svg.addEventListener('lostpointercapture', function (e) { endDrag(e, false); });
-    svg.addEventListener('pointerleave', function () { if (!gDrag) hoverGraph(null, false); });
-    svg.addEventListener('wheel', function (e) {
+    cv.addEventListener('mousemove', function (e) {
+      if (!gDrag.on) return;
+      var dx = e.clientX - gDrag.x, dy = e.clientY - gDrag.y;
+      if (!gDrag.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) gDrag.moved = true;
+      G.pan = { x: gDrag.px + dx, y: gDrag.py + dy };
+      applyTransform();
+    });
+    function endDrag() { gDrag.on = false; setTimeout(function () { gDrag.moved = false; }, 0); }
+    cv.addEventListener('mouseup', endDrag);
+    cv.addEventListener('mouseleave', endDrag);
+    cv.addEventListener('dblclick', function (e) {
+      // Double-click on a CARD is a natural "open this" gesture — it must not refit the
+      // viewport (click #2 lands after click #1's re-render already toggled selection).
+      if (onOverlay(e.target) || (e.target.closest && e.target.closest('.g-node-card'))) return;
+      fitToView();
+    });
+    cv.addEventListener('wheel', function (e) {
+      if (onOverlay(e.target)) return;
       e.preventDefault();
-      var f = e.deltaY < 0 ? 0.85 : 1 / 0.85;
-      var w = Math.max(G.W / 8, Math.min(G.W * 5, G.vb.w * f));
-      f = w / G.vb.w;
-      var p = svgPoint(e.clientX, e.clientY);
-      G.vb = { x: p.x - (p.x - G.vb.x) * f, y: p.y - (p.y - G.vb.y) * f, w: G.vb.w * f, h: G.vb.h * f };
-      applyVB();
+      var r = cv.getBoundingClientRect();
+      zoomAt(e.deltaY > 0 ? 0.9 : 1.1, e.clientX - r.left, e.clientY - r.top);
     }, { passive: false });
+
+    function touchDist(t) { return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); }
+    cv.addEventListener('touchstart', function (e) {
+      var r = cv.getBoundingClientRect();
+      if (e.touches.length === 2) {
+        gDrag.on = false;
+        gPinch = {
+          dist: touchDist(e.touches), zoom: G.zoom,
+          cx: (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left,
+          cy: (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top
+        };
+      } else if (e.touches.length === 1) {
+        if (onOverlay(e.target)) return;
+        gDrag = { on: true, moved: false, x: e.touches[0].clientX, y: e.touches[0].clientY, px: G.pan.x, py: G.pan.y };
+      }
+    }, { passive: false });
+    cv.addEventListener('touchmove', function (e) {
+      if (e.touches.length === 2 && gPinch && gPinch.dist) {
+        e.preventDefault();
+        var nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, gPinch.zoom * (touchDist(e.touches) / gPinch.dist)));
+        var ratio = nz / G.zoom;
+        G.pan = { x: gPinch.cx - (gPinch.cx - G.pan.x) * ratio, y: gPinch.cy - (gPinch.cy - G.pan.y) * ratio };
+        G.zoom = nz;
+        applyTransform();
+      } else if (e.touches.length === 1 && gDrag.on) {
+        e.preventDefault();
+        var dx = e.touches[0].clientX - gDrag.x, dy = e.touches[0].clientY - gDrag.y;
+        if (!gDrag.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) gDrag.moved = true;
+        G.pan = { x: gDrag.px + dx, y: gDrag.py + dy };
+        applyTransform();
+      }
+    }, { passive: false });
+    cv.addEventListener('touchend', function (e) {
+      if (e.touches.length < 2) gPinch = null;
+      // Pinch tail: one finger lifted, one still down — re-arm the pan from the survivor
+      // (no touchstart fires for it). moved:true so the tail can't read as a card tap.
+      if (e.touches.length === 1) {
+        gDrag = { on: true, moved: true, x: e.touches[0].clientX, y: e.touches[0].clientY, px: G.pan.x, py: G.pan.y };
+      }
+      if (e.touches.length === 0) endDrag();
+    }, { passive: false });
+
+    $('g-zoom-in').addEventListener('click', function () { var r = cv.getBoundingClientRect(); zoomAt(1.2, r.width / 2, r.height / 2); });
+    $('g-zoom-out').addEventListener('click', function () { var r = cv.getBoundingClientRect(); zoomAt(0.8, r.width / 2, r.height / 2); });
   }
 
   // ── view switch (List | Graph) ────────────────────────────────────────────
@@ -641,6 +828,7 @@
     document.querySelector('.pane-form').hidden = graphMode;
     document.querySelector('main').classList.toggle('graph-mode', graphMode);
     if (graphMode && !G.loaded) loadGraph();
+    else if (graphMode && G.pendingFit) requestAnimationFrame(fitToView);  // fit skipped while hidden
     reportHeight();
   }
 
@@ -648,8 +836,11 @@
   $('tab-list').addEventListener('click', function () { switchView('list'); });
   $('tab-graph').addEventListener('click', function () { switchView('graph'); });
   $('g-removed').addEventListener('change', function (e) { G.includeRemoved = e.target.checked; loadGraph(); });
-  $('g-fit').addEventListener('click', fitGraph);
-  $('g-relayout').addEventListener('click', function () { layoutGraph(); renderGraph(); fitGraph(); });
+  $('g-strategy').addEventListener('change', function (e) {
+    G.strategy = e.target.value === 'clusters' ? 'clusters' : 'hubs';
+    if (G.loaded) { paintGraph(); fitToView(); }
+  });
+  $('g-fit').addEventListener('click', fitToView);
   $('g-refresh').addEventListener('click', loadGraph);
   wireGraph();
   paintLegend();                                 // static content — else an empty styled box shows pre-load

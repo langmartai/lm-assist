@@ -258,7 +258,7 @@ test('every shipped pane config parses to at least one rule', () => {
  */
 const PANE_CALLS: Record<string, { must: Array<[string, string]>; mustNot: Array<[string, string]> }> = {
   'assist-backlog': {
-    must: [['GET', '/backlog'], ['GET', '/backlog/b-1'], ['POST', '/backlog'],
+    must: [['GET', '/backlog'], ['GET', '/backlog/b-1'], ['GET', '/backlog/graph'], ['POST', '/backlog'],
       ['POST', '/backlog/b-1'], ['POST', '/backlog/b-1/discuss']],
     mustNot: [['POST', '/backlog/b-1/remove'], ['POST', '/backlog/b-1/rollback'],
       ['POST', '/backlog/b-1/link'], ['POST', '/backlog/b-1/unlink'], ['POST', '/backlog/b-1/review']],
