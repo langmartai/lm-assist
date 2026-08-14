@@ -8,17 +8,17 @@
      tier under different path roots, so a leading-slash href would break under one of them. -->
 <link rel="stylesheet" href="assets/app.css">
 </head>
-<body>
+<body class="view-graph">
 <header>
   <h1>Backlog<span class="chip">assist-backlog</span><span class="chip">scope: lm-assist</span></h1>
   <div id="who"><span class="dot"></span><span id="who-name">…</span></div>
 </header>
 <nav class="tabs" id="tabs">
-  <button id="tab-list" class="tab on" type="button">List</button>
-  <button id="tab-graph" class="tab" type="button">Graph</button>
+  <button id="tab-graph" class="tab on" type="button">Graph</button>
+  <button id="tab-list" class="tab" type="button">List</button>
 </nav>
-<main>
-  <section class="pane pane-graph" id="graph-pane" hidden>
+<main class="graph-mode">
+  <section class="pane pane-graph" id="graph-pane">
     <div class="g-toolbar">
       <span id="g-stats" class="g-stats">…</span>
       <label class="chk"><input type="checkbox" id="g-removed" autocomplete="off"> include removed</label>
@@ -46,7 +46,7 @@
     </div>
   </section>
 
-  <section class="pane pane-list">
+  <section class="pane pane-list" hidden>
     <div class="filters">
       <input id="q" class="q" type="text" placeholder="filter title / id / tag…" autocomplete="off">
       <div class="chip-row"><span class="chip-lbl">status</span><span id="chips-status" class="chips"></span></div>
@@ -57,11 +57,11 @@
     <div id="counts" class="counts"></div>
   </section>
 
-  <section class="pane pane-detail">
+  <section class="pane pane-detail" hidden>
     <div id="detail" class="detail empty">Select an item on the left, or fill the form to create one.</div>
   </section>
 
-  <section class="pane pane-form">
+  <section class="pane pane-form" hidden>
     <div class="form-head">
       <h2 id="form-title">New item</h2>
       <button id="form-new" class="ghost" hidden>+ new</button>

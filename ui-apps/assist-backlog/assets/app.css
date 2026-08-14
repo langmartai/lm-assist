@@ -101,7 +101,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .tabs{display:flex;gap:.4rem;max-width:80rem;margin:0 auto;padding:.8rem 1rem 0}
 .tab{background:var(--panel);border:1px solid var(--line);color:var(--dim);border-radius:999px;padding:.3rem .9rem;font-size:.78rem}
 .tab.on{background:var(--blue);border-color:var(--blue);color:#fff}
-main.graph-mode{grid-template-columns:1fr}
+/* Graph is the landing view and takes the FULL content area: no 80rem cap on the
+   grid or the tab bar, one column, and (standalone) a viewport-height canvas. */
+main.graph-mode{grid-template-columns:1fr;max-width:none}
+body.view-graph .tabs{max-width:none}
 
 /* ── graph view — house pattern (stage + cards + edge layer, per assist-mission-graph) ── */
 .g-toolbar{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;margin-bottom:.55rem}
@@ -110,7 +113,9 @@ main.graph-mode{grid-template-columns:1fr}
 .g-sp{flex:1}
 .g-sel{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:.25rem .4rem;font-size:.74rem}
 .g-canvas{position:relative;overflow:hidden;height:34rem;background:var(--panel2);border:1px solid var(--line);border-radius:8px;touch-action:none;cursor:grab}
-body:not(.embed) .g-canvas{height:40rem}
+/* Standalone: fill the viewport below header+tabs+toolbar. Embed keeps the fixed
+   height — inside the shell's iframe, vh is the very height reportHeight defines. */
+body:not(.embed) .g-canvas{height:calc(100vh - 13.5rem);min-height:22rem}
 .g-canvas:active{cursor:grabbing}
 .g-stage{position:absolute;left:0;top:0;transform-origin:0 0}
 .g-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}

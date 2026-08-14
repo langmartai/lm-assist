@@ -79,6 +79,7 @@
     editing: null,                               // id being edited, or null = create mode
     filter: { status: '', type: '', text: '' },  // client-side; '' = all
     showRemoved: false,
+    listLoaded: false,                           // list is lazy: fetched on first List-tab entry
   };
 
   function say(msg, isErr) {
@@ -154,6 +155,7 @@
       if (!r.ok) { fatal(r.error.code + ': ' + r.error.message); return; }
       var data = r.data || {};
       state.items = data.items || [];
+      state.listLoaded = true;
       paintChips();
       paintList();
       var c = data.counts || {};
@@ -827,8 +829,10 @@
     document.querySelector('.pane-detail').hidden = graphMode;
     document.querySelector('.pane-form').hidden = graphMode;
     document.querySelector('main').classList.toggle('graph-mode', graphMode);
+    document.body.classList.toggle('view-graph', graphMode);   // full-width tabs in graph mode
     if (graphMode && !G.loaded) loadGraph();
     else if (graphMode && G.pendingFit) requestAnimationFrame(fitToView);  // fit skipped while hidden
+    if (!graphMode && !state.listLoaded) loadList();           // list is lazy — graph lands first
     reportHeight();
   }
 
@@ -882,5 +886,5 @@
 
   // ── boot ────────────────────────────────────────────────────────────────
   resetForm();
-  loadList();
+  switchView('graph');                           // graph is the landing view; list loads lazily
 })();
