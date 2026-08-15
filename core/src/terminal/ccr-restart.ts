@@ -15,6 +15,21 @@
  * A BUSY session (mid-turn) is refused without force:true — killing a session
  * mid-write is the other corruption vector. Idle sessions restart without force.
  *
+ * RETURN THE SCREEN, DO NOT CLASSIFY IT (design 2026-08-15, after a prod incident
+ * on 117). Every result that has a reachable pane carries `screen` — the same bytes
+ * `terminal_capture` would give — so the CALLER reads what the session is actually
+ * showing and decides. Two things this replaces:
+ *   - "restarted ok" that was in fact parked on a blocking modal (resume-from-summary,
+ *     a new CLI version's first-run permission prompt) — invisible in the old result;
+ *   - a frozen modal read as actively-busy, which sat in a 120s wait until the MCP
+ *     connector timed out first and the caller reasonably suspected a dead node.
+ * We deliberately do NOT ship a modal signature table: signatures rot one CLI release
+ * at a time and their failure mode is silent misclassification. The screen is the
+ * source of truth; `screenStable` says whether it stopped changing, which is the one
+ * observation (not classification) worth making. Auto-dismiss stays OUT of this tool —
+ * judging WHICH modal is safe to answer belongs to the caller (`terminal_send`, ONE
+ * key per call), not to a restart primitive.
+ *
  * Deps-injected (mirrors live-rc-connect's EnsureDeps style) so the orchestration
  * is unit-testable without tmux/processes.
  */
@@ -40,6 +55,24 @@ export interface RestartResult {
   waitedMs?: number;
   /** the fresh resume's record (webUrl/tmux), present on ok */
   record?: unknown;
+  /** true when the refusal is "it read as actively busy" — pair it with `screen`:
+   *  a FROZEN modal reads identically to a running turn, and only the pane tells
+   *  them apart. */
+  busy?: boolean;
+  /** the pane the screen was read from — hand it straight to terminal_capture /
+   *  terminal_send to act on what you see. */
+  tmuxSession?: string | null;
+  /** what the session is showing, verbatim (bounded, tail-kept). Absent when there
+   *  is no reachable pane (headless owner, tmux gone). */
+  screen?: string;
+  /** whether the screen was on the OLD process (refusal / kill-failed) or the FRESH
+   *  one (restarted). */
+  screenSource?: 'pre-restart' | 'post-restart';
+  /** two consecutive captures came back identical. false = still repainting, which
+   *  is itself evidence of real work; true on a busy-refusal is evidence of a FREEZE. */
+  screenStable?: boolean;
+  /** the pane was longer than the byte budget and the TAIL was kept. */
+  screenTruncated?: boolean;
   reason: string;
 }
 
@@ -62,11 +95,80 @@ export interface RestartDeps {
   killStaleCcrTmux: (sid: string) => Promise<void>;
   /** Spawn the fresh `claude --resume` bridge — ONLY called after verified-dead. */
   resume: (sid: string) => Promise<unknown>;
+  /** Read the visible pane for the session. `tmuxSession` is a hint (the fresh
+   *  resume's own pane, which the verdict may not have caught up to yet); without
+   *  it, resolve the pane from the session. null = no reachable pane — say nothing
+   *  rather than guess. */
+  captureScreen?: (sid: string, tmuxSession?: string | null) => { tmuxSession: string; screen: string } | null;
 }
 
 const DEFAULT_IDLE_THRESHOLD_MS = 30 * 60 * 1000;
-const DEFAULT_WAIT_MS = 120_000;   // how long to wait for an in-flight turn to finish
+/** Default: do NOT wait. A session that reads busy returns IMMEDIATELY with its screen
+ *  attached so the caller can tell a frozen modal from a running turn. The old 120s
+ *  default outlived the MCP connector's own timeout, so the caller got an opaque
+ *  "connector isn't responding" instead of any information (measured 117, 2026-08-15:
+ *  two blind retries, ~4 min, zero information gained, node healthy throughout).
+ *  Waiting for genuine in-flight work is still available — pass wait_ms explicitly. */
+const DEFAULT_WAIT_MS = 0;
 const WAIT_POLL_MS = 2_000;
+
+/** Screen budget. ~1–5KB is a normal pane; the cap is a guardrail, not a target, and
+ *  the TAIL is what matters (modals and the prompt render at the bottom). */
+const SCREEN_MAX_BYTES = 8_192;
+const SCREEN_POLL_MS = 750;
+/** Post-restart the TUI is still painting, so allow more polls to reach stability;
+ *  a refusal must stay FAST, so allow fewer. */
+const SCREEN_POLLS_POST = 6;
+const SCREEN_POLLS_PRE = 3;
+
+/** Keep the last SCREEN_MAX_BYTES bytes, on a line boundary. */
+function boundScreen(screen: string): { screen: string; truncated: boolean } {
+  const trimmed = screen.replace(/\s+$/, '');
+  if (Buffer.byteLength(trimmed, 'utf8') <= SCREEN_MAX_BYTES) return { screen: trimmed, truncated: false };
+  const rows = trimmed.split('\n');
+  const kept: string[] = [];
+  let bytes = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const b = Buffer.byteLength(rows[i], 'utf8') + 1;
+    if (bytes + b > SCREEN_MAX_BYTES) break;
+    kept.unshift(rows[i]);
+    bytes += b;
+  }
+  return { screen: kept.join('\n'), truncated: true };
+}
+
+/**
+ * Observe the pane until it STOPS CHANGING (two identical captures), bounded.
+ * A single-shot capture reads the TUI mid-paint; that timing discipline is the one
+ * piece of machinery worth keeping from the classifier design we rejected.
+ * Never throws — a screen we could not read must not fail a restart.
+ */
+async function observeScreen(
+  sid: string,
+  tmuxHint: string | null,
+  maxPolls: number,
+  deps: RestartDeps,
+  sleep: (ms: number) => Promise<void>,
+): Promise<Pick<RestartResult, 'tmuxSession' | 'screen' | 'screenStable' | 'screenTruncated'> | null> {
+  const capture = deps.captureScreen;
+  if (!capture) return null;
+  let prev: string | null = null;
+  let name: string | null = null;
+  let stable = false;
+  for (let i = 0; i < maxPolls; i++) {
+    let cur: { tmuxSession: string; screen: string } | null = null;
+    try { cur = capture(sid, tmuxHint); } catch { cur = null; }
+    if (cur) {
+      name = cur.tmuxSession;
+      if (prev !== null && cur.screen === prev) { stable = true; break; }
+      prev = cur.screen;
+    }
+    if (i < maxPolls - 1) await sleep(SCREEN_POLL_MS);
+  }
+  if (prev === null || name === null) return null;
+  const { screen, truncated } = boundScreen(prev);
+  return { tmuxSession: name, screen, screenStable: stable, screenTruncated: truncated };
+}
 
 /** Is the session ACTUALLY working right now? Prefer the real TUI phase; fall back
  *  to the transcript-age gate when the phase is unknowable. */
@@ -88,8 +190,9 @@ export async function restartLocal(
 ): Promise<RestartResult> {
   const force = !!opts.force;
   const idleThresholdMs = opts.idleThresholdMs ?? DEFAULT_IDLE_THRESHOLD_MS;
-  // How long to WAIT for an in-flight turn to finish before giving up (0 = don't
-  // wait — refuse a busy session immediately, the pre-wait behavior).
+  // How long to WAIT for an in-flight turn to finish before giving up. DEFAULT 0:
+  // refuse immediately WITH THE SCREEN so the caller can see whether there is any
+  // work in flight at all. Waiting is opt-in (wait_ms), capped at 10 min.
   const waitMs = opts.waitMs === undefined ? DEFAULT_WAIT_MS : Math.max(0, Math.min(opts.waitMs, 600_000));
   const phaseOf = deps.phase ?? (() => 'unknown' as const);
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -113,17 +216,26 @@ export async function restartLocal(
   if (wasLive && !force) {
     let busy = isActivelyBusy(v, phaseOf(sid), deps.now(), idleThresholdMs);
     if (busy && waitMs === 0) {
+      // Return FAST with the pane attached. "Frozen on a modal" and "actively
+      // mid-turn" read IDENTICALLY to the detector and are opposite states — only
+      // the screen tells them apart, so hand it over instead of waiting.
+      const obs = await observeScreen(sid, v.tmuxSession, SCREEN_POLLS_PRE, deps, sleep);
       return {
-        ok: false, state: 'needs-force', sid, oldPid, wasLive,
-        reason: 'session is actively busy (mid-turn) and waiting is disabled (waitMs:0) — pass force:true to kill immediately, or allow waitMs',
+        ok: false, state: 'needs-force', sid, oldPid, wasLive, busy: true,
+        ...(obs ?? {}), screenSource: obs ? 'pre-restart' : undefined,
+        reason: obs
+          ? 'session reads as actively busy — NOT restarted, nothing was killed. Its screen is in `screen`: if that is a BLOCKING MODAL (model-switch confirm, resume-from-summary, a new CLI version\'s first-run prompt) there is no in-flight turn to lose — answer it with terminal_send (ONE key per call, re-capture between) or call again with force:true. screenStable:true means the pane stopped changing, i.e. frozen. To wait for genuine in-flight work instead, pass wait_ms (e.g. 120000).'
+          : 'session reads as actively busy — NOT restarted, nothing was killed. No pane was readable (headless owner or the tmux is gone), so the screen could not be attached — pass force:true to kill immediately, or wait_ms to wait for its current work.',
       };
     }
     const waitStart = deps.now();
     while (busy) {
       if (deps.now() - waitStart >= waitMs) {
+        const obs = await observeScreen(sid, v.tmuxSession, SCREEN_POLLS_PRE, deps, sleep);
         return {
-          ok: false, state: 'needs-force', sid, oldPid, wasLive, waitedMs: deps.now() - waitStart,
-          reason: `session stayed busy for the full wait window (${Math.round(waitMs / 1000)}s) — its current work has not finished; retry with a longer waitMs or pass force:true to kill it mid-turn`,
+          ok: false, state: 'needs-force', sid, oldPid, wasLive, busy: true, waitedMs: deps.now() - waitStart,
+          ...(obs ?? {}), screenSource: obs ? 'pre-restart' : undefined,
+          reason: `session still read as busy after the full wait window (${Math.round(waitMs / 1000)}s) — NOT restarted, nothing was killed. Read \`screen\` before waiting longer: a session frozen on a modal reads busy forever, and screenStable:true says the pane is not changing. Answer the modal with terminal_send (ONE key per call) or pass force:true.`,
         };
       }
       await sleep(Math.min(WAIT_POLL_MS, waitMs));
@@ -148,15 +260,27 @@ export async function restartLocal(
     const k = await deps.killOwner(oldPid).catch(() => ({ killed: false, wasAlive: true, method: 'error' }));
     killMethod = k.method;
     // INVARIANT: never resume over a live process.
+    // Both abort paths carry the pane too — "the kill did not take" is exactly when
+    // you want to see what that process is doing.
     if (!k.killed) {
-      return { ok: false, state: 'kill-failed', sid, oldPid, wasLive, killMethod, waitedMs, reason: 'owner process did not terminate; NOT resuming over a live process' };
+      const obs = await observeScreen(sid, v.tmuxSession, SCREEN_POLLS_PRE, deps, sleep);
+      return {
+        ok: false, state: 'kill-failed', sid, oldPid, wasLive, killMethod, waitedMs,
+        ...(obs ?? {}), screenSource: obs ? 'pre-restart' : undefined,
+        reason: 'owner process did not terminate; NOT resuming over a live process',
+      };
     }
     // 3. Independent re-verify: a fresh verdict must agree nothing owns the session
     //    (catches a second process owning the transcript beyond the killed pid).
     let stillLive = false;
     try { stillLive = deps.verdict(sid).live; } catch { stillLive = false; }
     if (stillLive) {
-      return { ok: false, state: 'kill-failed', sid, oldPid, wasLive, killMethod, waitedMs, reason: 'session still reports a live owner after kill; ABORTING resume (no corruption)' };
+      const obs = await observeScreen(sid, v.tmuxSession, SCREEN_POLLS_PRE, deps, sleep);
+      return {
+        ok: false, state: 'kill-failed', sid, oldPid, wasLive, killMethod, waitedMs,
+        ...(obs ?? {}), screenSource: obs ? 'pre-restart' : undefined,
+        reason: 'session still reports a live owner after kill; ABORTING resume (no corruption)',
+      };
     }
   }
 
@@ -168,11 +292,23 @@ export async function restartLocal(
   try {
     const record = await deps.resume(sid);
     const waited = waitedMs > 0 ? ` (waited ${Math.round(waitedMs / 1000)}s for its in-flight work to finish)` : '';
+    // "restarted" says a fresh process spawned — NOT that it reached a usable state.
+    // A resume re-opens modals rather than clearing them (resume-from-summary, and on
+    // a just-upgraded CLI that version's first-run prompts), so the caller MUST read
+    // the pane before assuming the session can take a turn.
+    const recTmux = record && typeof record === 'object' && typeof (record as { tmuxSession?: unknown }).tmuxSession === 'string'
+      ? (record as { tmuxSession: string }).tmuxSession
+      : null;
+    const obs = await observeScreen(sid, recTmux, SCREEN_POLLS_POST, deps, sleep);
+    const screenNote = obs
+      ? ' — `screen` is what it is showing NOW: a resume RE-OPENS modals (resume-from-summary; on a freshly upgraded CLI, that version\'s first-run prompts), so expect a chain of dialogs and drive them with terminal_send, ONE key per call, re-capturing between'
+      : '';
     return {
       ok: true, state: 'restarted', sid, oldPid, wasLive, killMethod, waitedMs, record,
-      reason: wasLive
+      ...(obs ?? {}), screenSource: obs ? 'post-restart' : undefined,
+      reason: (wasLive
         ? `killed the old owner (verified dead) and resumed fresh — MCP tools re-fetched at startup${waited}`
-        : `session was not running; resumed fresh — MCP tools re-fetched at startup${waited}`,
+        : `session was not running; resumed fresh — MCP tools re-fetched at startup${waited}`) + screenNote,
     };
   } catch (e) {
     return { ok: false, state: 'error', sid, oldPid, wasLive, killMethod, waitedMs, reason: `resume failed: ${(e as Error).message}` };

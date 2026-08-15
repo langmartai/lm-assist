@@ -525,6 +525,11 @@ export async function connect({ sessionId, force }: { sessionId: string; force?:
  * INDEPENDENT re-verdict must agree nothing owns the session → only then spawns
  * the fresh `claude --resume`. A busy (mid-turn) session is refused without
  * force:true. kill-failed ⇒ ABORT, never resume over a live process.
+ *
+ * Every outcome with a reachable pane carries the SCREEN verbatim (see
+ * ccr-restart.ts): the caller reads what the session is actually showing instead
+ * of trusting `state:'restarted'` to mean "usable". The busy refusal returns
+ * immediately with the screen rather than waiting — waiting is opt-in via waitMs.
  */
 export async function restart({ sessionId, force, waitMs }: { sessionId: string; force?: boolean; waitMs?: number }): Promise<import('./ccr-restart').RestartResult> {
   const { restartLocal } = require('./ccr-restart') as typeof import('./ccr-restart');
@@ -594,6 +599,19 @@ export async function restart({ sessionId, force, waitMs }: { sessionId: string;
     killStaleCcrTmux: async (sid) => {
       const name = `ccr-${sid.slice(0, 8)}`;
       try { execFileSync('tmux', ['kill-session', '-t', name], { encoding: 'utf-8', timeout: 5000 }); } catch { /* not there — fine */ }
+    },
+    // The pane, verbatim — the same bytes terminal_capture would return. Prefer the
+    // caller's hint (the FRESH resume's own tmux, which sessionVerdict may not have
+    // caught up to yet) and fall back to whatever the verdict knows. Never throws:
+    // an unreadable screen must not fail a restart, it just isn't reported.
+    captureScreen: (sid, tmuxSession) => {
+      try {
+        let name = typeof tmuxSession === 'string' && tmuxSession ? tmuxSession : null;
+        if (!name) name = sessionVerdict(sid).tmuxSession ?? null;
+        if (!name) return null;
+        const tmux = require('./tmux') as typeof import('./tmux');
+        return { tmuxSession: name, screen: tmux.capture(name, { paneQualifier: null, lines: null, start: null }) };
+      } catch { return null; }
     },
     resume: (sid) => connectDeadCreateTmux(sid),
   });

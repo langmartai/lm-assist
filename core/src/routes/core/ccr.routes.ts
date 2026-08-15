@@ -207,6 +207,8 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
     // re-fetches its MCP tool list. Stops existing bridge remotes → kills the
     // live owner (verify-dead, twice) → only then `claude --resume` fresh.
     // Busy sessions need force:true; kill-failed ⇒ CONFLICT, never resumes.
+    // Results (and CONFLICT details.restart) carry the session's visible tmux
+    // pane in `screen` — the caller judges the state, the tool does not classify.
     {
       method: 'POST',
       pattern: /^\/ccr\/restart$/,

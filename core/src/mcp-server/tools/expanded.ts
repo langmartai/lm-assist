@@ -736,13 +736,13 @@ export const ccrRemoteStopToolDef = {
 export const ccrRestartToolDef = {
   name: 'ccr_restart',
   description:
-    'RESTART a LOCAL Claude Code session\'s process so it re-fetches its MCP tool list (Claude Code loads MCP tools at process start ONLY — no in-place reload exists; run refresh_connector_tools/sync-connector FIRST so the refreshed list is what the new process fetches). Corruption-safe by construction: stops existing CCR bridges for the session → KILLS the live owner (SIGTERM→verify→SIGKILL→verify) → an independent re-check must confirm NOTHING still owns the session → only then spawns the fresh `claude --resume`. A session idle at its prompt restarts immediately. An actively-BUSY (mid-turn) session is WAITED FOR by default (wait_ms, default 120s): the restart proceeds the moment its current work finishes; force:true kills immediately instead; a wait timeout returns CONFLICT (retry with longer wait_ms or force). A kill that does not verify dead ABORTS (CONFLICT kill-failed) — it never resumes over a live process. Same session id, same history, fresh process + fresh tools.',
+    'RESTART a LOCAL Claude Code session\'s process so it re-fetches its MCP tool list (Claude Code loads MCP tools at process start ONLY — no in-place reload exists; run refresh_connector_tools/sync-connector FIRST so the refreshed list is what the new process fetches). Corruption-safe by construction: stops existing CCR bridges for the session → KILLS the live owner (SIGTERM→verify→SIGKILL→verify) → an independent re-check must confirm NOTHING still owns the session → only then spawns the fresh `claude --resume`. RETURNS THE SCREEN: every result carries `screen` — the session\'s visible tmux pane, read until it stops changing (`screenStable`) — plus `tmuxSession`, so you can SEE what the session is showing and act on it with terminal_send/terminal_capture. READ IT: "restarted" means a fresh process spawned, NOT that it is usable — a resume RE-OPENS modals (resume-from-summary; on a just-upgraded CLI, that version\'s first-run prompts), so expect a chain of dialogs and drive them ONE key per call, re-capturing between (a combined Down+Enter has mis-landed and silently flipped a live session\'s permission mode). A session idle at its prompt restarts immediately. A session that reads actively-BUSY is REFUSED IMMEDIATELY (CONFLICT, busy:true) with its screen attached and nothing killed — because a session FROZEN ON A MODAL reads identical to one mid-turn, and only the pane tells them apart: if `screen` shows a blocking dialog and screenStable is true, there is no work to lose, so answer it with terminal_send or call again with force:true. Pass wait_ms>0 to opt into WAITING for genuine in-flight work instead (restart proceeds the moment the turn ends). A kill that does not verify dead ABORTS (CONFLICT kill-failed, screen attached) — it never resumes over a live process. Same session id, same history, fresh process + fresh tools.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       session_id: { type: 'string', description: 'Claude Code session UUID to restart.' },
-      force: { type: 'boolean', description: 'Kill IMMEDIATELY even if actively mid-turn (skips waiting). Default false.' },
-      wait_ms: { type: 'number', description: 'When the session is actively mid-turn, WAIT up to this long (ms) for its current work to finish, then restart (default 120000; 0 = do not wait, refuse busy immediately). A session idle at its prompt restarts right away regardless.' },
+      force: { type: 'boolean', description: 'Kill IMMEDIATELY even if it reads as actively mid-turn. Default false. Safe on a session frozen on a modal — confirm from `screen`/screenStable that the pane is not changing.' },
+      wait_ms: { type: 'number', description: 'Opt in to WAITING for an in-flight turn: when the session reads actively-busy, wait up to this long (ms) for its current work to finish, then restart. Default 0 = do not wait — refuse immediately and return the screen so you can judge whether it is really working. Cap 600000. A session idle at its prompt restarts right away regardless.' },
     },
     required: ['session_id'],
   },
@@ -1988,7 +1988,18 @@ async function handleCcrRestart(args: Record<string, unknown>): Promise<McpToolR
   if (args.force === true || args.force === 'true') body.force = true;
   const w = Number(args.wait_ms);
   if (Number.isFinite(w)) body.waitMs = w;
-  try { return renderRaw(await workerPostRaw('/ccr/restart', body)); }
+  try {
+    const raw = await workerPostRaw('/ccr/restart', body);
+    // A REFUSAL is the case that most needs the screen (a frozen modal reads as
+    // actively busy), and the generic renderRaw drops `error.details` — keep the
+    // restart payload verbatim so `screen` actually reaches the caller.
+    if (raw && raw.success === false) {
+      const e = raw.error as { message?: string; code?: string; details?: { restart?: unknown } } | undefined;
+      const restart = e?.details?.restart;
+      if (restart) return err(`${e?.message || e?.code || 'restart refused'}\n\n${pretty(restart as Record<string, unknown>)}`);
+    }
+    return renderRaw(raw);
+  }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrCloudRestart(args: Record<string, unknown>): Promise<McpToolResult> {
