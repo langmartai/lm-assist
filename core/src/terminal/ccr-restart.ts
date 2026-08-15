@@ -68,9 +68,13 @@ export interface RestartResult {
   /** whether the screen was on the OLD process (refusal / kill-failed) or the FRESH
    *  one (restarted). */
   screenSource?: 'pre-restart' | 'post-restart';
-  /** two consecutive captures came back identical. false = still repainting, which
-   *  is itself evidence of real work; true on a busy-refusal is evidence of a FREEZE. */
+  /** the pane held still long enough to be trusted. false = still repainting, which
+   *  is itself evidence of real work; true on a busy-refusal is evidence of a FREEZE.
+   *  false post-restart means the settle window expired while it was still changing —
+   *  re-read it with terminal_capture rather than acting on this snapshot. */
   screenStable?: boolean;
+  /** how long we watched the pane before returning it (settle + observation). */
+  screenWatchedMs?: number;
   /** the pane was longer than the byte budget and the TAIL was kept. */
   screenTruncated?: boolean;
   reason: string;
@@ -116,9 +120,16 @@ const WAIT_POLL_MS = 2_000;
  *  the TAIL is what matters (modals and the prompt render at the bottom). */
 const SCREEN_MAX_BYTES = 8_192;
 const SCREEN_POLL_MS = 750;
-/** Post-restart the TUI is still painting, so allow more polls to reach stability;
- *  a refusal must stay FAST, so allow fewer. */
-const SCREEN_POLLS_POST = 6;
+/** THE WAIT LIVES HERE — after the restart completes, not before it.
+ *  A freshly resumed TUI is still painting: it clears, redraws, loads the transcript,
+ *  and only then opens its resume/first-run dialogs. Two identical captures 750ms
+ *  apart can lock in a half-painted screen that changes a second later, so post-restart
+ *  we SETTLE first (a fixed delay before the first capture) and then require the pane
+ *  to hold still for a MINIMUM observation window before calling it stable.
+ *  A pre-restart refusal is the opposite case — it must stay FAST, so it gets neither. */
+const SCREEN_SETTLE_MS = 1_500;
+const SCREEN_MIN_OBSERVE_MS = 3_000;
+const SCREEN_POLLS_POST = 12;   // ≈1.5s settle + up to ~8s watching
 const SCREEN_POLLS_PRE = 3;
 
 /** Keep the last SCREEN_MAX_BYTES bytes, on a line boundary. */
@@ -138,9 +149,16 @@ function boundScreen(screen: string): { screen: string; truncated: boolean } {
 }
 
 /**
- * Observe the pane until it STOPS CHANGING (two identical captures), bounded.
+ * Observe the pane until it STOPS CHANGING, bounded.
+ *
  * A single-shot capture reads the TUI mid-paint; that timing discipline is the one
- * piece of machinery worth keeping from the classifier design we rejected.
+ * piece of machinery worth keeping from the classifier design we rejected. Post-restart
+ * (`settle`) it is stricter: sleep first so the fresh TUI can paint, then keep watching
+ * for at least SCREEN_MIN_OBSERVE_MS even once two captures match — a screen that has
+ * held still for 750ms is not yet evidence it has finished, and reporting a
+ * half-painted pane as `screenStable` is exactly the confident-and-wrong answer this
+ * whole design exists to avoid. Any change restarts the clock.
+ *
  * Never throws — a screen we could not read must not fail a restart.
  */
 async function observeScreen(
@@ -149,25 +167,39 @@ async function observeScreen(
   maxPolls: number,
   deps: RestartDeps,
   sleep: (ms: number) => Promise<void>,
-): Promise<Pick<RestartResult, 'tmuxSession' | 'screen' | 'screenStable' | 'screenTruncated'> | null> {
+  settle = false,
+): Promise<Pick<RestartResult, 'tmuxSession' | 'screen' | 'screenStable' | 'screenTruncated' | 'screenWatchedMs'> | null> {
   const capture = deps.captureScreen;
   if (!capture) return null;
+  const startedAt = deps.now();
+  const minHoldMs = settle ? SCREEN_MIN_OBSERVE_MS : 0;
+  if (settle) await sleep(SCREEN_SETTLE_MS);
+
   let prev: string | null = null;
   let name: string | null = null;
+  let heldSince: number | null = null;   // when the CURRENT pane content first appeared
   let stable = false;
   for (let i = 0; i < maxPolls; i++) {
     let cur: { tmuxSession: string; screen: string } | null = null;
     try { cur = capture(sid, tmuxHint); } catch { cur = null; }
     if (cur) {
       name = cur.tmuxSession;
-      if (prev !== null && cur.screen === prev) { stable = true; break; }
-      prev = cur.screen;
+      if (prev !== null && cur.screen === prev) {
+        // Held since `heldSince`. Only call it stable once it has held long enough.
+        if (heldSince !== null && deps.now() - heldSince >= minHoldMs) { stable = true; break; }
+      } else {
+        prev = cur.screen;
+        heldSince = deps.now();          // it changed — the hold clock restarts
+      }
     }
     if (i < maxPolls - 1) await sleep(SCREEN_POLL_MS);
   }
   if (prev === null || name === null) return null;
   const { screen, truncated } = boundScreen(prev);
-  return { tmuxSession: name, screen, screenStable: stable, screenTruncated: truncated };
+  return {
+    tmuxSession: name, screen, screenStable: stable, screenTruncated: truncated,
+    screenWatchedMs: Math.max(0, deps.now() - startedAt),
+  };
 }
 
 /** Is the session ACTUALLY working right now? Prefer the real TUI phase; fall back
@@ -299,10 +331,14 @@ export async function restartLocal(
     const recTmux = record && typeof record === 'object' && typeof (record as { tmuxSession?: unknown }).tmuxSession === 'string'
       ? (record as { tmuxSession: string }).tmuxSession
       : null;
-    const obs = await observeScreen(sid, recTmux, SCREEN_POLLS_POST, deps, sleep);
-    const screenNote = obs
-      ? ' — `screen` is what it is showing NOW: a resume RE-OPENS modals (resume-from-summary; on a freshly upgraded CLI, that version\'s first-run prompts), so expect a chain of dialogs and drive them with terminal_send, ONE key per call, re-capturing between'
-      : '';
+    // WAIT HERE, not on the way in: give the fresh TUI time to paint and hold still,
+    // so `screen` is the state it SETTLED on rather than a frame from mid-redraw.
+    const obs = await observeScreen(sid, recTmux, SCREEN_POLLS_POST, deps, sleep, true);
+    const screenNote = !obs
+      ? ''
+      : obs.screenStable
+        ? ' — waited for the fresh session to settle; `screen` is what it came up on. A resume RE-OPENS modals (resume-from-summary; on a freshly upgraded CLI, that version\'s first-run prompts), so expect a chain of dialogs and drive them with terminal_send, ONE key per call, re-capturing between'
+        : ' — ⚠️ the pane was STILL CHANGING when the settle window expired, so `screen` is a snapshot mid-paint, not a settled state: re-read it with terminal_capture before acting on it';
     return {
       ok: true, state: 'restarted', sid, oldPid, wasLive, killMethod, waitedMs, record,
       ...(obs ?? {}), screenSource: obs ? 'post-restart' : undefined,
