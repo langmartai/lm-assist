@@ -208,6 +208,11 @@ export interface SessionCacheData {
   slug?: string;
   /** Custom session title set via /rename */
   customTitle?: string;
+  /**
+   * For subagent transcripts: the agent type Claude Code attributed the run to
+   * (e.g. `my-plugin:oracle`). Only assistant lines carry it.
+   */
+  attributionAgent?: string;
 
   // Incremental arrays (with lineIndex for delta updates)
   userPrompts: CachedUserPrompt[];
@@ -272,7 +277,7 @@ export interface RawMessagesCache {
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const CACHE_VERSION = 12; // v12: Fix command-message detection in classifyUserPrompt
+const CACHE_VERSION = 13; // v13: Capture attributionAgent (real subagent type) on cached sessions
 
 // ─── Skill Extraction Helpers ──────────────────────────────────────────────────
 
@@ -900,6 +905,9 @@ export class SessionCache {
       }
       if (!updated.claudeCodeVersion && msg.version) {
         updated.claudeCodeVersion = msg.version;
+      }
+      if (!updated.attributionAgent && msg.attributionAgent) {
+        updated.attributionAgent = msg.attributionAgent;
       }
       if (!updated.teamName && msg.teamName) {
         updated.teamName = msg.teamName;
