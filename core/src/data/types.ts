@@ -98,7 +98,15 @@ export interface QueryFilter {
 }
 export interface QuerySpec {
   filter?: QueryFilter[];
+  /**
+   * Full-text query as RAW HUMAN TEXT — never FTS5 syntax. The sql backend compiles
+   * it to quoted literal terms, so `-`, `"`, `*` and bare AND/OR/NOT are searched for
+   * rather than parsed as operators. Results are ranked by bm25() unless `sort` is set.
+   * Only the `sql` backend implements it; other backends ignore it.
+   */
   fts?: string;
+  /** How the fts terms combine: 'and' (default, precise) or 'or' (recall). */
+  ftsMode?: 'and' | 'or';
   sort?: Array<{ field: string; dir: 'asc' | 'desc' }>;
   limit?: number;
   offset?: number;

@@ -58,21 +58,28 @@ function opSql(col: string, f: QueryFilter, params: unknown[]): string {
   }
 }
 
-export function compileQuery(q: QuerySpec, indexed: Set<string>): { where: string; whereParams: unknown[]; order: string; orderParams: unknown[] } {
+export function compileQuery(q: QuerySpec, indexed: Set<string>): { join: string; where: string; whereParams: unknown[]; order: string; orderParams: unknown[]; ranked: boolean } {
   const whereParams: unknown[] = [];
   const clauses: string[] = [];
   for (const f of q.filter || []) {
     const col = colExpr(f.field, indexed, whereParams);
     clauses.push(opSql(col, f, whereParams));
   }
+  // FTS is JOINed rather than an `IN (SELECT ...)` subquery specifically so bm25()
+  // is in scope for ORDER BY. A subquery can only answer "does it match"; ranking
+  // needs the fts table itself in the FROM clause. Without this the fts path returns
+  // matches in rowid (i.e. insertion) order — an unranked pile, which is the failure
+  // mode this whole change exists to remove.
+  const join = q.fts ? `JOIN records_fts ON records_fts.rowid = records.rowid` : '';
   if (q.fts) {
     whereParams.push(q.fts);
-    clauses.push(`records.rowid IN (SELECT rowid FROM records_fts WHERE records_fts MATCH ?)`);
+    clauses.push(`records_fts MATCH ?`);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const orderParams: unknown[] = [];
   let order = '';
+  let ranked = false;
   if (q.sort?.length) {
     const parts = q.sort.map((s) => {
       const dir = s.dir === 'desc' ? 'DESC' : 'ASC';
@@ -80,6 +87,12 @@ export function compileQuery(q: QuerySpec, indexed: Set<string>): { where: strin
       return `${col} ${dir}`;
     });
     order = `ORDER BY ${parts.join(', ')}`;
+  } else if (q.fts) {
+    // bm25() returns a NEGATIVE score where a better match is more negative, so plain
+    // ascending order puts the best match first. bm25 also normalizes by document
+    // length, which is what stops a huge document outranking a relevant short one.
+    order = `ORDER BY bm25(records_fts)`;
+    ranked = true;
   }
-  return { where, whereParams, order, orderParams };
+  return { join, where, whereParams, order, orderParams, ranked };
 }

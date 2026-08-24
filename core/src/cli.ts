@@ -218,6 +218,15 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
       console.error('Scheduled jobs start failed:', err.message);
     }
 
+    // Start the user-prompt FTS indexer: subscribes to the session watcher for live
+    // tails and kicks off a bounded backfill. Deliberately NOT gated on
+    // dataServiceEnabled — `search` must be able to rank on a node where the operator
+    // has left the data service off; the sql backend is storage, the service is ACL.
+    try {
+      const { startPromptIndexService } = require('./search/prompt-index-service');
+      startPromptIndexService();
+    } catch (e) { /* non-fatal — search falls back to the text scan and says so */ }
+
     // Start data sync boot (flush timer, reconcile timer, dataset_updated subscription).
     // Guard: hub client is already initialized above; startDataSync() is dormant if
     // dataServiceEnabled=false, so this is always safe to call.
