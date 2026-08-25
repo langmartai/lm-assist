@@ -366,6 +366,19 @@ const PANE_CALLS: Record<string, { must: Array<[string, string]>; mustNot: Array
       ['GET', '/knowledge/generate/stats'], ['GET', '/knowledge/review/status'],
       ['POST', '/knowledge/review'], ['GET', '/sessions/sid-1'], ['GET', '/projects']],
   },
+  'assist-session-dashboard': {
+    must: [['GET', '/projects/sessions'], ['GET', '/sessions/batch-check'], ['GET', '/sessions/sid-1'],
+      ['GET', '/ttyd/processes']],
+    // 🔴 The grid POLLS (there is no stream anywhere in this page), so reads are the whole
+    // data need. What it must NOT keep is the session-DRIVING half it ships buttons for:
+    // start/stop a ttyd console and kill a session's processes. Those buttons are hidden in
+    // pane.css; this rule is why a missed one cannot do damage. `/ttyd/processes` is EXACT so
+    // the rest of the ttyd surface stays out.
+    mustNot: [['POST', '/ttyd/session/sid-1/start'], ['POST', '/ttyd/session/sid-1/stop'],
+      ['POST', '/ttyd/session/sid-1/kill'], ['GET', '/ttyd/session/sid-1'],
+      ['POST', '/sessions/sid-1/queue'], ['POST', '/sessions/batch-check'],
+      ['GET', '/sessions'], ['GET', '/projects'], ['POST', '/projects/sessions']],
+  },
   'assist-sessions': {
     must: [['GET', '/projects'], ['GET', '/projects/sessions'],
       ['GET', '/projects/-home-ubuntu-lm-assist/sessions'], ['GET', '/sessions/sid-1'],
