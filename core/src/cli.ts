@@ -225,7 +225,11 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
     try {
       const { startPromptIndexService } = require('./search/prompt-index-service');
       startPromptIndexService();
-    } catch (e) { /* non-fatal — search falls back to the text scan and says so */ }
+    } catch (e: any) {
+      // Non-fatal: search falls back to the text scan and reports why. But a node whose
+      // index never starts should not have to be diagnosed from search output alone.
+      console.error('Prompt index service failed to start:', e?.message || e);
+    }
 
     // Start data sync boot (flush timer, reconcile timer, dataset_updated subscription).
     // Guard: hub client is already initialized above; startDataSync() is dormant if

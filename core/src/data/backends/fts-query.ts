@@ -37,7 +37,13 @@ const MAX_TERMS = 24;
 export function tokenizeFts(raw: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const t of String(raw || '').toLowerCase().split(/[^\p{L}\p{N}_]+/u)) {
+  // NFC first: the split treats combining marks as separators, but FTS5's unicode61
+  // tokenizer folds them away. Without normalising, a DECOMPOSED "résumé" (what a macOS
+  // paste yields) shreds into "re"+"sume" and can never match the identical word indexed
+  // in composed form — a confident false negative on text the corpus does contain.
+  let norm: string;
+  try { norm = String(raw || '').normalize('NFC'); } catch { norm = String(raw || ''); }
+  for (const t of norm.toLowerCase().split(/[^\p{L}\p{N}_]+/u)) {
     if (t.length < 2) continue;             // single chars match far too much to be worth a term
     if (STOPWORDS.has(t)) continue;
     if (seen.has(t)) continue;

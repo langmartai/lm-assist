@@ -221,7 +221,7 @@ async function suggestContext(
     ...sections,
     '',
     'Use the context above to inform your response. Knowledge entries (K###) contain verified facts extracted from past sessions.',
-    'For deeper investigation, use MCP tools: search(query) to find more knowledge, detail(id) to expand any entry, feedback(id, type, content) to flag outdated or wrong context.',
+    'For deeper investigation, use MCP tools: search(query) to find past code SESSIONS (ranked over their user prompts), search_memory(query) for saved knowledge, detail(id) to expand any entry, feedback(id, type, content) to flag outdated or wrong context.',
   ];
 
   const context = contextLines.join('\n');

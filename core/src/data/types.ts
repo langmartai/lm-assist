@@ -107,6 +107,18 @@ export interface QuerySpec {
   fts?: string;
   /** How the fts terms combine: 'and' (default, precise) or 'or' (recall). */
   ftsMode?: 'and' | 'or';
+  /**
+   * Skip the stored `text` column. A ranking pass that only needs ids/fields would
+   * otherwise ship every matched document across the worker boundary — measured at
+   * 23.7MB for one broad query at the row ceiling.
+   */
+  omitText?: boolean;
+  /**
+   * Set false to skip the second COUNT(*) scan when the caller does not read `total`.
+   * The count runs on every full page, i.e. exactly on every step of an escalating
+   * fetch, and is pure waste if it is discarded.
+   */
+  countTotal?: boolean;
   sort?: Array<{ field: string; dir: 'asc' | 'desc' }>;
   limit?: number;
   offset?: number;

@@ -40,6 +40,8 @@ function isSafeFieldPath(p: string): boolean { return /^[A-Za-z0-9_.]+$/.test(p)
 // is switched on. Qualification is harmless for the non-join queries (same table name)
 // and the returned column names are unchanged, so rowToRecord is unaffected.
 const SELECT_COLS = 'records.id, records.fields, records.text, records.metadata, records.origin, records.version, records.deleted, records.created_at, records.updated_at';
+/** Same shape, but `text` is not read off disk (NULL keeps rowToRecord's contract). */
+const SELECT_COLS_NO_TEXT = SELECT_COLS.replace('records.text', 'NULL AS text');
 
 export function rowToRecord(row: any): DataRecord {
   return {
@@ -207,11 +209,16 @@ export class SqlEngine {
     const { join, where, whereParams, order, orderParams } = compileQuery(spec, new Set(indexed));
     const limit = q.limit ?? 1000;          // finite default — never an unbounded full-table materialization
     const offset = q.offset ?? 0;
-    const rows = h.prepare(`SELECT ${SELECT_COLS} FROM records ${join} ${where} ${order} LIMIT ? OFFSET ?`).all(...whereParams, ...orderParams, limit, offset);
+    const cols = q.omitText ? SELECT_COLS_NO_TEXT : SELECT_COLS;
+    const rows = h.prepare(`SELECT ${cols} FROM records ${join} ${where} ${order} LIMIT ? OFFSET ?`).all(...whereParams, ...orderParams, limit, offset);
     // Exact total for free when the page isn't full; only pay the COUNT scan when results are truncated.
     // The COUNT must carry the same JOIN as the page query — dropping it would count the
     // whole table and report a match-everything total next to a correctly filtered page.
-    const total = rows.length < limit ? offset + rows.length : (h.prepare(`SELECT COUNT(*) AS n FROM records ${join} ${where}`).get(...whereParams) as any).n as number;
+    const total = rows.length < limit
+      ? offset + rows.length
+      : q.countTotal === false
+        ? undefined
+        : (h.prepare(`SELECT COUNT(*) AS n FROM records ${join} ${where}`).get(...whereParams) as any).n as number;
     return { records: rows.map(rowToRecord), total };
   }
 

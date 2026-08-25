@@ -8,16 +8,28 @@ import { type SessionCacheData, isRealUserPrompt } from '../session-cache';
 import { tokenizeFts } from '../data/backends/fts-query';
 
 /**
- * Query tokens for the fallback scan.
+ * General-purpose query tokenizer. **Shared with `api/memory-api.ts`** — do NOT change
+ * its semantics to suit session search.
  *
- * Shares the FTS tokenizer so both paths agree on what a term is — in particular both
- * drop stopwords. This is the fix for the match-all defect: the old tokenizer kept
- * `and`, and the scorer then tested it with an UNANCHORED substring match, so `and` hit
- * `command`, `understand`, `expands`… Measured on a real project, one such token matched
- * 126 of 126 sessions while the meaningful terms matched 10-40 — every query returned
- * the entire corpus, ranked by transcript size.
+ * It deliberately keeps `-`, `_` and `.` INSIDE tokens, so "lm-assist" stays one term.
+ * Routing it through the FTS tokenizer instead split that into "lm" + "assist", and
+ * memory scoring substring-matches, so a bare "lm" began matching realm/helm/film —
+ * re-introducing, in memory search, the exact over-matching this change removed from
+ * session search.
  */
 export function tokenize(text: string): string[] {
+  return text.toLowerCase().replace(/[^a-z0-9\s-_.]/g, ' ').split(/\s+/).filter(t => t.length > 1);
+}
+
+/**
+ * Query tokens for the SESSION fallback scan specifically: the FTS tokenizer, so the
+ * fallback and the ranked path agree on what a term is (stopwords dropped, bounded).
+ *
+ * Note the match-all fix does not depend on this — `containsWord` (whole-word) plus the
+ * majority-of-terms floor in scoreSession are what stop `and` matching inside
+ * `command`/`understand`/`expands`. Dropping stopwords is precision on top.
+ */
+export function tokenizeSessionQuery(text: string): string[] {
   return tokenizeFts(text);
 }
 

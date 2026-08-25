@@ -171,3 +171,91 @@ test('project scoping filters to one repo', async () => {
   const r = await index.search('registry discovery', { project: '/repo/one' });
   assert.deepEqual(r!.sessions.map((s) => s.sessionId), ['p1']);
 });
+
+test('a broad query reports a FLOOR, not a fabricated total, when the scan is capped', async () => {
+  const { index, dir } = freshIndex('cap');
+  // Many sessions, each with several prompts sharing a term: the row budget binds long
+  // before the session list is complete. Measured on the real node, a fixed 200-row budget
+  // reported 114 sessions for "session" where a larger one found 171.
+  for (let i = 0; i < 60; i++) {
+    await index.indexFile(writeSession(dir, `s-${i}`, [
+      `the widget subsystem needs attention in module ${i}`,
+      `more widget work on module ${i} today`,
+      `still more widget notes for module ${i}`,
+    ]));
+  }
+  const small = await index.search('widget', { limit: 20, need: 1 });
+  assert.equal(small!.truncated, true, 'a capped scan must announce itself');
+
+  const big = await index.search('widget', { limit: 5000, need: 1 });
+  assert.equal(big!.truncated, false, 'an exhausted scan is exact');
+  assert.ok(big!.sessions.length > small!.sessions.length, 'the larger budget must see more sessions');
+  assert.equal(big!.sessions.length, 60);
+});
+
+test('the row budget escalates to satisfy a deep page', async () => {
+  const { index, dir } = freshIndex('deep');
+  for (let i = 0; i < 40; i++) {
+    await index.indexFile(writeSession(dir, `d-${i}`, [`gadget calibration pass ${i}`, `gadget follow-up ${i}`]));
+  }
+  // Asking for enough sessions to cover offset 30 + limit 5 must actually reach them.
+  const r = await index.search('gadget', { need: 35 });
+  assert.ok(r!.sessions.length >= 35, `deep page needs >=35 sessions, got ${r!.sessions.length}`);
+});
+
+test('subagent transcripts are excluded — backfill and watcher must agree', async () => {
+  const { index, dir } = freshIndex('subagent');
+  // The live watcher (chokidar depth 3) used to feed these in while the backfill never did,
+  // so a result depended on how the file was discovered. Their "user" turn is the
+  // orchestrator's task prompt, and the filename is not a resolvable session id.
+  const subDir = path.join(dir, 'sess-1', 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  const agentFile = writeSession(subDir, 'agent-a1ae092e5d9fb5672', ['Read-only exploration of the zulu subsystem']);
+  assert.equal(await index.indexFile(agentFile), 0, 'a subagent transcript must not be indexed');
+
+  await index.indexFile(writeSession(dir, 'real-session', ['work on the zulu subsystem']));
+  const r = await index.search('zulu subsystem');
+  assert.deepEqual(r!.sessions.map((s) => s.sessionId), ['real-session']);
+});
+
+test('the watermark does NOT advance past a row that failed to persist', async () => {
+  const { index, dir } = freshIndex('failput');
+  const file = writeSession(dir, 'flaky', ['a prompt about the november subsystem']);
+
+  // Force the store write to fail for this pass.
+  const backend = (index as any).backend;
+  const realPut = backend.put.bind(backend);
+  backend.put = async () => { throw new Error('simulated store failure'); };
+  await index.indexFile(file);
+
+  // Losing this content silently would need a full rebuild to recover, so the next pass
+  // must re-read the same tail. put() is an upsert on a deterministic id, so that is safe.
+  backend.put = realPut;
+  const recovered = await index.indexFile(file);
+  assert.equal(recovered, 1, 'the failed row must be retried, not skipped forever');
+  const r = await index.search('november subsystem');
+  assert.equal(r!.sessions.length, 1);
+});
+
+test('byte accounting survives invalid UTF-8 in the transcript', async () => {
+  const { index, dir } = freshIndex('utf8');
+  const file = writeSession(dir, 'binary', ['first prompt about the oscar subsystem']);
+  await index.indexFile(file);
+
+  // A lone 0xFF is not valid UTF-8: decoding turns it into U+FFFD, which re-encodes to a
+  // DIFFERENT byte length. Measuring the consumed span on the decoded string would drift
+  // the watermark and every later read would start mid-record.
+  const line = Buffer.concat([
+    Buffer.from(JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'bad ' }] } }).slice(0, -1)),
+    Buffer.from([0xff]),
+    Buffer.from('}\n'),
+  ]);
+  fs.appendFileSync(file, line);
+  await index.indexFile(file);
+
+  fs.appendFileSync(file, JSON.stringify({ type: 'user', cwd: '/tmp/proj', message: { content: [{ type: 'text', text: 'later prompt about the papa subsystem' }] } }) + '\n');
+  await index.indexFile(file);
+
+  const r = await index.search('papa subsystem');
+  assert.equal(r!.sessions.length, 1, 'a later record must still be found after an undecodable line');
+});

@@ -17,13 +17,33 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SqlBackend } from '../data/backends/sql-backend';
 import { getDatasetRegistry } from '../data/dataset-registry';
-import { thisNodeId } from '../data/paths';
-import { getDataDir } from '../utils/path-utils';
+import { thisNodeId, dataRoot } from '../data/paths';
 import type { DataRecord } from '../data/types';
 import { classifyPromptForIndex } from './prompt-classifier';
 import { tokenizeFts } from '../data/backends/fts-query';
 
 export const PROMPT_DATASET = 'session-prompts';
+
+/**
+ * Is this .jsonl a real SESSION transcript we should index?
+ *
+ * Subagent transcripts (`<session>/subagents/agent-*.jsonl`) are excluded. Their
+ * user-channel messages are the ORCHESTRATOR's task prompt, not something a person
+ * typed, so they are the very noise this index exists to keep out — and their filename
+ * is not a session id, so a hit would hand the caller `detail("agent-a1ae09…")`, which
+ * resolves to nothing.
+ *
+ * This predicate is shared by the backfill and the live watcher on purpose. They used to
+ * disagree — the backfill only walked one level deep while the watcher (chokidar, depth 3)
+ * happily fed it subagent files — so whether a session appeared in results depended on
+ * whether it was indexed live or by backfill.
+ */
+export function isIndexableSessionFile(filePath: string): boolean {
+  if (!filePath.endsWith('.jsonl')) return false;
+  const base = filePath.slice(filePath.lastIndexOf('/') + 1).replace(/\\/g, '/');
+  if (base.startsWith('agent-')) return false;
+  return !/(^|[/\\])subagents[/\\]/.test(filePath);
+}
 
 /** Indexed as generated columns so project/scope filtering stays a real index seek. */
 const INDEXED_FIELDS: Array<{ path: string; type: 'text' | 'number' }> = [
@@ -70,6 +90,34 @@ export interface PromptSearchResult {
   hits: PromptHit[];
   /** Distinct sessions represented in `hits`. */
   sessions: Array<{ sessionId: string; project: string; ts: string; best: PromptHit; matches: number }>;
+  /**
+   * True when the prompt-row scan hit its ceiling, so `sessions` is a PREFIX of the
+   * matches, not all of them. Callers must render the count as "at least N" — a capped
+   * result presented as a total is the same class of lie this whole feature replaced.
+   */
+  truncated: boolean;
+  /** Prompt rows actually scanned, for the honest-reporting line. */
+  scannedRows: number;
+}
+
+/** Hard ceiling on prompt rows pulled for one search. Bounds worst-case memory + time. */
+const MAX_SCAN_ROWS = 5000;
+/** Bytes read per pass. Bounds peak memory regardless of transcript size. */
+const READ_CHUNK_BYTES = 4 * 1024 * 1024;
+/** Widened window used when a single line exceeds READ_CHUNK_BYTES. */
+const MAX_LINE_BYTES = 32 * 1024 * 1024;
+/** Lines parsed between event-loop yields during a scan. */
+const YIELD_EVERY_LINES = 500;
+/** Per-prompt cap on indexed text. */
+const MAX_INDEXED_TEXT = 20000;
+/** Extra sessions hydrated beyond the caller's page, so a small page change needs no refetch. */
+const HYDRATE_MARGIN = 10;
+/** Upper bound on retained raw hits — diagnostics only; the renderer uses `sessions`. */
+const HITS_KEPT = 200;
+
+/** Hand the event loop back so a long scan cannot monopolise it. */
+function yieldToLoop(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 export class PromptIndex {
@@ -82,7 +130,13 @@ export class PromptIndex {
 
   constructor(storeDirOverride?: string, statePathOverride?: string) {
     this.backend = new SqlBackend(storeDirOverride);
-    this.statePath = statePathOverride || path.join(getDataDir(), 'prompt-index-state.json');
+    // dataRoot(), NOT getDataDir(): the sqlite store is dev/prod split ('data-dev' vs
+    // 'data') but getDataDir() is not, so a shared state file would let the DEV Core's
+    // watermarks convince the PROD Core that 6792 files were already indexed — into a
+    // store that is actually empty. Prod would then index almost nothing, permanently,
+    // and report a healthy-looking but near-empty index. The watermark must live beside
+    // the store it describes.
+    this.statePath = statePathOverride || path.join(dataRoot(), 'prompt-index-state.json');
   }
 
   // ─── lifecycle ────────────────────────────────────────────────────────
@@ -158,6 +212,7 @@ export class PromptIndex {
    */
   async indexFile(filePath: string, opts: { sessionId?: string; project?: string } = {}): Promise<number> {
     await this.init();
+    if (!isIndexableSessionFile(filePath)) return 0;
     let st: fs.Stats;
     try { st = fs.statSync(filePath); } catch { return 0; }
 
@@ -167,75 +222,124 @@ export class PromptIndex {
     const from = rewound ? 0 : prev.bytes;
     if (!rewound && st.size === prev.bytes) return 0;    // nothing appended — the common case
 
-    let chunk: string;
-    try {
-      const fd = fs.openSync(filePath, 'r');
-      try {
-        const len = st.size - from;
-        if (len <= 0) return 0;
-        const buf = Buffer.allocUnsafe(len);
-        fs.readSync(fd, buf, 0, len, from);
-        chunk = buf.toString('utf8');
-      } finally { fs.closeSync(fd); }
-    } catch { return 0; }
-
-    // A trailing partial line (writer mid-append) must NOT be consumed: stop at the last
-    // newline and leave the remainder for the next pass, or the record is lost forever.
-    const lastNl = chunk.lastIndexOf('\n');
-    if (lastNl < 0) return 0;
-    const consumed = Buffer.byteLength(chunk.slice(0, lastNl + 1), 'utf8');
-    const lines = chunk.slice(0, lastNl).split('\n');
-
     const sessionId = opts.sessionId || path.basename(filePath, '.jsonl');
     let lineIndex = rewound ? 0 : prev.lines;
     let project = opts.project || '';
     let added = 0;
+    let failed = false;
     const now = new Date().toISOString();
     const host = thisNodeId();
 
-    for (const line of lines) {
-      const at = lineIndex++;
-      if (!line) continue;
-      let msg: any;
-      try { msg = JSON.parse(line); } catch { continue; }
-      if (!project && msg.cwd) project = msg.cwd;
-      if (msg.type !== 'user') continue;
+    // Walk the tail in BOUNDED chunks, yielding to the event loop as we go.
+    //
+    // Both halves of that are load-bearing, and both were measured. (1) Reading
+    // `st.size - from` in one `allocUnsafe` is unbounded: on first boot `from` is 0, so a
+    // multi-hundred-MB transcript would be allocated and decoded whole. (2) JSON.parse of
+    // every line is synchronous main-thread work, and the only yield used to be
+    // `await put()` — which fires ONLY for indexed prompts, while ~92% of files produce
+    // none, so those parsed start-to-finish with nothing yielding at all. A single
+    // 5.9MB / 12,747-line transcript held the loop for 191ms. That is the
+    // core-event-loop-blocking failure class, and this runs at every Core boot.
+    let pos = from;
+    let sinceYield = 0;
+    let fd: number;
+    try { fd = fs.openSync(filePath, 'r'); } catch { return 0; }
+    try {
+      while (pos < st.size) {
+        let want = Math.min(READ_CHUNK_BYTES, st.size - pos);
+        let buf = Buffer.allocUnsafe(want);
+        // allocUnsafe hands back UNINITIALISED memory, so only the bytes readSync
+        // reports as read may be decoded — a short read would otherwise stringify
+        // whatever happened to be on the heap.
+        let got = fs.readSync(fd, buf, 0, want, pos);
+        if (got <= 0) break;
 
-      const content = msg.message?.content;
-      let text = '';
-      if (Array.isArray(content)) {
-        for (const b of content) if (b?.type === 'text') text += b.text;
-      } else if (typeof content === 'string') {
-        text = content;
+        // The line boundary is found in RAW BYTES. Decoding first and re-encoding a slice
+        // to measure it round-trips through UTF-8: an invalid byte becomes U+FFFD and
+        // re-encodes to a DIFFERENT length, so the watermark would drift from the real
+        // offset and every later read would start mid-record. 0x0A cannot occur inside a
+        // multi-byte UTF-8 sequence, so scanning bytes is exact.
+        let lastNl = buf.lastIndexOf(0x0a, got - 1);
+        if (lastNl < 0) {
+          // No complete line in this window. At EOF that is a partial trailing write —
+          // leave it for the next pass. Otherwise one line is longer than the chunk.
+          if (pos + got >= st.size) break;
+          want = Math.min(MAX_LINE_BYTES, st.size - pos);
+          buf = Buffer.allocUnsafe(want);
+          got = fs.readSync(fd, buf, 0, want, pos);
+          lastNl = got > 0 ? buf.lastIndexOf(0x0a, got - 1) : -1;
+          // A single line beyond MAX_LINE_BYTES would otherwise stall this file forever.
+          if (lastNl < 0) { pos += got; continue; }
+        }
+
+        const lines = buf.toString('utf8', 0, lastNl).split('\n');
+        pos += lastNl + 1;
+
+        for (const line of lines) {
+          const at = lineIndex++;
+          if (++sinceYield >= YIELD_EVERY_LINES) { sinceYield = 0; await yieldToLoop(); }
+          if (!line) continue;
+          let msg: any;
+          try { msg = JSON.parse(line); } catch { continue; }
+          if (!project && msg.cwd) project = msg.cwd;
+          if (msg.type !== 'user') continue;
+
+          const content = msg.message?.content;
+          let text = '';
+          if (Array.isArray(content)) {
+            for (const b of content) if (b?.type === 'text') text += b.text;
+          } else if (typeof content === 'string') {
+            text = content;
+          }
+          if (!text.trim()) continue;
+
+          const c = classifyPromptForIndex(text, msg.isMeta);
+          if (!c.indexText) continue;
+
+          const rec: DataRecord = {
+            id: `${sessionId}:${at}`,
+            version: 1,
+            fields: {
+              sessionId,
+              project,
+              host,
+              ts: msg.timestamp || '',
+              turnIndex: at,
+              promptClass: c.promptClass,
+              // stored 0/1: SQLite has no boolean, and the generated column is compared numerically
+              synthetic: c.synthetic ? 1 : 0,
+            },
+            // FTS indexes `text` only — this is the whole reason boilerplate is
+            // classified rather than concatenated in.
+            text: c.indexText.slice(0, MAX_INDEXED_TEXT),
+            createdAt: msg.timestamp || now,
+            updatedAt: now,
+          };
+          try {
+            await this.backend.put(PROMPT_DATASET, rec);
+            if (!c.synthetic) added++;
+          } catch {
+            // One bad row must not abort the file — but it must not be silently skipped
+            // FOREVER either. Advancing the watermark past a row that never persisted
+            // loses it with no repair path short of a full rebuild. Record ids are
+            // deterministic (`sessionId:lineIndex`) and put() is an upsert, so re-reading
+            // this tail next pass is idempotent: the safe move is not to advance.
+            failed = true;
+          }
+        }
+        await yieldToLoop();
       }
-      if (!text.trim()) continue;
+    } catch {
+      return added;
+    } finally {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+    }
+    const consumed = pos - from;
 
-      const c = classifyPromptForIndex(text, msg.isMeta);
-      if (!c.indexText) continue;
-
-      const rec: DataRecord = {
-        id: `${sessionId}:${at}`,
-        version: 1,
-        fields: {
-          sessionId,
-          project,
-          host,
-          ts: msg.timestamp || '',
-          turnIndex: at,
-          promptClass: c.promptClass,
-          // stored 0/1: SQLite has no boolean, and the generated column is compared numerically
-          synthetic: c.synthetic ? 1 : 0,
-        },
-        // FTS indexes `text` only — this is the whole reason boilerplate is classified
-        // rather than concatenated in.
-        text: c.indexText.slice(0, 20000),
-        createdAt: msg.timestamp || now,
-        updatedAt: now,
-      };
-      try {
-        await this.backend.put(PROMPT_DATASET, rec);
-        if (!c.synthetic) added++;
-      } catch { /* one bad row must not abort the file */ }
+    if (failed) {
+      // Leave the watermark where it was; the next event re-reads this tail.
+      this.scheduleFlush();
+      return added;
     }
 
     this.state.files[key] = {
@@ -261,23 +365,50 @@ export class PromptIndex {
   async search(query: string, opts: {
     project?: string;
     since?: string;
+    /** How many distinct SESSIONS the caller needs (offset + page size). Drives the row budget. */
+    need?: number;
+    /** Explicit prompt-ROW budget, honoured exactly. Omit to derive it from `need`. */
     limit?: number;
     includeSynthetic?: boolean;
   } = {}): Promise<PromptSearchResult | null> {
     await this.init();
     if (tokenizeFts(query).length === 0) return null;   // nothing searchable in the query
 
-    const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
+    // Rows are PROMPTS; results are SESSIONS, and one session can own many matching
+    // prompts. A fixed row budget therefore silently truncates the session list: measured
+    // on this node, "session" yielded 114 sessions at 200 rows and 171 at 1000. The budget
+    // escalates until the rows are exhausted (=> the count is exact) or the ceiling is hit
+    // (=> the count is reported as a floor).
+    const need = Math.max(opts.need ?? 1, 1);
+    // An explicit row budget is honoured EXACTLY (a floor would make the option a lie);
+    // the default scales with the page being asked for, with 200 as a sane minimum.
+    const startRows = Math.min(Math.max(opts.limit ?? Math.max(need * 10, 200), 1), MAX_SCAN_ROWS);
     const base: any[] = [];
     if (opts.project) base.push({ field: 'project', op: 'eq', value: opts.project });
     if (opts.since) base.push({ field: 'ts', op: 'gte', value: opts.since });
     if (!opts.includeSynthetic) base.push({ field: 'synthetic', op: 'eq', value: 0 });
 
     for (const mode of ['and', 'or'] as const) {
-      const r = await this.backend.query(PROMPT_DATASET, {
-        filter: base, fts: query, ftsMode: mode, limit,
-      });
-      const recs = (r.records || []).filter((x) => x.deleted !== true);
+      let rows = startRows;
+      let recs: DataRecord[] = [];
+      let exhausted = false;
+      for (;;) {
+        const r = await this.backend.query(PROMPT_DATASET, {
+          filter: base, fts: query, ftsMode: mode, limit: rows,
+          // The ranking pass needs ids and fields, never the documents. Carrying `text`
+          // shipped the full matched corpus across the worker boundary — measured at
+          // 23.7MB for one broad query at the row ceiling — for a renderer that shows at
+          // most a couple of dozen 220-char snippets. `total` is never read here either,
+          // and computing it costs a second COUNT scan on every escalation step.
+          omitText: true, countTotal: false,
+        });
+        recs = (r.records || []).filter((x) => x.deleted !== true);
+        // Fewer rows back than asked for ⇒ we have every match; the count is exact.
+        exhausted = (r.records || []).length < rows;
+        if (exhausted || rows >= MAX_SCAN_ROWS) break;
+        if (countSessions(recs) > need) break;   // enough to satisfy this page
+        rows = Math.min(rows * 2, MAX_SCAN_ROWS);
+      }
       if (recs.length === 0) continue;
       const hits: PromptHit[] = recs.map((rec) => ({
         id: rec.id,
@@ -286,7 +417,7 @@ export class PromptIndex {
         ts: String(rec.fields?.ts ?? ''),
         turnIndex: Number(rec.fields?.turnIndex ?? 0),
         promptClass: String(rec.fields?.promptClass ?? 'user'),
-        text: rec.text || '',
+        text: '',   // hydrated below, for the rendered page only
       }));
       // Records arrive in bm25 order, so a session's rank is its BEST prompt's rank —
       // first appearance wins. Counting matches per session as a tiebreak would let a
@@ -297,9 +428,26 @@ export class PromptIndex {
         if (cur) { cur.matches++; continue; }
         bySession.set(h.sessionId, { sessionId: h.sessionId, project: h.project, ts: h.ts, best: h, matches: 1 });
       }
-      return { mode, hits, sessions: [...bySession.values()] };
+      const sessions = [...bySession.values()];
+      // Fetch the matching prompt's text ONLY for the sessions that will be rendered —
+      // a bounded handful of point reads instead of streaming every matched document.
+      for (const s of sessions.slice(0, Math.min(need + HYDRATE_MARGIN, sessions.length))) {
+        try {
+          const full = await this.backend.get(PROMPT_DATASET, s.best.id);
+          if (full?.text) s.best.text = full.text;
+        } catch { /* snippet is presentation only — a miss must not fail the search */ }
+      }
+      return {
+        mode,
+        // Bounded: the caller renders sessions, and retaining every matched row here is
+        // what made a broad query hold the whole result set in memory.
+        hits: hits.slice(0, HITS_KEPT),
+        sessions,
+        truncated: !exhausted,
+        scannedRows: recs.length,
+      };
     }
-    return { mode: 'and', hits: [], sessions: [] };
+    return { mode: 'and', hits: [], sessions: [], truncated: false, scannedRows: 0 };
   }
 
   /** Indexed-corpus summary, for honest "why did you fall back" reporting. */
@@ -314,6 +462,13 @@ export class PromptIndex {
   hasContent(): boolean { return Object.keys(this.state.files).length > 0; }
 
   isIndexed(filePath: string): boolean { return !!this.state.files[filePath]; }
+}
+
+/** Distinct sessions among a record page — used to size the row budget. */
+function countSessions(recs: DataRecord[]): number {
+  const seen = new Set<string>();
+  for (const r of recs) seen.add(String(r.fields?.sessionId ?? ''));
+  return seen.size;
 }
 
 let instance: PromptIndex | null = null;

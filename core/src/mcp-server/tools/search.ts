@@ -1,20 +1,26 @@
 /**
- * search tool — Unified search across knowledge and file history
- *
- * Replaces: search, files_history, recent_activity, knowledge_list
+ * search tool — find the user's past CODE SESSIONS.
  *
  * Auto-detects query type:
- *   /path/to/file or .ts/.tsx → file history search
- *   K\d+ or K\d+.\d+          → knowledge ID lookup
+ *   /path/to/file or .ts/.tsx → file history + session search
+ *   K\d+ or K\d+.\d+          → knowledge ID lookup (a pointer jump, not a search)
  *   UUID pattern               → session ID lookup
- *   Otherwise                  → vector semantic search + keyword fallback
+ *   Otherwise                  → bm25 over the indexed USER PROMPTS of every session
+ *
+ * Results are SESSIONS. Knowledge is served by data_search({dataset:"knowledge"}) and
+ * search_memory; the vector/knowledge hybrid that used to run here has been removed.
+ *
+ * Every response states which path answered it. The text scan is a fallback only, and
+ * says so along with why the index could not answer — an unranked pile presented as a
+ * ranked result is the defect this tool is recovering from.
  */
 
 import { getSessionCache } from '../../session-cache';
 import { getKnowledgeStore } from '../../knowledge/store';
-import { tokenize, scoreSession, getProjectPathForSession } from '../../search/text-scorer';
+import { tokenizeSessionQuery, scoreSession, getProjectPathForSession } from '../../search/text-scorer';
 import { isFileQuery } from '../../search/file-matcher';
 import { getPromptIndex, type PromptSearchResult } from '../../search/prompt-index';
+import { promptIndexProgress } from '../../search/prompt-index-service';
 import { tokenizeFts } from '../../data/backends/fts-query';
 
 // ─── Tool Definition (canonical source: definitions.ts) ─────────────
@@ -157,7 +163,9 @@ async function handleSemanticSearch(
   limit: number,
   offset: number,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const attempt = await tryPromptIndex(query, scope, project, includeSynthetic);
+  // The index is asked for enough SESSIONS to fill this page; without it the row budget
+  // is fixed and deep pages simply never reach the later sessions.
+  const attempt = await tryPromptIndex(query, scope, project, includeSynthetic, offset + limit);
   if (attempt.ok) {
     return formatSessionResults(attempt.result, query, limit, offset, attempt.label);
   }
@@ -174,6 +182,7 @@ async function tryPromptIndex(
   scope: Scope,
   project: string | undefined,
   includeSynthetic: boolean,
+  need: number,
 ): Promise<IndexAttempt> {
   if (tokenizeFts(query).length === 0) {
     return { ok: false, why: 'query has no indexable terms (all stopwords or punctuation)' };
@@ -191,11 +200,42 @@ async function tryPromptIndex(
       return { ok: false, why: 'prompt index is empty — the backfill has not run on this node yet' };
     }
     const since = scope === 'all' ? undefined : new Date(Date.now() - SCOPE_MS[scope]).toISOString();
-    const result = await index.search(query, { project, since, includeSynthetic });
+    let result = await index.search(query, { project, since, includeSynthetic, need });
     if (!result) return { ok: false, why: 'query has no indexable terms' };
+
+    // Widen past the time window rather than report a false no-match.
+    //
+    // `scope` defaults to 7d, and that default was calibrated for a scan that read whole
+    // transcripts. Ranking only real user prompts makes the corpus far smaller: measured
+    // on this node, 7d covers 35 prompts across 10 sessions, against 2,300 across 532 for
+    // all time. So the default window misses almost everything — and the miss used to be
+    // announced as "a real no-match". Same contract as the AND→OR widening: try what the
+    // caller asked for, widen only when it finds nothing, and always say which happened.
+    let widenedScope = false;
+    if (since && result.sessions.length === 0) {
+      const all = await index.search(query, { project, includeSynthetic, need });
+      if (all && all.sessions.length > 0) { result = all; widenedScope = true; }
+    }
     const { files, prompts } = index.status();
+    // A backfill in flight means the corpus is a PREFIX of this node's history. Searching
+    // it is fine; presenting it as complete is not — and the no-match text below asserts
+    // "this is a real no-match", which is simply false while indexing is still running.
+    const bf = promptIndexProgress();
+    const building = bf.running
+      ? ` — INDEX STILL BUILDING (${bf.done}/${bf.total} files); results are incomplete`
+      : '';
     const label = `prompt index: bm25 over ${prompts} user prompts from ${files} sessions, ` +
-      (result.mode === 'and' ? 'all terms matched' : 'ANY term matched — no session contained all terms');
+      (result.mode === 'and'
+        ? 'every term matched within a single prompt'
+        : 'ANY term matched — no single prompt contained all terms (a session may still cover them across prompts)') +
+      // The window is always stated. Widening only fires on ZERO results, so a query that
+      // finds a FEW recent sessions silently hides the rest — measured, 7d reached 1
+      // session where all-time had 38. A caller who cannot see the window cannot tell a
+      // complete answer from a recent slice of one.
+      (widenedScope
+        ? ` — WIDENED past scope="${scope}" to all time, which had no match`
+        : scope === 'all' ? '' : ` — LIMITED to scope="${scope}"; older matches are excluded (retry with scope="all")`) +
+      building;
     return { ok: true, result, label };
   } catch (e) {
     // better-sqlite3 missing / db unreadable. Report it rather than quietly degrading.
@@ -213,17 +253,30 @@ function formatSessionResults(
 ): { content: Array<{ type: string; text: string }> } {
   const total = result.sessions.length;
   const page = result.sessions.slice(offset, offset + limit);
+  // A capped scan yields a FLOOR, not a total. Reporting it as a total is exactly the
+  // failure this feature replaced, one layer down: measured here, a broad query showed
+  // 114 sessions at the old fixed budget and 171 with a larger one.
+  const countText = result.truncated ? `at least ${total}` : `${total}`;
   if (page.length === 0) {
-    return { content: [{ type: 'text', text:
-      `No sessions matched "${query}".\n(${label})\n` +
-      `This is a real no-match, not an empty index — widen with scope="all", or drop a term.` }] };
+    const bf = promptIndexProgress();
+    // Only claim a definitive no-match when the corpus is actually complete. Paging past
+    // the end is also not a no-match — it contradicts the page the caller just read.
+    const why = bf.running
+      ? `The index is STILL BUILDING (${bf.done}/${bf.total} files) — this is NOT a definitive no-match; retry once it finishes.`
+      : offset > 0
+        ? `You paged past the end of the results — go back to offset=0.`
+        : `This is a real no-match, not an empty index — widen with scope="all", or drop a term.`;
+    return { content: [{ type: 'text', text: `No sessions matched "${query}".\n(${label})\n${why}` }] };
   }
 
   const cache = getSessionCache();
   const byId = new Map(cache.getAllSessionsFromCache().map((s) => [s.sessionId, s] as const));
   const lines: string[] = [];
-  lines.push(`Found ${total} session${total !== 1 ? 's' : ''} (showing ${offset + 1}-${offset + page.length})`);
+  lines.push(`Found ${countText} session${total !== 1 ? 's' : ''} (showing ${offset + 1}-${offset + page.length})`);
   lines.push(`(${label})`);
+  if (result.truncated) {
+    lines.push(`(scan capped at ${result.scannedRows} matching prompts — more sessions exist; narrow the query for an exact count)`);
+  }
   lines.push('');
 
   for (let i = 0; i < page.length; i++) {
@@ -259,7 +312,7 @@ async function handleTextSearch(
   const cache = getSessionCache();
   const sessions = cache.getAllSessionsFromCache();
 
-  const queryTokens = tokenize(query);
+  const queryTokens = tokenizeSessionQuery(query);
   const queryLower = query.toLowerCase();
 
   // Score sessions

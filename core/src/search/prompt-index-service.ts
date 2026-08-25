@@ -16,7 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getSessionCache } from '../session-cache';
 import { getProjectsDir } from '../utils/path-utils';
-import { getPromptIndex, PromptIndex } from './prompt-index';
+import { getPromptIndex, PromptIndex, isIndexableSessionFile } from './prompt-index';
 
 /** Files per batch before yielding back to the event loop during backfill. */
 const BACKFILL_BATCH = 25;
@@ -43,7 +43,8 @@ function listSessionFiles(): string[] {
     try {
       if (!fs.statSync(p).isDirectory()) continue;
       for (const f of fs.readdirSync(p)) {
-        if (f.endsWith('.jsonl')) out.push(path.join(p, f));
+        const full = path.join(p, f);
+        if (isIndexableSessionFile(full)) out.push(full);
       }
     } catch { /* unreadable project dir — skip */ }
   }
@@ -94,7 +95,9 @@ export function startPromptIndexService(): void {
   try {
     getSessionCache().onFileEvent((event, filePath) => {
       if (event === 'unlink') return;          // watermark is harmless; rows stay queryable
-      if (!filePath.endsWith('.jsonl')) return;
+      // Same predicate the backfill uses — the two must never disagree about what counts
+      // as a session, or a result depends on how the file happened to be discovered.
+      if (!isIndexableSessionFile(filePath)) return;
       const existing = pending.get(filePath);
       if (existing) clearTimeout(existing);
       const t = setTimeout(() => flush(filePath), LIVE_DEBOUNCE_MS);
@@ -103,8 +106,12 @@ export function startPromptIndexService(): void {
     });
   } catch { /* no cache/watcher in this process — backfill still runs */ }
 
-  // Detached: boot must not wait on it.
-  runBackfill(index).catch(() => { /* reported through promptIndexProgress */ });
+  // Detached: boot must not wait on it. A failure here (typically better-sqlite3 missing
+  // on this node) leaves search on the text-scan fallback, which says so — but log it once
+  // so the cause is visible without having to infer it from a search response.
+  runBackfill(index).catch((e) => {
+    console.error('[PromptIndex] backfill failed:', e?.message || e);
+  });
 }
 
 /** Tests only. */

@@ -113,7 +113,12 @@ export function stripEmbedded(text: string): string {
 function hasSignal(text: string): boolean {
   // At least two word-ish tokens; a bare "ok" or a lone path fragment is not a topic.
   const words = text.split(/[^\p{L}\p{N}_]+/u).filter((w) => w.length >= 2);
-  return words.length >= 2;
+  if (words.length >= 2) return true;
+  // CJK is written without spaces, so a whole Chinese/Japanese sentence tokenizes as ONE
+  // "word" and would be discarded as filler. Several ideographs are a real topic — this
+  // matters here: the fleet has genuine Chinese-language work (the WeChat client sessions).
+  const cjk = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu);
+  return (cjk?.length ?? 0) >= 2;
 }
 
 /**

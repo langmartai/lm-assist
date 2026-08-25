@@ -87,3 +87,16 @@ test('stripEmbedded removes each injected block type', () => {
   assert.equal(stripEmbedded('a<task-notification>x</task-notification>b'), 'a b');
   assert.equal(stripEmbedded('a<local-command-stdout>x</local-command-stdout>b'), 'a b');
 });
+
+test('an all-CJK prompt is real — it has no spaces to tokenize on', () => {
+  // Written without spaces, a whole Chinese sentence is ONE token by the Latin rule and
+  // would be thrown away as filler. This fleet has genuine Chinese-language work.
+  for (const t of ['修复微信客户端的消息轮询问题', 'ログイン画面のリダイレクトを直して']) {
+    const r = classifyPromptForIndex(t);
+    assert.equal(r.synthetic, false, `CJK prompt dropped as ${r.promptClass}: ${t}`);
+  }
+});
+
+test('a single CJK character is still filler', () => {
+  assert.equal(classifyPromptForIndex('好').synthetic, true);
+});

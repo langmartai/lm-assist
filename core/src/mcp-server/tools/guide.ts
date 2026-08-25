@@ -137,7 +137,7 @@ End-to-end recipes. Each step names a tool; add \`node=<host>\` to target anothe
    cc_sessions(node=B) → send_session_message(sessionId, "do X", node=B) → get_message_status(id). Windows host: needs its Core in interactive Session 1; a "pending/no driver" result = NOT delivered.
 
 4) REUSE A PAST SOLUTION (knowledge → action)
-   search(q="how we fixed X") → detail(K###) → agent_execute(prompt=the fix, node=where-needed) → get_execution. Across hosts: search_memory(query) → memory_cross_host / memory_import_candidates to see/pull where it lives.
+   search(q="how we fixed X") → detail(sessionId) → agent_execute(prompt=the fix, node=where-needed) → get_execution. Across hosts: search_memory(query) → memory_cross_host / memory_import_candidates to see/pull where it lives.
 
 5) CROSS-NODE DATA: WRITE ON A, READ ON B
    On host A (LOCAL session): data_create_dataset(synced) + data_put. From anywhere over the connector: after sync, data_request_access(node=B) → data_get(node=B, key); OR read A directly: data_request_access(node=A) → data_get(node=A, key). Keys are per-node — request on the node you read.
@@ -273,7 +273,7 @@ GOTCHA: index types — lineIndex (0-based raw JSONL), turnIndex (1-based), user
 GOAL: find prior context — generated knowledge, file/session history, cross-project memory — and, when needed, edit memory directly.
 
 SINGLE-NODE
-1. \`search(q="...")\` → unified search over the knowledge base + file/session history; ranked items with IDs (K001, sessionId:index).
+1. \`search(q="...")\` → past code SESSIONS, ranked by bm25 over their user prompts (injected boilerplate excluded); returns sessionIds. For saved knowledge use \`search_memory\` / \`data_search({dataset:"knowledge"})\`.
 2. \`detail(id="K001")\` → progressive disclosure of any item by ID.
 3. \`search_memory(query="...")\` → your saved memory across ALL projects (each hit tagged with its project) — "have I learned X before".
 4. \`memory_projects\`/\`memory_map\` → what memory exists + where (LIST). \`memory_record\`/\`memory_file\` → the full text of one record or the raw file (body + hash) (READ). \`rule_map\` for rules.
