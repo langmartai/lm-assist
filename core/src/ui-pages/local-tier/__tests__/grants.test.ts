@@ -353,6 +353,19 @@ const PANE_CALLS: Record<string, { must: Array<[string, string]>; mustNot: Array
   // the detail-tab leaves (subagents / summary / skills / plans), and the FlowGraph quartet
   // (session-dag / related / dag / /dag/unified). The Console tab is NOT ported — it would need
   // session-driving POSTs. `fetch('/auth/me')` is the tier's own origin surface, not grant-bearing.
+  'assist-search': {
+    must: [['GET', '/knowledge'], ['GET', '/knowledge/search'], ['GET', '/knowledge/K1'],
+      ['GET', '/knowledge/K1/comments']],
+    // 🔴 The page reads knowledge and nothing else. Its session-preview branch is dead on the
+    // current web page (`setSelectedSessionId` is only ever called with null), so NO /sessions
+    // grant is declared — a grant for a code path that cannot run is pure attack surface. The
+    // generate/review corner of /knowledge is out too: those are the pipeline's own controls,
+    // and `/knowledge/*` being EXACT is what keeps the 2-segment ones unreachable.
+    mustNot: [['POST', '/knowledge'], ['POST', '/knowledge/K1'], ['DELETE', '/knowledge/K1'],
+      ['POST', '/knowledge/K1/comments'], ['POST', '/knowledge/K1/regenerate'],
+      ['GET', '/knowledge/generate/stats'], ['GET', '/knowledge/review/status'],
+      ['POST', '/knowledge/review'], ['GET', '/sessions/sid-1'], ['GET', '/projects']],
+  },
   'assist-sessions': {
     must: [['GET', '/projects'], ['GET', '/projects/sessions'],
       ['GET', '/projects/-home-ubuntu-lm-assist/sessions'], ['GET', '/sessions/sid-1'],

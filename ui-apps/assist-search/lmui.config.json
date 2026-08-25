@@ -1,0 +1,18 @@
+{
+  "uiId": "assist-search",
+  "name": "Search",
+  "scope": "lm-assist",
+  "grant": [
+    { "service": "node", "pathPrefix": "/knowledge", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/knowledge/search", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/knowledge/*", "verbs": ["GET"], "exact": true },
+    { "service": "node", "pathPrefix": "/knowledge/*/comments", "verbs": ["GET"], "exact": true }
+  ],
+  "dev": {
+    "port": 5601
+  },
+  "service": "ui-assist-search",
+  "category": "Node",
+  "sortOrder": 25,
+  "managed": true
+}
