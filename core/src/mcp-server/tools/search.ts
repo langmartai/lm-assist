@@ -180,6 +180,13 @@ async function tryPromptIndex(
   }
   const index = getPromptIndex();
   try {
+    // init() BEFORE the emptiness check, so a store that cannot open at all is reported
+    // as unavailable rather than as "empty". Those have different fixes — a missing
+    // native binding is an install problem, an empty index is just a pending backfill —
+    // and naming the wrong one sends the reader after the wrong thing. (Observed live:
+    // a worktree npm install shadowed better-sqlite3 with an unbuilt copy, and the
+    // fallback blamed the backfill.)
+    await index.init();
     if (!index.hasContent()) {
       return { ok: false, why: 'prompt index is empty — the backfill has not run on this node yet' };
     }
