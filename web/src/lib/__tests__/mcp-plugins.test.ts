@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   namespacedToolName, shortChecksum, capabilitySummary, phaseBadge,
-  needsReapproval, enableAction, summarizePluginCounts, type PluginView,
+  needsReapproval, enableAction, summarizePluginCounts, trustSource, type PluginView,
 } from '../mcp-plugins';
 
 const base: PluginView = {
@@ -92,5 +92,27 @@ describe('summarizePluginCounts', () => {
       { ...base, name: 'd', phase: 'enabled', approvedChecksum: 'sha256:' + 'f'.repeat(64) }, // drifted
     ];
     expect(summarizePluginCounts(plugins)).toEqual({ total: 4, enabled: 2, needsReview: 3 });
+  });
+});
+
+describe('bundled provenance', () => {
+  const base: PluginView = {
+    name: 'langmart-design', phase: 'enabled', tools: [],
+    capabilities: { network: [], fs: [], env: [] },
+    payloadChecksum: 'sha256:aa', pinMatches: true, grantedEnv: [],
+    health: { failures: 0 }, manifestErrors: [],
+  };
+
+  it('reports package trust for a plugin the build enabled, not owner trust', () => {
+    expect(trustSource({ ...base, enabledBy: 'bundled@0.1.0' })).toBe('package');
+  });
+
+  it('reports owner trust for a human approval', () => {
+    expect(trustSource({ ...base, enabledBy: 'owner@console' })).toBe('owner');
+  });
+
+  it('reports no trust source while a plugin is not enabled', () => {
+    // A disabled plugin carries a stale enabledBy; the badge must not resurrect it.
+    expect(trustSource({ ...base, phase: 'disabled', enabledBy: 'bundled@0.1.0' })).toBe('none');
   });
 });

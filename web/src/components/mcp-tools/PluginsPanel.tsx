@@ -5,6 +5,7 @@ import { Puzzle, ShieldAlert, RefreshCw } from 'lucide-react';
 import { ConfirmButton, errText, timeAgo } from '@/components/memory/format';
 import {
   capabilitySummary, enableAction, needsReapproval, phaseBadge, shortChecksum, summarizePluginCounts,
+  trustSource,
   type PluginAuditEntry, type PluginListResponse, type PluginView,
 } from '@/lib/mcp-plugins';
 
@@ -118,7 +119,9 @@ export function PluginsPanel({ apiFetch }: Props) {
       {plugins.length === 0 ? (
         <div style={{ ...PANEL, fontSize: 12, color: 'var(--color-text-secondary)' }}>
           No plugins installed. Drop a plugin directory into the node&apos;s <code>mcp-plugins</code> folder; it is parsed
-          and listed here <b>disabled</b> — nothing runs until you enable it.
+          and listed here <b>disabled</b> — nothing runs until you enable it. Plugins marked <b>bundled</b> are the
+          exception: they ship inside lm-assist and are installed and enabled on boot, as long as their files are
+          exactly the ones this build shipped.
         </div>
       ) : (
         plugins.map((p) => {
@@ -134,6 +137,32 @@ export function PluginsPanel({ apiFetch }: Props) {
                 {needsReapproval(p) && (
                   <span className="badge" style={{ fontSize: 9, ...TONE.amber }} title="The payload changed after approval, so it was auto-reverted to disabled.">
                     payload changed
+                  </span>
+                )}
+                {p.bundled && (
+                  <span
+                    className="badge badge-outline"
+                    style={{ fontSize: 9 }}
+                    title={
+                      'Ships inside the lm-assist package and is installed on every boot. It auto-enables only while the files on disk are exactly the ones this build shipped.'
+                      + (p.bundledMirror ? ' It is a mirror of a payload maintained in its own repository — change it there, not here.' : '')
+                    }
+                  >
+                    {p.bundledMirror ? 'bundled mirror' : 'bundled'}
+                  </span>
+                )}
+                {p.bundledModified && (
+                  <span className="badge" style={{ fontSize: 9, ...TONE.amber }} title="The package ships this plugin, but the files here are not the ones it seeded. Upgrades will leave this tree alone, and it does not inherit package trust.">
+                    locally modified
+                  </span>
+                )}
+                {trustSource(p) === 'package' && (
+                  <span
+                    className="badge badge-outline"
+                    style={{ fontSize: 9 }}
+                    title={`Trusted because it arrived in this package (${p.enabledBy}), not because someone reviewed it here.`}
+                  >
+                    trusted by package
                   </span>
                 )}
                 <button
@@ -203,7 +232,9 @@ export function PluginsPanel({ apiFetch }: Props) {
                         `on disk  : ${p.payloadChecksum ?? '(unhashable)'}`,
                         `approved : ${p.approvedChecksum ?? '(never approved)'}`,
                         `matches  : ${p.pinMatches ? 'yes' : 'no'}`,
-                        p.enabledAt ? `enabled  : ${timeAgo(p.enabledAt)}` : '',
+                        p.enabledAt ? `enabled  : ${timeAgo(p.enabledAt)}${p.enabledBy ? ` by ${p.enabledBy}` : ''}` : '',
+                        p.bundledMirror ? 'mirror   : maintained in its own repo — edit it there, not here' : '',
+                        p.bundledOptOut ? 'bundled  : you turned this off — upgrades will leave it off' : '',
                       ].filter(Boolean).join('\n')}</pre>
                     </div>
                   </div>

@@ -1,0 +1,287 @@
+[
+  {
+    "name": "platform_health",
+    "description": "Check the LangMart gateway is reachable and healthy (no auth). Returns service/status. Call this first when any other tool errors with a connection failure.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "connections_list",
+    "description": "List the account's provider connections (LLM provider accounts wired into LangMart): id (UUID — the id other tools take), provider, name, status. Keys are never returned.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "connection_quota_get",
+    "description": "Quota state for one provider connection: limits, usage, remaining. Requires the connection UUID from connections_list (not a sequence number).",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "connection_id": { "type": "string", "description": "Connection UUID from connections_list" } },
+      "required": ["connection_id"],
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "providers_list",
+    "description": "List the LLM providers LangMart knows (public catalogue): provider key, display name, capabilities.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "models_list",
+    "description": "Search the model registry (paged, compact rows: id, name, provider, pricing/1K tokens, context window, capability list). Returns {total, matched, offset, limit, models}. Full detail for one model via model_get.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Page size (default 25)" },
+        "offset": { "type": "integer", "minimum": 0 },
+        "keyword": { "type": "string", "description": "Free-text match on model id/name/description" },
+        "provider": { "type": "string", "description": "Provider key or name, e.g. anthropic / OpenRouter" },
+        "access_level": { "type": "string", "description": "Exact access level, e.g. organization" },
+        "order_by": { "type": "string", "enum": ["popularity", "context_window", "input_price"], "description": "Sort; omit for catalogue order" },
+        "has_vision": { "type": "boolean", "description": "true = only models with vision" },
+        "has_reasoning": { "type": "boolean" },
+        "has_tool_use": { "type": "boolean" },
+        "max_input_price": { "type": "number", "description": "Max input USD per 1K tokens" },
+        "max_output_price": { "type": "number", "description": "Max output USD per 1K tokens" },
+        "min_context_window": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "model_get",
+    "description": "Full detail for one registry model by its model id (e.g. claude-sonnet-5): pricing, capabilities, context window, visibility, billing.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "model_id": { "type": "string", "description": "Model id from models_list" } },
+      "required": ["model_id"],
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "request_logs_list",
+    "description": "The account's API request logs, newest first. Filter by status/endpoint/model; paginate with limit/offset. Use request_log_get for one log's full detail.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "offset": { "type": "integer", "minimum": 0 },
+        "status": { "type": "string", "description": "e.g. success, error, or an HTTP status" },
+        "endpoint": { "type": "string" },
+        "model": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "request_log_get",
+    "description": "One request log by id. show_full_body=true includes the full request/response bodies (can be large).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "log_id": { "type": "string" },
+        "show_full_body": { "type": "boolean" }
+      },
+      "required": ["log_id"],
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "request_logs_stats",
+    "description": "Aggregated request-log statistics (counts, error rates, per-model/endpoint breakdowns) over an optional ISO-8601 date range.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_date": { "type": "string", "description": "ISO 8601, e.g. 2026-08-01" },
+        "end_date": { "type": "string", "description": "ISO 8601" }
+      },
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "usage_breakdown",
+    "description": "Usage/spend breakdown for the account over a period, grouped by model, provider or day.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "period": { "type": "string", "enum": ["today", "week", "month", "all"] },
+        "group_by": { "type": "string", "enum": ["model", "provider", "day"] }
+      },
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "cost_insights",
+    "description": "Cost insights/trends for the account (week, month or quarter): where spend goes and how it is moving.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "period": { "type": "string", "enum": ["week", "month", "quarter"] } },
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "errors_list",
+    "description": "Recent API errors for the account over a period (hour/day/week/month): what failed and why.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "period": { "type": "string", "enum": ["hour", "day", "week", "month"] } },
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "quota_status",
+    "description": "The account's own quota status: current limits and consumption.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "alerts_list",
+    "description": "The account's configured usage/cost alerts and their state.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "organizations_list",
+    "description": "Organizations visible to the account, with the org UUIDs other org tools take.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "organization_get",
+    "description": "Detail for one organization by UUID.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "org_id": { "type": "string", "description": "Organization UUID from organizations_list" } },
+      "required": ["org_id"],
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "organization_members",
+    "description": "Members of one organization (by UUID) with their roles (admin/member).",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "org_id": { "type": "string", "description": "Organization UUID" } },
+      "required": ["org_id"],
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "invitations_pending",
+    "description": "Organization invitations waiting on the account (received, not yet accepted/declined).",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "invitations_sent",
+    "description": "Organization invitations the account has sent and their status.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "memberships_list",
+    "description": "All organization memberships the account holds.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "support_tickets_list",
+    "description": "The account's support tickets. Filter by status; paginate with limit/offset.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["open", "pending", "resolved", "closed", "all"] },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "offset": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "support_ticket_get",
+    "description": "One support ticket with its thread, by ticket id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "ticket_id": { "type": "string" } },
+      "required": ["ticket_id"],
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "automation_servers_list",
+    "description": "Automation target servers registered on the platform (names/hosts/status). Read-only; no credentials returned.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "automation_server_get",
+    "description": "Detail for one automation server by id. Read-only; no credentials returned.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "server_id": { "type": "string" } },
+      "required": ["server_id"],
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "automation_scripts_list",
+    "description": "Automation scripts registered on the platform (slug, name, target).",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "automation_script_get",
+    "description": "Detail for one automation script by slug (definition/metadata — this does NOT run it; no execution tool exists in this plugin).",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "slug": { "type": "string" } },
+      "required": ["slug"],
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "automation_executions_list",
+    "description": "Recent automation script execution logs (what ran, when, outcome).",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "automation_sessions_list",
+    "description": "Automation sessions on the platform and their state.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "automation_session_get",
+    "description": "Detail for one automation session by id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "session_id": { "type": "string" } },
+      "required": ["session_id"],
+      "additionalProperties": false
+    },
+    "annotations": { "readOnlyHint": true }
+  },
+  {
+    "name": "automation_templates_list",
+    "description": "Automation templates available on the platform.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "annotations": { "readOnlyHint": true }
+  }
+]

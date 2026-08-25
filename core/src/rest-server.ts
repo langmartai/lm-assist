@@ -434,6 +434,11 @@ export class TierRestServer {
         profiler.end('httpListen');
         console.log(`lm-assist API server listening on http://${this.options.host}:${this.options.port}`);
         try { require('./monitor/build-history').recordBuild(); } catch (e) { console.error('[Server] build-history record failed:', (e as any)?.message); }
+        // Install the first-party plugins that ship in this package. Idempotent and
+        // cheap (a few file hashes) once each payload is in place, so it can run on
+        // every boot — which is the point: a payload that rides the build cannot go
+        // stale the way one that rides a human `cp` does. Never fatal.
+        this.seedBundledPlugins();
         // Opt-in HTTPS terminator (voice/secure-context transport). Never blocks or
         // fails plain-HTTP startup.
         this.maybeStartHttps().catch((e) =>
@@ -442,6 +447,35 @@ export class TierRestServer {
         resolve();
       });
     });
+  }
+
+  /**
+   * Seed + trust the bundled ext plugins (see mcp-server/plugins/bundled.ts).
+   *
+   * Best-effort by construction: a node whose plugin directory is unwritable, or whose
+   * package shipped a broken payload, must still boot with everything else working.
+   * The claude.ai connector is only re-synced when the tool surface actually CHANGED —
+   * a quiet boot must not poke the live account.
+   */
+  private seedBundledPlugins(): void {
+    try {
+      const { seedBundledPlugins, formatSeedResults } = require('./mcp-server/plugins/bundled');
+      const results = seedBundledPlugins();
+      if (results.length === 0) return;
+      for (const line of formatSeedResults(results)) console.log(`[bundled-plugins] ${line}`);
+
+      const nowEnabled = results.filter((r: { enabled: boolean }) => r.enabled);
+      if (nowEnabled.length === 0) return;
+      const { syncConnectorForPluginTools } = require('./mcp-server/plugins/connector-sync');
+      const { getPluginAggregator } = require('./mcp-server/plugins/aggregator');
+      void (async () => {
+        const tools = (await getPluginAggregator().listToolDefs()).map((t: { name: string }) => t.name);
+        const r = await syncConnectorForPluginTools({ addedTools: tools });
+        console.log(`[bundled-plugins] connector sync after auto-enable: ok=${r.ok} listed=${r.toolsListed}`);
+      })().catch((e) => console.warn('[bundled-plugins] connector sync failed:', (e as Error).message));
+    } catch (e) {
+      console.warn('[bundled-plugins] seeding skipped:', (e as Error).message);
+    }
   }
 
   /** Upgrade router shared by the plain-HTTP listener and the HTTPS terminator. */

@@ -15,6 +15,7 @@ import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
 import { syncConnectorForPluginTools } from '../../mcp-server/plugins/connector-sync';
 import { callExtToolFleetAware } from '../../mcp-server/plugins/fleet-plugins';
 import { pluginsSubsystemEnabled, SEGMENT_RE, type PluginManifest } from '../../mcp-server/plugins/model';
+import { isBundledPlugin, isBundledMirror } from '../../mcp-server/plugins/bundled';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string } }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -57,8 +58,22 @@ function view(rec: PluginRecord) {
     pinMatches: !!rec.state.approvedPayloadChecksum && rec.state.approvedPayloadChecksum === rec.payloadChecksum,
     grantedEnv: Object.keys(rec.state.grants ?? {}),      // NAMES only; values never leave the node
     enabledAt: rec.state.enabledAt,
+    enabledBy: rec.state.enabledBy,
     health: rec.state.health ?? { failures: 0 },
     manifestErrors: rec.manifestErrors,
+    // Provenance, so the review screen never presents a package-trusted plugin as
+    // something a person approved. `bundledModified` is the interesting one: it means
+    // the package ships this name but the tree on disk is somebody's own.
+    bundled: isBundledPlugin(rec.name),
+    bundledModified: isBundledPlugin(rec.name)
+      && !!rec.state.bundledSeededChecksum
+      && (rec.payloadChecksum !== rec.state.bundledSeededChecksum
+          || rec.manifestDigest !== rec.state.bundledSeededManifestDigest),
+    bundledOptOut: !!rec.state.bundledOptOut,
+    // lm-assist MIRRORS this plugin; its source lives in another repo. A BOOLEAN, never
+    // that repo's identity — this response is readable through the hub relay, and an
+    // upstream may be private.
+    bundledMirror: isBundledMirror(rec.name),
   };
 }
 
@@ -114,6 +129,9 @@ export async function handlePluginEnable(
     enabledAt: Date.now(),
     enabledBy: typeof body.actor === 'string' ? body.actor.slice(0, 64) : 'owner@console',
     revertedReason: undefined,
+    // An explicit enable retracts an earlier opt-out, so a bundled plugin the owner
+    // turned off and then back on resumes tracking package updates.
+    bundledOptOut: undefined,
     health: { failures: 0 },
   }, opts.stateFile);
 
@@ -145,7 +163,10 @@ export async function handlePluginDisable(name: string, req: ParsedRequest, opts
   const rec = discoverPlugins(opts).find((r) => r.name === name);
   if (!rec) return fail('NOT_FOUND', `no plugin named "${name}"`);
 
-  writeState(name, { enabled: false, revertedReason: 'disabled by the owner' }, opts.stateFile);
+  // `bundledOptOut` makes an owner's decision STICKY: a bundled plugin is re-seeded and
+  // re-trusted on every boot, so without this flag each upgrade would quietly undo the
+  // disable. Harmless for a hand-installed plugin, which nothing ever auto-enables.
+  writeState(name, { enabled: false, revertedReason: 'disabled by the owner', bundledOptOut: true }, opts.stateFile);
   // Stop any running child immediately — disable is instant, not lazy.
   try { await getPluginAggregator().shutdown(); } catch { /* best effort */ }
   // Refresh claude.ai's connector tool list so the removed tools disappear
