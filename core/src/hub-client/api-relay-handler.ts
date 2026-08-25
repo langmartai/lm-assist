@@ -148,12 +148,17 @@ export class ApiRelayHandler {
     '/ui-pages',      // pluggable-UI serving status + lifecycle (assist UI Pages page controls the node via the machine proxy)
     '/scheduler',     // scheduled-jobs pane (list/detail/logs + run-now) — also missions pane's controller run-now
     '/skills',        // skills pane (list/detail/analytics + reindex/refresh-inventory)
-    // The next three are deliberately NARROW: a bare '/hub' would relay the whole hub-client
+    '/plans',         // sessions pane Plans tab — the whole prefix is two GET reads
+                      //   (list plan .md files, read one) with its own traversal guard.
+    // The next four are deliberately NARROW: a bare '/hub' would relay the whole hub-client
     // surface and a bare '/claude-ai' the claude.ai cookie/conversation surface. Each pane
     // needs exactly one read-only corner of them.
     '/hub/status',    // mcp-tools pane header (hub connectivity readout)
     '/hub/machines',  // clusters pane node picker
     '/claude-ai/mcp/servers', // mcp-tools pane (connector server list, read-only)
+    '/dag/unified',   // sessions pane FlowGraph — GET /dag/unified/:sessionId only. NOT a bare
+                      //   '/dag': the DAG cache mutators live under '/session-dag/cache/*'
+                      //   (POST warm/clear/warm-all) and must stay unreachable from a pane.
   ];
 
   /**
