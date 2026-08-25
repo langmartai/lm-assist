@@ -322,6 +322,7 @@ export function TerminalPanel({
                 className="btn btn-sm btn-secondary"
                 onClick={handleConnectClick}
                 disabled={isConnecting}
+                title="Reconnect Console"
                 style={{ height: 20, padding: '0 8px', fontSize: 10, gap: 4 }}
               >
                 {isConnecting ? (
@@ -333,6 +334,7 @@ export function TerminalPanel({
               <button
                 className="btn btn-sm btn-destructive"
                 onClick={handleStopClick}
+                title="Stop Session"
                 style={{ height: 20, padding: '0 8px', fontSize: 10, gap: 4 }}
               >
                 <Square size={12} /> Stop
@@ -343,6 +345,7 @@ export function TerminalPanel({
               className="btn btn-sm btn-primary"
               onClick={handleConnectClick}
               disabled={isConnecting}
+              title="Connect Console"
               style={{ height: 20, padding: '0 8px', fontSize: 10, gap: 4 }}
             >
               {isConnecting ? (

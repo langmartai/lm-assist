@@ -27,6 +27,10 @@ test('every ui-apps pane node-grant path passes the relay allow-list', () => {
   const uiApps = path.join(repoRoot(), 'ui-apps');
   const panes = fs.readdirSync(uiApps, { withFileTypes: true }).filter((e) => e.isDirectory());
   let checked = 0;
+  // Collect EVERY refusal before failing. Asserting per-rule reports only the first one, which
+  // hides how much is broken — the /plans + /dag/unified regression read as a single-grant bug
+  // until the enumeration was re-run by hand.
+  const refused: string[] = [];
   for (const pane of panes) {
     const cfgPath = path.join(uiApps, pane.name, 'lmui.config.json');
     if (!fs.existsSync(cfgPath)) continue;
@@ -36,13 +40,32 @@ test('every ui-apps pane node-grant path passes the relay allow-list', () => {
       // A '*' grant segment matches any single path segment — substitute a literal so the
       // relay sees the shape of a real request ('/scheduler/jobs/*/run' → '.../x/run').
       const probe = String(rule.pathPrefix).replace(/\*/g, 'x');
-      assert.ok(
-        ApiRelayHandler.isApiPathAllowed(probe),
-        `${pane.name}: grant path "${rule.pathPrefix}" is refused by the relay allow-list ` +
-        `(ALLOWED_API_PREFIXES in api-relay-handler.ts) — the pane would break on its hub URL`
-      );
+      if (!ApiRelayHandler.isApiPathAllowed(probe)) {
+        refused.push(`${pane.name}: ${rule.pathPrefix}`);
+      }
       checked++;
     }
   }
+  assert.deepStrictEqual(
+    refused,
+    [],
+    `${refused.length} of ${checked} pane grant paths are refused by the relay allow-list ` +
+    `(ALLOWED_API_PREFIXES in api-relay-handler.ts) — those panes would break on their hub ` +
+    `URL:\n  ${refused.join('\n  ')}`
+  );
   assert.ok(checked > 20, `sanity: expected to check >20 grant rules, saw ${checked}`);
+});
+
+/**
+ * The two prefixes added for the sessions pane are deliberately narrow. `/dag/unified` must NOT
+ * become a bare `/dag`, and nothing under it may reach the DAG cache mutators, which live on the
+ * separate `/session-dag/cache/*` prefix (POST warm / clear / warm-all).
+ */
+test('the sessions-pane relay prefixes stay narrow', () => {
+  for (const allowed of ['/plans', '/plans/foo.md', '/dag/unified/sid-1']) {
+    assert.ok(ApiRelayHandler.isApiPathAllowed(allowed), `${allowed} should be relayable`);
+  }
+  for (const refused of ['/dag', '/dag/other', '/session-dag/cache/warm', '/session-dag/batch']) {
+    assert.ok(!ApiRelayHandler.isApiPathAllowed(refused), `${refused} must NOT be relayable`);
+  }
 });
