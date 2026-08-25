@@ -18,7 +18,7 @@ import { getMemoryCache, MemoryCache, MemoryDirData, MemoryFile, MemorySource, P
 import { getProjectsService } from '../projects-service';
 import { getSessionCache } from '../session-cache';
 import { decodePath, legacyEncodeProjectPath, getProjectsDir } from '../utils/path-utils';
-import { tokenize } from '../search/text-scorer';
+import { tokenize, containsWord } from '../search/text-scorer';
 import { classifyShareability, Shareability } from '../utils/memory-shareability';
 import { MemoryFrontmatter, parseFrontmatter } from '../utils/frontmatter';
 import { sha256 as fileSha256 } from '../memory/file-write';
@@ -232,7 +232,7 @@ function resolveSessionToCwd(sessionId: string): string | undefined {
 function pickFiles(
   dirs: MemoryDirData[],
   detail: MemoryDetail,
-  opts: { query?: string; limit?: number } = {},
+  opts: { query?: string; limit?: number; rankedNames?: Map<string, number> } = {},
 ): { files: Array<MemoryListEntry | MemoryFullEntry>; totalBytes: number; truncated: boolean } {
   const out: Array<MemoryListEntry | MemoryFullEntry> = [];
   let totalBytes = 0;
@@ -267,10 +267,24 @@ function pickFiles(
       }
     }
 
+    // Preferred path: bm25 over the memory FTS index, which the caller resolved to a
+    // filename→rank map. The substring scorer below stays as the fallback for a node
+    // whose index has not built (and it is the ONLY path for cross-host memory, which
+    // never lands on local disk and so cannot be indexed here).
+    const ranked = opts.rankedNames;
     const scored: Array<{ file: MemoryFile; score: number }> = [];
-    for (const f of bestByName.values()) {
-      const score = scoreMemoryFile(f, queryTokens, queryLower);
-      if (score > 0) scored.push({ file: f, score });
+    if (ranked && ranked.size > 0) {
+      for (const f of bestByName.values()) {
+        const rank = ranked.get(f.filename);
+        if (rank === undefined) continue;          // not a match — bm25 already judged it
+        // Invert rank into a descending score so the existing sort/consumers are unchanged.
+        scored.push({ file: f, score: ranked.size - rank });
+      }
+    } else {
+      for (const f of bestByName.values()) {
+        const score = scoreMemoryFile(f, queryTokens, queryLower);
+        if (score > 0) scored.push({ file: f, score });
+      }
     }
     scored.sort((a, b) => b.score - a.score);
 
@@ -333,18 +347,61 @@ function pickFiles(
  *   - body × 1
  * Full-query substring matches add a flat 10 × weight bonus.
  */
+
+/**
+ * Ranked memory filenames for a query, from the FTS index.
+ *
+ * Returns undefined when the index cannot answer (not built yet, better-sqlite3 absent,
+ * or the query has no indexable terms) so the caller falls back to the substring scorer
+ * rather than treating "cannot search" as "matched nothing".
+ */
+async function ftsRankedMemoryNames(
+  liveDir: string,
+  query: string | undefined,
+  limit: number,
+): Promise<Map<string, number> | undefined> {
+  if (!query) return undefined;
+  try {
+    const { getMemoryIndex } = require('../search/memory-index') as typeof import('../search/memory-index');
+    const index = getMemoryIndex();
+    await index.init();
+    if (!index.hasContent()) return undefined;
+    // The project's own directory name under ~/.claude/projects scopes the query.
+    const projectId = path.basename(path.dirname(liveDir));
+    const r = await index.search(query, { projectId, need: limit });
+    if (!r || r.hits.length === 0) return undefined;
+    const m = new Map<string, number>();
+    for (const h of r.hits) if (!m.has(h.filename)) m.set(h.filename, h.rank);
+    return m;
+  } catch {
+    return undefined;   // index unavailable → substring fallback
+  }
+}
+
 function scoreMemoryFile(file: MemoryFile, queryTokens: string[], queryLower: string): number {
   if (queryTokens.length === 0 && !queryLower) return 0;
   let score = 0;
+  // Distinct query terms this file matched anywhere, and whether the whole phrase hit.
+  const termsSeen = new Set<string>();
+  let phraseHit = false;
 
   const scoreText = (text: string | undefined, weight: number) => {
     if (!text) return;
     const lower = text.toLowerCase();
     if (queryLower && lower.includes(queryLower)) {
       score += 10 * weight;
+      phraseHit = true;
     }
     for (const tok of queryTokens) {
-      if (lower.includes(tok)) score += weight;
+      // Whole-word, not substring. `lower.includes(tok)` matched `and` inside
+      // `command`/`understand`/`expand`, and since ANY single token hit was enough to
+      // score, one filler word pulled in the corpus: measured 110 of 121 memory files
+      // for "auto model discovery and publish". Same defect that made session search
+      // return every session; this store is just small enough to have hidden it.
+      if (containsWord(lower, tok)) {
+        score += weight;
+        termsSeen.add(tok);
+      }
     }
   };
 
@@ -353,6 +410,13 @@ function scoreMemoryFile(file: MemoryFile, queryTokens: string[], queryLower: st
   scoreText(file.bodyPreview, 1);
   // Filename also carries signal — useful for "broker" → broker_boundary
   scoreText(file.filename, 2);
+
+  // Require a MAJORITY of the query's terms before calling it a match. An exact
+  // phrase hit is definitive on its own and skips the floor.
+  if (!phraseHit && queryTokens.length > 1) {
+    const needed = Math.ceil(queryTokens.length / 2);
+    if (termsSeen.size < needed) return 0;
+  }
 
   return score;
 }
@@ -627,9 +691,13 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
         }
 
         if (detail !== 'index') {
+          const rankedNames = detail === 'relevant'
+            ? await ftsRankedMemoryNames(snapshot.liveDir, opts.relevanceQuery, opts.limit ?? 5)
+            : undefined;
           const picked = pickFiles(dirs, detail, {
             query: opts.relevanceQuery,
             limit: opts.limit,
+            rankedNames,
           });
           out.files = picked.files;
           if (detail === 'full') {
@@ -839,9 +907,13 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
         }
 
         if (detail !== 'index') {
+          const rankedNames = detail === 'relevant'
+            ? await ftsRankedMemoryNames(snapshot.liveDir, opts.relevanceQuery, opts.limit ?? 5)
+            : undefined;
           const picked = pickFiles(dirs, detail, {
             query: opts.relevanceQuery,
             limit: opts.limit,
+            rankedNames,
           });
           out.files = picked.files;
           if (detail === 'full') {

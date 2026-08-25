@@ -34,7 +34,7 @@ export function tokenizeSessionQuery(text: string): string[] {
 }
 
 /** Whole-word test — `and` must not match inside `command`. */
-function containsWord(haystackLower: string, token: string): boolean {
+export function containsWord(haystackLower: string, token: string): boolean {
   const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${esc}(?:[^\\p{L}\\p{N}_]|$)`, 'u').test(haystackLower);
 }

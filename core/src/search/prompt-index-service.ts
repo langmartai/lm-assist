@@ -17,6 +17,7 @@ import * as path from 'path';
 import { getSessionCache } from '../session-cache';
 import { getProjectsDir } from '../utils/path-utils';
 import { getPromptIndex, PromptIndex, isIndexableSessionFile } from './prompt-index';
+import { getMemoryIndex } from './memory-index';
 
 /** Files per batch before yielding back to the event loop during backfill. */
 const BACKFILL_BATCH = 25;
@@ -24,6 +25,8 @@ const BACKFILL_BATCH = 25;
 const BACKFILL_PAUSE_MS = 50;
 /** Coalescing window for a chatty live session. */
 const LIVE_DEBOUNCE_MS = 1500;
+/** How often local memory files are re-scanned (stat-gated, so a no-op when unchanged). */
+const MEMORY_REFRESH_MS = 5 * 60 * 1000;
 
 let started = false;
 let backfill: { total: number; done: number; running: boolean } = { total: 0, done: 0, running: false };
@@ -112,6 +115,18 @@ export function startPromptIndexService(): void {
   runBackfill(index).catch((e) => {
     console.error('[PromptIndex] backfill failed:', e?.message || e);
   });
+
+  // Memory files are a few hundred small documents, stat-gated, so this is cheap enough
+  // to run on the same boot and again periodically — they are REWRITTEN in place rather
+  // than appended, so there is no watcher tail to follow.
+  const refreshMemory = () => {
+    getMemoryIndex().refresh().catch((e) => {
+      console.error('[MemoryIndex] refresh failed:', e?.message || e);
+    });
+  };
+  refreshMemory();
+  const memTimer = setInterval(refreshMemory, MEMORY_REFRESH_MS);
+  if (typeof memTimer.unref === 'function') memTimer.unref();
 }
 
 /** Tests only. */

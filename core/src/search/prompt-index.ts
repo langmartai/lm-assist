@@ -21,6 +21,7 @@ import { thisNodeId, dataRoot } from '../data/paths';
 import type { DataRecord } from '../data/types';
 import { classifyPromptForIndex } from './prompt-classifier';
 import { tokenizeFts } from '../data/backends/fts-query';
+import { rankedFtsSearch } from './fts-rank';
 
 export const PROMPT_DATASET = 'session-prompts';
 
@@ -100,8 +101,6 @@ export interface PromptSearchResult {
   scannedRows: number;
 }
 
-/** Hard ceiling on prompt rows pulled for one search. Bounds worst-case memory + time. */
-const MAX_SCAN_ROWS = 5000;
 /** Bytes read per pass. Bounds peak memory regardless of transcript size. */
 const READ_CHUNK_BYTES = 4 * 1024 * 1024;
 /** Widened window used when a single line exceeds READ_CHUNK_BYTES. */
@@ -380,74 +379,52 @@ export class PromptIndex {
     // escalates until the rows are exhausted (=> the count is exact) or the ceiling is hit
     // (=> the count is reported as a floor).
     const need = Math.max(opts.need ?? 1, 1);
-    // An explicit row budget is honoured EXACTLY (a floor would make the option a lie);
-    // the default scales with the page being asked for, with 200 as a sane minimum.
-    const startRows = Math.min(Math.max(opts.limit ?? Math.max(need * 10, 200), 1), MAX_SCAN_ROWS);
     const base: any[] = [];
     if (opts.project) base.push({ field: 'project', op: 'eq', value: opts.project });
     if (opts.since) base.push({ field: 'ts', op: 'gte', value: opts.since });
     if (!opts.includeSynthetic) base.push({ field: 'synthetic', op: 'eq', value: 0 });
 
-    for (const mode of ['and', 'or'] as const) {
-      let rows = startRows;
-      let recs: DataRecord[] = [];
-      let exhausted = false;
-      for (;;) {
-        const r = await this.backend.query(PROMPT_DATASET, {
-          filter: base, fts: query, ftsMode: mode, limit: rows,
-          // The ranking pass needs ids and fields, never the documents. Carrying `text`
-          // shipped the full matched corpus across the worker boundary — measured at
-          // 23.7MB for one broad query at the row ceiling — for a renderer that shows at
-          // most a couple of dozen 220-char snippets. `total` is never read here either,
-          // and computing it costs a second COUNT scan on every escalation step.
-          omitText: true, countTotal: false,
-        });
-        recs = (r.records || []).filter((x) => x.deleted !== true);
-        // Fewer rows back than asked for ⇒ we have every match; the count is exact.
-        exhausted = (r.records || []).length < rows;
-        if (exhausted || rows >= MAX_SCAN_ROWS) break;
-        if (countSessions(recs) > need) break;   // enough to satisfy this page
-        rows = Math.min(rows * 2, MAX_SCAN_ROWS);
-      }
-      if (recs.length === 0) continue;
-      const hits: PromptHit[] = recs.map((rec) => ({
-        id: rec.id,
-        sessionId: String(rec.fields?.sessionId ?? ''),
-        project: String(rec.fields?.project ?? ''),
-        ts: String(rec.fields?.ts ?? ''),
-        turnIndex: Number(rec.fields?.turnIndex ?? 0),
-        promptClass: String(rec.fields?.promptClass ?? 'user'),
-        text: '',   // hydrated below, for the rendered page only
-      }));
-      // Records arrive in bm25 order, so a session's rank is its BEST prompt's rank —
-      // first appearance wins. Counting matches per session as a tiebreak would let a
-      // long session win on repetition again, which is the bug being fixed.
-      const bySession = new Map<string, { sessionId: string; project: string; ts: string; best: PromptHit; matches: number }>();
-      for (const h of hits) {
-        const cur = bySession.get(h.sessionId);
-        if (cur) { cur.matches++; continue; }
-        bySession.set(h.sessionId, { sessionId: h.sessionId, project: h.project, ts: h.ts, best: h, matches: 1 });
-      }
-      const sessions = [...bySession.values()];
-      // Fetch the matching prompt's text ONLY for the sessions that will be rendered —
-      // a bounded handful of point reads instead of streaming every matched document.
-      for (const s of sessions.slice(0, Math.min(need + HYDRATE_MARGIN, sessions.length))) {
-        try {
-          const full = await this.backend.get(PROMPT_DATASET, s.best.id);
-          if (full?.text) s.best.text = full.text;
-        } catch { /* snippet is presentation only — a miss must not fail the search */ }
-      }
-      return {
-        mode,
-        // Bounded: the caller renders sessions, and retaining every matched row here is
-        // what made a broad query hold the whole result set in memory.
-        hits: hits.slice(0, HITS_KEPT),
-        sessions,
-        truncated: !exhausted,
-        scannedRows: recs.length,
-      };
+    const r = await rankedFtsSearch(this.backend, PROMPT_DATASET, query, {
+      filter: base, need, startRows: opts.limit, groupKey: (rec) => String(rec.fields?.sessionId ?? ''),
+    });
+    if (!r) return null;
+
+    const hits: PromptHit[] = r.records.map((rec) => ({
+      id: rec.id,
+      sessionId: String(rec.fields?.sessionId ?? ''),
+      project: String(rec.fields?.project ?? ''),
+      ts: String(rec.fields?.ts ?? ''),
+      turnIndex: Number(rec.fields?.turnIndex ?? 0),
+      promptClass: String(rec.fields?.promptClass ?? 'user'),
+      text: '',   // hydrated below, for the rendered page only
+    }));
+    // Records arrive in bm25 order, so a session's rank is its BEST prompt's rank —
+    // first appearance wins. Ranking by match COUNT instead would let a long session win
+    // on repetition again, which is the bug being fixed.
+    const bySession = new Map<string, { sessionId: string; project: string; ts: string; best: PromptHit; matches: number }>();
+    for (const h of hits) {
+      const cur = bySession.get(h.sessionId);
+      if (cur) { cur.matches++; continue; }
+      bySession.set(h.sessionId, { sessionId: h.sessionId, project: h.project, ts: h.ts, best: h, matches: 1 });
     }
-    return { mode: 'and', hits: [], sessions: [], truncated: false, scannedRows: 0 };
+    const sessions = [...bySession.values()];
+    // Fetch the matching prompt's text ONLY for the sessions that will be rendered —
+    // a bounded handful of point reads instead of streaming every matched document.
+    for (const s of sessions.slice(0, Math.min(need + HYDRATE_MARGIN, sessions.length))) {
+      try {
+        const full = await this.backend.get(PROMPT_DATASET, s.best.id);
+        if (full?.text) s.best.text = full.text;
+      } catch { /* snippet is presentation only — a miss must not fail the search */ }
+    }
+    return {
+      mode: r.mode,
+      // Bounded: the caller renders sessions, and retaining every matched row here is
+      // what made a broad query hold the whole result set in memory.
+      hits: hits.slice(0, HITS_KEPT),
+      sessions,
+      truncated: r.truncated,
+      scannedRows: r.scannedRows,
+    };
   }
 
   /** Indexed-corpus summary, for honest "why did you fall back" reporting. */
@@ -462,13 +439,6 @@ export class PromptIndex {
   hasContent(): boolean { return Object.keys(this.state.files).length > 0; }
 
   isIndexed(filePath: string): boolean { return !!this.state.files[filePath]; }
-}
-
-/** Distinct sessions among a record page — used to size the row budget. */
-function countSessions(recs: DataRecord[]): number {
-  const seen = new Set<string>();
-  for (const r of recs) seen.add(String(r.fields?.sessionId ?? ''));
-  return seen.size;
 }
 
 let instance: PromptIndex | null = null;
