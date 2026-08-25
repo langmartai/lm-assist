@@ -273,7 +273,21 @@ GOTCHA: index types — lineIndex (0-based raw JSONL), turnIndex (1-based), user
 GOAL: find prior context — generated knowledge, file/session history, cross-project memory — and, when needed, edit memory directly.
 
 SINGLE-NODE
-1. \`search(q="...")\` → past code SESSIONS, ranked by bm25 over their user prompts (injected boilerplate excluded); returns sessionIds. For saved knowledge use \`search_memory\` / \`data_search({dataset:"knowledge"})\`.
+1. \`search(q="...")\` → past code SESSIONS, ranked by bm25 over their USER PROMPTS; returns sessionIds. For saved knowledge use \`search_memory\` / \`data_search({dataset:"knowledge"})\`.
+
+HOW TO QUERY \`search\` — measured on a 6.8k-session index, worth following
+- It indexes what you ASKED, not what the assistant answered and not file contents. Search the words YOU would have typed. Injected boilerplate (skill preambles, controller passes, compaction carryovers, teammate envelopes, templated reviews) is ~88% of user-channel messages and is excluded, so hits reflect intent rather than transcript volume.
+- 3-6 DISTINCTIVE terms is the sweet spot. One term is often too narrow; pasting a whole sentence widens hard (15 terms took one query from 20 sessions to 43).
+- Distinctive beats generic, by a lot: "gmail cdp browser login" → 1 session; "make search better" → 26 mostly-irrelevant ones.
+- READ THE LABEL, it tells you how much to trust the list. "every term matched within a single prompt" = AND, precise. "ANY term matched" = it WIDENED because no single prompt held all terms — each hit then shows \`matched n/N terms\`; trust the high-n ones and ignore the 1/N tail.
+- "Found at least N" + "scan capped at …" means more exist and the number is a FLOOR — narrow the query for an exact count.
+- Scope defaults to 7d and the response always states the window. Prompt-only indexing makes that window small (measured 7d = 35 prompts / 10 sessions vs 2,300 / 532 all-time), so pass scope="all" for anything older than about a week. A window that finds nothing auto-widens to all-time and says so.
+- \`project="/abs/path"\` helps when your terms are common; it changes nothing when they are already unique.
+- \`includeSynthetic=true\` ONLY when you actually want the boilerplate back.
+- A path or *.ts query switches to file history + the sessions that discussed that file.
+- The reply always names the path that answered. "TEXT SCAN FALLBACK" means the ranked index could not answer and says why — treat that result as coarse, not authoritative.
+
+WHICH SURFACE: \`search\` answers "what did I DO / did I work on X" (session transcripts). \`search_memory\` answers "have I LEARNED X" (whole memory documents — same bm25 ranking, but far more precise, because a memory file is one coherent topic while a session's intent is spread over many prompts). For a settled fact ask memory first; use \`search\` to find the work that produced it.
 2. \`detail(id="K001")\` → progressive disclosure of any item by ID.
 3. \`search_memory(query="...")\` → your saved memory across ALL projects (each hit tagged with its project) — "have I learned X before".
 4. \`memory_projects\`/\`memory_map\` → what memory exists + where (LIST). \`memory_record\`/\`memory_file\` → the full text of one record or the raw file (body + hash) (READ). \`rule_map\` for rules.

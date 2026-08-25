@@ -259,3 +259,33 @@ test('byte accounting survives invalid UTF-8 in the transcript', async () => {
   const r = await index.search('papa subsystem');
   assert.equal(r!.sessions.length, 1, 'a later record must still be found after an undecodable line');
 });
+
+test('OR mode ranks by TERM COVERAGE, not just the best single prompt', async () => {
+  const { index, dir } = freshIndex('coverage');
+  // AND requires every term inside ONE prompt, which real work rarely satisfies — so a
+  // multi-word query widens to OR, where "any one term" alone is nearly useless. A
+  // session covering more of the query must outrank one that merely mentions a common word.
+  await index.indexFile(writeSession(dir, 'broad', ['the quebec deployment notes']));
+  await index.indexFile(writeSession(dir, 'partial', ['quebec romeo pipeline work']));
+  await index.indexFile(writeSession(dir, 'covering', [
+    'quebec subsystem overview',
+    'romeo integration details',
+    'sierra rollout plan',
+  ]));
+
+  const r = await index.search('quebec romeo sierra');
+  assert.equal(r!.mode, 'or', 'no single prompt holds all three terms');
+  assert.equal(r!.sessions[0].sessionId, 'covering', 'the session covering 3/3 terms must rank first');
+  assert.equal(r!.sessions[0].terms, 3);
+  assert.equal(r!.queryTerms, 3);
+  // And the one-term session must rank last of the three.
+  assert.equal(r!.sessions[r!.sessions.length - 1].sessionId, 'broad');
+});
+
+test('AND mode does not pay for coverage probes', async () => {
+  const { index, dir } = freshIndex('andcov');
+  await index.indexFile(writeSession(dir, 's', ['tango uniform victor all in one prompt']));
+  const r = await index.search('tango uniform victor');
+  assert.equal(r!.mode, 'and');
+  assert.equal(r!.sessions.length, 1);
+});

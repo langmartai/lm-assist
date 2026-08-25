@@ -68,6 +68,12 @@ const RULES: Array<{ cls: PromptClass; test: (t: string) => boolean }> = [
   { cls: 'skill_preamble',   test: (t) => t.startsWith('Base directory for this skill:') },
   { cls: 'worker_preamble',  test: (t) => /^#\s*Worker preamble\b/.test(t) || /^You are the executor \(worker\) for mission\b/.test(t) },
   { cls: 'banner',           test: (t) => /^[=═─—_*#-]{10,}/.test(t) },
+  // A SHORTER separator run still marks a template when it wraps an ALL-CAPS heading —
+  // e.g. "=== DEEP MEMORY VALIDATOR -- READ CAREFULLY ===", an automation preamble that
+  // recurs across sessions and was ranking as a real prompt. Deliberately narrow: it
+  // needs the separators AND a caps run, so an ordinary prompt opening with "==" or a
+  // markdown "## Heading" is untouched.
+  { cls: 'banner',           test: (t) => /^[=─—═]{3,}\s*[A-Z][A-Z0-9 _\-]{11,}/.test(t) },
   { cls: 'compaction',       test: (t) => t.startsWith('This session is being continued from a previous conversation') },
   { cls: 'bootstrap',        test: (t) => t.startsWith('[lm-assist bootstrap]') },
   { cls: 'hook_feedback',    test: (t) => t.startsWith('Stop hook feedback:') || t.startsWith('<user-prompt-submit-hook>') },

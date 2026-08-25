@@ -89,8 +89,14 @@ export interface PromptSearchResult {
   /** 'and' = every term matched; 'or' = widened after AND found nothing. */
   mode: 'and' | 'or';
   hits: PromptHit[];
-  /** Distinct sessions represented in `hits`. */
-  sessions: Array<{ sessionId: string; project: string; ts: string; best: PromptHit; matches: number }>;
+  /** Distinct sessions represented in `hits`, best first. */
+  sessions: Array<{
+    sessionId: string; project: string; ts: string; best: PromptHit; matches: number;
+    /** How many DISTINCT query terms this session matched, anywhere in it. */
+    terms: number;
+  }>;
+  /** Number of indexable terms in the query, so `terms` reads as "n of N". */
+  queryTerms: number;
   /**
    * True when the prompt-row scan hit its ceiling, so `sessions` is a PREFIX of the
    * matches, not all of them. Callers must render the count as "at least N" — a capped
@@ -113,6 +119,8 @@ const MAX_INDEXED_TEXT = 20000;
 const HYDRATE_MARGIN = 10;
 /** Upper bound on retained raw hits — diagnostics only; the renderer uses `sessions`. */
 const HITS_KEPT = 200;
+/** Rows scanned per single-term coverage probe. Ids only, so this stays cheap. */
+const COVERAGE_ROWS = 2000;
 
 /** Hand the event loop back so a long scan cannot monopolise it. */
 function yieldToLoop(): Promise<void> {
@@ -371,7 +379,8 @@ export class PromptIndex {
     includeSynthetic?: boolean;
   } = {}): Promise<PromptSearchResult | null> {
     await this.init();
-    if (tokenizeFts(query).length === 0) return null;   // nothing searchable in the query
+    const terms = tokenizeFts(query);
+    if (terms.length === 0) return null;   // nothing searchable in the query
 
     // Rows are PROMPTS; results are SESSIONS, and one session can own many matching
     // prompts. A fixed row budget therefore silently truncates the session list: measured
@@ -401,13 +410,29 @@ export class PromptIndex {
     // Records arrive in bm25 order, so a session's rank is its BEST prompt's rank —
     // first appearance wins. Ranking by match COUNT instead would let a long session win
     // on repetition again, which is the bug being fixed.
-    const bySession = new Map<string, { sessionId: string; project: string; ts: string; best: PromptHit; matches: number }>();
+    const bySession = new Map<string, { sessionId: string; project: string; ts: string; best: PromptHit; matches: number; terms: number }>();
     for (const h of hits) {
       const cur = bySession.get(h.sessionId);
       if (cur) { cur.matches++; continue; }
-      bySession.set(h.sessionId, { sessionId: h.sessionId, project: h.project, ts: h.ts, best: h, matches: 1 });
+      bySession.set(h.sessionId, { sessionId: h.sessionId, project: h.project, ts: h.ts, best: h, matches: 1, terms: terms.length });
     }
-    const sessions = [...bySession.values()];
+    let sessions = [...bySession.values()];
+
+    // In OR mode, rank by TERM COVERAGE first.
+    //
+    // AND requires every term inside ONE prompt, which is rare — real work is spread over
+    // many turns — so a multi-word query usually widens to OR, and OR alone means "any one
+    // term". Measured: "sqlite fts index user prompts" returned 77 sessions whose top hits
+    // matched a single common word. Coverage restores the middle ground the AND/OR binary
+    // lacks: a session mentioning 4 of 5 terms across its prompts outranks one mentioning 1,
+    // while bm25 still orders within a coverage tier. Recall is unchanged — only the order.
+    if (r.mode === 'or' && terms.length > 1) {
+      const coverage = await this.termCoverage(terms, base);
+      for (const s of sessions) s.terms = coverage.get(s.sessionId) ?? 1;
+      const rank = new Map(sessions.map((s, i) => [s.sessionId, i] as const));
+      sessions = sessions.sort((a, b) =>
+        (b.terms - a.terms) || ((rank.get(a.sessionId) ?? 0) - (rank.get(b.sessionId) ?? 0)));
+    }
     // Fetch the matching prompt's text ONLY for the sessions that will be rendered —
     // a bounded handful of point reads instead of streaming every matched document.
     for (const s of sessions.slice(0, Math.min(need + HYDRATE_MARGIN, sessions.length))) {
@@ -424,7 +449,35 @@ export class PromptIndex {
       sessions,
       truncated: r.truncated,
       scannedRows: r.scannedRows,
+      queryTerms: terms.length,
     };
+  }
+
+  /**
+   * sessionId → how many of `terms` it matches anywhere.
+   *
+   * One single-term FTS query per term (ids only, no documents). FTS5 cannot report which
+   * terms a row matched, so per-term sets are the way to get it; queries are typically
+   * 3-6 and each is an index probe over a small table, so this is far cheaper than
+   * hydrating documents to inspect them.
+   */
+  private async termCoverage(terms: string[], base: any[]): Promise<Map<string, number>> {
+    const cov = new Map<string, number>();
+    for (const t of terms) {
+      try {
+        const r = await this.backend.query(PROMPT_DATASET, {
+          filter: base, fts: t, ftsMode: 'and', limit: COVERAGE_ROWS,
+          omitText: true, countTotal: false,
+        });
+        const seen = new Set<string>();
+        for (const rec of r.records || []) {
+          if (rec.deleted === true) continue;
+          seen.add(String(rec.fields?.sessionId ?? ''));
+        }
+        for (const id of seen) cov.set(id, (cov.get(id) ?? 0) + 1);
+      } catch { /* a term that cannot be probed simply contributes no coverage */ }
+    }
+    return cov;
   }
 
   /** Indexed-corpus summary, for honest "why did you fall back" reporting. */

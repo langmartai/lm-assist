@@ -286,7 +286,12 @@ function formatSessionResults(
     const projPath = s.project || (cd ? getProjectPathForSession(cd, entry!.filePath) : '');
     const projName = projPath ? projPath.split('/').filter(Boolean).pop() : '?';
     const turns = cd?.numTurns ?? '?';
-    lines.push(`${offset + i + 1}. [session] ${s.sessionId}  (${projName}, ${turns} turns${s.matches > 1 ? `, ${s.matches} matching prompts` : ''})`);
+    // Term coverage is shown for a widened query: it is the reason this session outranks
+    // the next one, and without it an OR result looks like an undifferentiated pile.
+    const cov = result.mode === 'or' && result.queryTerms > 1
+      ? `, matched ${s.terms}/${result.queryTerms} terms`
+      : '';
+    lines.push(`${offset + i + 1}. [session] ${s.sessionId}  (${projName}, ${turns} turns${cov}${s.matches > 1 ? `, ${s.matches} matching prompts` : ''})`);
     const snippet = s.best.text.replace(/\s+/g, ' ').slice(0, 220);
     lines.push(`   matched prompt (turn ${s.best.turnIndex}): "${snippet}${s.best.text.length > 220 ? '…' : ''}"`);
     lines.push(`   → detail("${s.sessionId}")`);
