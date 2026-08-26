@@ -16,7 +16,7 @@ import * as path from 'path';
 import { SqlBackend } from '../data/backends/sql-backend';
 import { getDatasetRegistry } from '../data/dataset-registry';
 import { thisNodeId, dataRoot } from '../data/paths';
-import { getProjectsDir } from '../utils/path-utils';
+import { getProjectsDir, legacyEncodeProjectPath } from '../utils/path-utils';
 import type { DataRecord } from '../data/types';
 import { rankedFtsSearch } from './fts-rank';
 import { expandCjk, hasCjk } from '../data/backends/fts-query';
@@ -27,21 +27,27 @@ const INDEXED_FIELDS: Array<{ path: string; type: 'text' | 'number' }> = [
   { path: 'projectId', type: 'text' },
   { path: 'filename', type: 'text' },
   { path: 'host', type: 'text' },
+  { path: 'source', type: 'text' },     // 'live' | 'repo'
   { path: 'mtimeMs', type: 'number' },
 ];
 
 /** Per-prompt-file cap on indexed text. Memory files are small; this is a backstop. */
 const MAX_INDEXED_TEXT = 40000;
 
-interface Watermark { mtimeMs: number; size: number }
+interface Watermark { mtimeMs: number; size: number; id: string }
 interface IndexState { version: number; epoch: number; files: Record<string, Watermark>; }
 const STATE_VERSION = 2;
-/** Bump to force a rebuild when the stored shape changes (see PromptIndex.INDEX_EPOCH). */
-const INDEX_EPOCH = 2;
+/** Bump to force a rebuild when the stored shape changes (see PromptIndex.INDEX_EPOCH).
+ *  3: index repo host-mirrors too; record ids gained a host segment.
+ *  4: skip git worktrees, which triplicated a repo's tracked mirrors. */
+const INDEX_EPOCH = 4;
 
 export interface MemoryHit {
   projectId: string;
   filename: string;
+  /** Which host's memory this is — this node for `live`, a peer for a repo mirror. */
+  host: string;
+  source: 'live' | 'repo';
   /** bm25 rank position, 0 = best. */
   rank: number;
 }
@@ -126,22 +132,82 @@ export class MemoryIndex {
     } catch { /* a lost flush costs a re-scan, never correctness */ }
   }
 
-  /** `~/.claude/projects/<encoded>/memory/*.md` — the live, authoritative local set. */
-  private listMemoryFiles(): Array<{ file: string; projectId: string }> {
+  /**
+   * Every memory file reachable on this disk:
+   *
+   *  - LIVE   `~/.claude/projects/<encoded>/memory/*.md` — this host's own memory.
+   *  - REPO   `<cwd>/memory/<host-id>/*.md` — OTHER hosts' memory, git-synced into the
+   *           project as mirrors.
+   *
+   * The mirrors matter: cross-host memory search reads exactly these directories, so it
+   * can be bm25-ranked like everything else. (An earlier note claimed peer memory "never
+   * lands on local disk" and therefore could not be indexed — that was wrong; 164 mirrored
+   * files were sitting in the repos at the time.)
+   *
+   * Project cwds come from the session cache rather than from decoding the project
+   * directory name: that encoding replaces `/` with `-` and is lossy for any path that
+   * already contains a hyphen (`lm-unified-trade` would decode to `lm/unified/trade`).
+   */
+  private listMemoryFiles(): Array<{ file: string; projectId: string; host: string; source: 'live' | 'repo' }> {
+    const out: Array<{ file: string; projectId: string; host: string; source: 'live' | 'repo' }> = [];
+    const me = thisNodeId();
+
     const root = getProjectsDir();
-    const out: Array<{ file: string; projectId: string }> = [];
-    let dirs: string[];
-    try { dirs = fs.readdirSync(root); } catch { return out; }
+    let dirs: string[] = [];
+    try { dirs = fs.readdirSync(root); } catch { /* no projects dir */ }
     for (const d of dirs) {
       const mem = path.join(root, d, 'memory');
       try {
         if (!fs.statSync(mem).isDirectory()) continue;
         for (const f of fs.readdirSync(mem)) {
-          if (f.endsWith('.md')) out.push({ file: path.join(mem, f), projectId: d });
+          if (f.endsWith('.md')) out.push({ file: path.join(mem, f), projectId: d, host: me, source: 'live' });
         }
       } catch { /* no memory dir for this project */ }
     }
+
+    for (const cwd of this.projectCwds()) {
+      const base = path.join(cwd, 'memory');
+      const projectId = legacyEncodeProjectPath(cwd);
+      let hosts: string[] = [];
+      try {
+        if (!fs.statSync(base).isDirectory()) continue;
+        hosts = fs.readdirSync(base, { withFileTypes: true })
+          // `_hosts.md` and dot-dirs are registry/bookkeeping, not a host's memory.
+          .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('_'))
+          .map((e) => e.name);
+      } catch { continue; }
+      for (const host of hosts) {
+        const dir = path.join(base, host);
+        try {
+          for (const f of fs.readdirSync(dir)) {
+            if (f.endsWith('.md')) out.push({ file: path.join(dir, f), projectId, host, source: 'repo' });
+          }
+        } catch { /* unreadable mirror */ }
+      }
+    }
     return out;
+  }
+
+  /** Distinct project cwds known to this node, from the session cache (accurate, unlike decoding). */
+  private projectCwds(): string[] {
+    try {
+      const { getSessionCache } = require('../session-cache') as typeof import('../session-cache');
+      const seen = new Set<string>();
+      for (const s of getSessionCache().getAllSessionsFromCache()) {
+        const cwd = s.cacheData?.cwd;
+        if (!cwd) continue;
+        // Skip git worktrees. `<repo>/memory/<host>/` is TRACKED, so every worktree checks
+        // out the same mirrors and the same memory file would be indexed once per
+        // worktree — measured, one file appeared three times from a single host purely
+        // because two mission worktrees existed beside the main checkout. A worktree is
+        // not a separate project for memory; the parent checkout already covers it.
+        if (cwd.includes('/.claude/worktrees/') || cwd.includes('\\.claude\\worktrees\\')) continue;
+        seen.add(cwd);
+      }
+      return [...seen];
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -149,7 +215,7 @@ export class MemoryIndex {
    * in place rather than appended, so the watermark is (mtime, size) and the whole file
    * is re-read — there is no meaningful tail.
    */
-  async indexFile(filePath: string, projectId: string): Promise<boolean> {
+  async indexFile(filePath: string, projectId: string, host?: string, source: 'live' | 'repo' = 'live'): Promise<boolean> {
     await this.init();
     let st: fs.Stats;
     try { st = fs.statSync(filePath); } catch { return false; }
@@ -159,10 +225,14 @@ export class MemoryIndex {
     let raw: string;
     try { raw = fs.readFileSync(filePath, 'utf8'); } catch { return false; }
     const filename = path.basename(filePath);
+    const owner = host || thisNodeId();
     const rec: DataRecord = {
-      id: `${projectId}::${filename}`,
+      // Host is part of the id: the same filename legitimately exists for several hosts
+      // (a live copy plus one mirror per peer), and collapsing them would let one host's
+      // memory overwrite another's.
+      id: `${projectId}::${owner}::${filename}`,
       version: 1,
-      fields: { projectId, filename, host: thisNodeId(), mtimeMs: st.mtimeMs },
+      fields: { projectId, filename, host: owner, source, mtimeMs: st.mtimeMs },
       // Whole file: memory files ARE the topical signal — unlike a transcript there is
       // no assistant chatter or tool output to exclude.
       text: (() => {
@@ -179,7 +249,7 @@ export class MemoryIndex {
     } catch {
       return false;   // watermark not advanced — the next pass retries this file
     }
-    this.state.files[filePath] = { mtimeMs: st.mtimeMs, size: st.size };
+    this.state.files[filePath] = { mtimeMs: st.mtimeMs, size: st.size, id: rec.id };
     this.scheduleFlush();
     return true;
   }
@@ -188,8 +258,8 @@ export class MemoryIndex {
   async refresh(): Promise<number> {
     await this.init();
     let n = 0;
-    for (const { file, projectId } of this.listMemoryFiles()) {
-      try { if (await this.indexFile(file, projectId)) n++; } catch { /* skip one bad file */ }
+    for (const { file, projectId, host, source } of this.listMemoryFiles()) {
+      try { if (await this.indexFile(file, projectId, host, source)) n++; } catch { /* skip one bad file */ }
     }
     this.flushState();
     return n;
@@ -199,10 +269,12 @@ export class MemoryIndex {
    * Ranked filenames for a query, best first. Null means the query had no indexable
    * terms — "cannot search", not "matched nothing".
    */
-  async search(query: string, opts: { projectId?: string; need?: number } = {}): Promise<MemorySearchResult | null> {
+  async search(query: string, opts: { projectId?: string; host?: string; source?: 'live' | 'repo'; need?: number } = {}): Promise<MemorySearchResult | null> {
     await this.init();
     const filter: any[] = [];
     if (opts.projectId) filter.push({ field: 'projectId', op: 'eq', value: opts.projectId });
+    if (opts.host) filter.push({ field: 'host', op: 'eq', value: opts.host });
+    if (opts.source) filter.push({ field: 'source', op: 'eq', value: opts.source });
     const r = await rankedFtsSearch(this.backend, MEMORY_DATASET, query, { filter, need: opts.need });
     if (!r) return null;
     return {
@@ -211,6 +283,8 @@ export class MemoryIndex {
       hits: r.records.map((rec, i) => ({
         projectId: String(rec.fields?.projectId ?? ''),
         filename: String(rec.fields?.filename ?? ''),
+        host: String(rec.fields?.host ?? ''),
+        source: (rec.fields?.source === 'repo' ? 'repo' : 'live') as 'live' | 'repo',
         rank: i,
       })),
     };
@@ -222,8 +296,8 @@ export class MemoryIndex {
     let removed = 0;
     for (const filePath of Object.keys(this.state.files)) {
       if (fs.existsSync(filePath)) continue;
-      const projectId = path.basename(path.dirname(path.dirname(filePath)));
-      try { await this.backend.delete(MEMORY_DATASET, `${projectId}::${path.basename(filePath)}`); }
+      const known = this.state.files[filePath];
+      try { await this.backend.delete(MEMORY_DATASET, known.id); }
       catch { continue; }
       delete this.state.files[filePath];
       removed++;

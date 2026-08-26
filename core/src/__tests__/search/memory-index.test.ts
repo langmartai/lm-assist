@@ -58,6 +58,34 @@ test('project scoping keeps other projects out', async () => {
   assert.deepEqual(r!.hits.map((h) => h.filename), ['one.md']);
 });
 
+test('the same filename from different hosts does not collide', async () => {
+  // Cross-host memory arrives as `<repo>/memory/<host-id>/<name>.md` mirrors, so one
+  // filename legitimately exists once per host. Keying records on project+filename alone
+  // would let one host's memory silently overwrite another's.
+  const { index, dir } = freshIndex('hosts');
+  await index.indexFile(writeMemo(dir, 'shared.md', 'alpha content from the first host'), 'p', 'host-a', 'repo');
+  await index.indexFile(writeMemo(dir, 'shared2.md', 'bravo content from the second host'), 'p', 'host-b', 'repo');
+
+  const a = await index.search('alpha content first');
+  const b = await index.search('bravo content second');
+  assert.equal(a!.hits[0].host, 'host-a');
+  assert.equal(b!.hits[0].host, 'host-b');
+  assert.equal(a!.hits[0].source, 'repo');
+});
+
+test('search can be scoped to one host, or to live vs mirrored memory', async () => {
+  const { index, dir } = freshIndex('hostfilter');
+  await index.indexFile(writeMemo(dir, 'mine.md', 'charlie subsystem notes'), 'p', 'me', 'live');
+  await index.indexFile(writeMemo(dir, 'theirs.md', 'charlie subsystem notes'), 'p', 'peer', 'repo');
+
+  const all = await index.search('charlie subsystem');
+  assert.equal(all!.hits.length, 2);
+  const onlyPeer = await index.search('charlie subsystem', { host: 'peer' });
+  assert.deepEqual(onlyPeer!.hits.map((h) => h.filename), ['theirs.md']);
+  const onlyLive = await index.search('charlie subsystem', { source: 'live' });
+  assert.deepEqual(onlyLive!.hits.map((h) => h.filename), ['mine.md']);
+});
+
 test('an unchanged file is not re-indexed; a rewritten one is', async () => {
   const { index, dir } = freshIndex('watermark');
   const f = writeMemo(dir, 'notes.md', 'original content about alpha');
