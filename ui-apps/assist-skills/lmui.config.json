@@ -31,7 +31,7 @@
     "port": 5601
   },
   "service": "ui-assist-skills",
-  "category": "Node",
-  "sortOrder": 130,
+  "category": "Fleet",
+  "sortOrder": 76,
   "managed": true
 }

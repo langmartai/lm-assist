@@ -22,7 +22,7 @@
     "port": 5601
   },
   "service": "ui-assist-memory",
-  "category": "Node",
-  "sortOrder": 80,
+  "category": "Knowledge",
+  "sortOrder": 54,
   "managed": true
 }
