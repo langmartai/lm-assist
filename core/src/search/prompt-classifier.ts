@@ -16,6 +16,8 @@
 // core-restart reattach notice (179). Ranking user prompts without filtering these
 // means ranking the fleet's own automation, not the operator's intent.
 
+import { tokenizeFts } from '../data/backends/fts-query';
+
 /** Why a prompt was judged synthetic. Kept queryable so the noise stays inspectable. */
 export type PromptClass =
   | 'user'              // a real, topical prompt — the only class indexed by default
@@ -63,10 +65,21 @@ const RULES: Array<{ cls: PromptClass; test: (t: string) => boolean }> = [
   { cls: 'task_notification', test: (t) => t.startsWith('<task-notification') },
   { cls: 'controller_pass',  test: (t) => /^Run a controller pass\b/.test(t) },
   { cls: 'security_review',  test: (t) => t.startsWith('Review this change for security vulnerabilities') },
+  // The FOLLOW-UP half of the same automated review. Only 3 occurrences, but they average
+  // ~13,800 characters of enumerated findings, so they mention nearly every technical term
+  // in the codebase and surfaced as the top hit for unrelated queries. Volume is not the
+  // only way boilerplate distorts ranking — length is the other.
+  { cls: 'security_review',  test: (t) => t.startsWith('You previously flagged these candidate vulnerabilities') },
   { cls: 'interrupt',        test: (t) => t.startsWith('[Request interrupted by user') },
   { cls: 'teammate_message', test: (t) => t.startsWith('Another Claude session sent a message:') || t.startsWith('<teammate-message') || t.startsWith('<agent-message') },
   { cls: 'skill_preamble',   test: (t) => t.startsWith('Base directory for this skill:') },
   { cls: 'worker_preamble',  test: (t) => /^#\s*Worker preamble\b/.test(t) || /^You are the executor \(worker\) for mission\b/.test(t) },
+  // Agent ROLE briefs: "You are <role>. Read /<path>…". Measured at 238 occurrences across
+  // 238 sessions — 10.5% of everything still classed as a real prompt, one template. The
+  // shape is deliberately strict (a role clause, a sentence end, then a capital-R `Read`
+  // and an absolute path) so "You are right, please read /docs/x.md" and "You are an expert
+  // reviewer. Please review this" are untouched.
+  { cls: 'worker_preamble',  test: (t) => /^You are\b[^.!?\n]{3,70}[.!]\s*Read\b\s+\//.test(t) },
   { cls: 'banner',           test: (t) => /^[=═─—_*#-]{10,}/.test(t) },
   // A SHORTER separator run still marks a template when it wraps an ALL-CAPS heading —
   // e.g. "=== DEEP MEMORY VALIDATOR -- READ CAREFULLY ===", an automation preamble that
@@ -117,9 +130,11 @@ export function stripEmbedded(text: string): string {
 
 /** Does the text carry enough substance to be worth ranking? */
 function hasSignal(text: string): boolean {
-  // At least two word-ish tokens; a bare "ok" or a lone path fragment is not a topic.
-  const words = text.split(/[^\p{L}\p{N}_]+/u).filter((w) => w.length >= 2);
-  if (words.length >= 2) return true;
+  // At least two INDEXABLE terms — the same tokens the index will actually hold. Counting
+  // raw words instead let through prompts nothing could ever retrieve ("All done?",
+  // "Is it all done?", "eview again"), because their words are all stopwords or 1-char.
+  // Measured at 45 prompts, 2% of the real corpus.
+  if (tokenizeFts(text).length >= 2) return true;
   // CJK is written without spaces, so a whole Chinese/Japanese sentence tokenizes as ONE
   // "word" and would be discarded as filler. Several ideographs are a real topic — this
   // matters here: the fleet has genuine Chinese-language work (the WeChat client sessions).

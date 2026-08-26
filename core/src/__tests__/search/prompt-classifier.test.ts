@@ -100,3 +100,38 @@ test('an all-CJK prompt is real — it has no spaces to tokenize on', () => {
 test('a single CJK character is still filler', () => {
   assert.equal(classifyPromptForIndex('好').synthetic, true);
 });
+
+test('agent ROLE briefs are boilerplate — 10.5% of the corpus was one template', () => {
+  // "You are <role>. Read /<path>" appeared 238 times across 238 sessions, all ranking as
+  // real prompts. It is an automation brief, not something a person typed.
+  for (const t of [
+    "You are pattern-engine's Supercharge Judge. Read /tmp/pe-judge.md and score each",
+    'You are the Discovery Author. Read /tmp/pe-discovery.json and write the summary',
+  ]) {
+    assert.equal(classifyPromptForIndex(t).synthetic, true, `role brief kept: ${t.slice(0, 40)}`);
+  }
+});
+
+test('the role-brief rule does not eat ordinary prompts that mention reading a file', () => {
+  // The shape is strict on purpose: a role clause, a sentence end, capital-R Read, a path.
+  for (const t of [
+    'You are right, please read /docs/design.md carefully',
+    'You are right. Read the file I mentioned',
+    'You are an expert reviewer. Please review this diff',
+    'You are going to need to Read /etc/hosts for this',
+  ]) {
+    assert.equal(classifyPromptForIndex(t).synthetic, false, `real prompt filtered: ${t.slice(0, 40)}`);
+  }
+});
+
+test('a prompt with fewer than two INDEXABLE terms is unsearchable, so it is filler', () => {
+  // Counting raw words let these through, but nothing could ever retrieve them: their
+  // words are stopwords or too short to index.
+  for (const t of ['push it', "What's left", 'Do both', 'Are you working', 'Test it']) {
+    assert.equal(classifyPromptForIndex(t).synthetic, true, `unsearchable prompt kept: ${t}`);
+  }
+  // …while a short but genuinely specific prompt survives.
+  for (const t of ['Test browser on 107', 'fix the login redirect']) {
+    assert.equal(classifyPromptForIndex(t).synthetic, false, `specific prompt filtered: ${t}`);
+  }
+});

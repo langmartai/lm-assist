@@ -276,7 +276,7 @@ SINGLE-NODE
 1. \`search(q="...")\` → past code SESSIONS, ranked by bm25 over their USER PROMPTS; returns sessionIds. For saved knowledge use \`search_memory\` / \`data_search({dataset:"knowledge"})\`.
 
 HOW TO QUERY \`search\` — measured on a 6.8k-session index, worth following
-- It indexes what you ASKED, not what the assistant answered and not file contents. Search the words YOU would have typed. Injected boilerplate (skill preambles, controller passes, compaction carryovers, teammate envelopes, templated reviews) is ~88% of user-channel messages and is excluded, so hits reflect intent rather than transcript volume.
+- It indexes what you ASKED, not what the assistant answered and not file contents. Search the words YOU would have typed. Concretely: on this node ZERO user prompts contain "bm25" (the assistant wrote it, the operator never typed it) while 122 contain "deploy" — so query the vocabulary of the REQUEST, not of the implementation. Injected boilerplate (skill preambles, controller passes, compaction carryovers, teammate envelopes, templated reviews) is ~88% of user-channel messages and is excluded, so hits reflect intent rather than transcript volume.
 - 3-6 DISTINCTIVE terms is the sweet spot. One term is often too narrow; pasting a whole sentence widens hard (15 terms took one query from 20 sessions to 43).
 - Distinctive beats generic, by a lot: "gmail cdp browser login" → 1 session; "make search better" → 26 mostly-irrelevant ones.
 - READ THE LABEL, it tells you how much to trust the list. "every term matched within a single prompt" = AND, precise. "ANY term matched" = it WIDENED because no single prompt held all terms — each hit then shows \`matched n/N terms\`; trust the high-n ones and ignore the 1/N tail.
