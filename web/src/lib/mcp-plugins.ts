@@ -32,8 +32,20 @@ export interface PluginView {
   pinMatches: boolean;
   grantedEnv: string[];
   enabledAt?: number;
+  /** Who approved it: an owner ("owner@console") or the package ("bundled@<version>"). */
+  enabledBy?: string;
   health: { failures: number; lastError?: string; quarantinedUntil?: number };
   manifestErrors: string[];
+  /** This plugin ships inside the lm-assist package (docs/mcp-plugins-bundled.md). */
+  bundled?: boolean;
+  /** Bundled, but the tree on disk is no longer the one the package seeded — the
+   *  package will not touch it and it does not inherit package trust. */
+  bundledModified?: boolean;
+  /** Bundled and deliberately turned off by the owner; upgrades leave it off. */
+  bundledOptOut?: boolean;
+  /** A mirror of a payload maintained in another repo — lm-assist is not the place to
+   *  edit it. Deliberately a boolean: the upstream may be private, so it is never named. */
+  bundledMirror?: boolean;
 }
 
 export interface PluginListResponse {
@@ -101,6 +113,14 @@ export function phaseBadge(p: PluginView): PhaseBadge {
  *  auto-reverted and needs a fresh human approval. */
 export function needsReapproval(p: PluginView): boolean {
   return !!p.approvedChecksum && p.approvedChecksum !== p.payloadChecksum;
+}
+
+/** How a plugin came to be trusted, for the review screen. A package-seeded plugin
+ *  must never be presented as somebody's click — the operator consented by INSTALLING
+ *  lm-assist, which is a different (and weaker) statement than reviewing this payload. */
+export function trustSource(p: PluginView): 'owner' | 'package' | 'none' {
+  if (p.phase !== 'enabled') return 'none';
+  return p.enabledBy?.startsWith('bundled@') ? 'package' : 'owner';
 }
 
 /** What the enable button should say/do. Enabling is only offered for a plugin that

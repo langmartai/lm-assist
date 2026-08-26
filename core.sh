@@ -1510,6 +1510,37 @@ case "${1:-}" in
                 ;;
         esac
         ;;
+    plugins)
+        # First-party ext plugins ship INSIDE the package (core/data/mcp-plugins) and are
+        # seeded + trusted by Core on every boot. This command is for inspecting that,
+        # or re-running it after a hand grant. See docs/mcp-plugins-bundled.md.
+        case "${2:-check}" in
+            check)
+                node "$CORE_DIR/scripts/sync-bundled-plugins.js" check
+                ;;
+            sync)
+                node "$CORE_DIR/scripts/sync-bundled-plugins.js" sync
+                ;;
+            gen)
+                # Extra args pass through, so `./core.sh plugins gen --from <upstream>/mcp-plugins`
+                # re-vendors a mirror. A bare `gen` only verifies + reindexes.
+                shift 2 2>/dev/null || shift $#
+                node "$CORE_DIR/scripts/gen-bundled-plugins.js" "$@"
+                ;;
+            *)
+                echo "Usage: $0 plugins [check|sync|gen]"
+                echo ""
+                echo "  check   Report which bundled plugins would be installed/updated (default)"
+                echo "  sync    Install them now (Core also does this at boot)"
+                echo "  gen     Verify the mirrors + regenerate bundled.json"
+                echo "          gen --from <upstream>/mcp-plugins   re-vendor a mirror from its source repo"
+                echo ""
+                echo "  core/data/mcp-plugins/* are MIRRORS — never edit them here; fix the"
+                echo "  upstream repo and re-vendor. See docs/mcp-plugins-bundled.md."
+                exit 1
+                ;;
+        esac
+        ;;
     logs)
         view_logs_cli "${2:-}"
         ;;
@@ -1574,6 +1605,8 @@ case "${1:-}" in
         echo "  test              Test API endpoints"
         echo "  panes [check|sync]  Check/re-copy the pane shim in the node's apps root"
         echo "                    (a build does NOT deploy panes — see docs/ui-panes-deploy.md)"
+        echo "  plugins [check|sync|gen]  Bundled ext plugins that ship in the package"
+        echo "                    (Core seeds these at boot — see docs/mcp-plugins-bundled.md)"
         echo "  logs [service]    View service logs"
         echo "  hub [command]     Hub client management"
         echo "  help              Show this help"

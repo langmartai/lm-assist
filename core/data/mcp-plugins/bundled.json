@@ -1,0 +1,13 @@
+{
+  "plugins": [
+    {
+      "name": "langmart-design",
+      "version": "0.1.0",
+      "checksum": "sha256:a79cf06afa960ddb3cc553cb74078aa3437031deca447f934516b231a4d7bdfd",
+      "manifestDigest": "sha256:d433241cf57cbab50d333b3c1118b4331143ebade71d1f9fed97532115fe6bea",
+      "upstream": {
+        "checksum": "sha256:a79cf06afa960ddb3cc553cb74078aa3437031deca447f934516b231a4d7bdfd"
+      }
+    }
+  ]
+}

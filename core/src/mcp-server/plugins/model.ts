@@ -84,6 +84,21 @@ export interface PluginState {
   enabledBy?: string;
   revertedReason?: string;
   health?: PluginHealth;
+  /** Payload checksum of the BUNDLED payload this node last seeded into the plugin
+   *  directory. Present only for first-party plugins that shipped inside the lm-assist
+   *  package. Lets an upgrade tell "still the payload we installed" (safe to replace)
+   *  apart from "a human edited this tree" (never touch it). */
+  bundledSeededChecksum?: string;
+  /** Manifest digest of that same seeded payload. Tracked SEPARATELY because
+   *  `payloadChecksum()` deliberately excludes `mcp-plugin.json` (it carries the field
+   *  and cannot hash itself) — so a version bump, a reworded tool, or a WIDENED
+   *  `capabilities.env` moves this and not the payload checksum. Comparing only the
+   *  payload would leave a node running last release's manifest forever. */
+  bundledSeededManifestDigest?: string;
+  /** The owner disabled a bundled plugin by hand. Sticky across upgrades: without it,
+   *  every `lm-assist upgrade` would re-enable something the owner deliberately turned
+   *  off. Cleared by an explicit enable. */
+  bundledOptOut?: boolean;
 }
 
 export type PluginPhase = 'disabled' | 'enabled' | 'unhealthy' | 'invalid';
@@ -123,4 +138,11 @@ export function isPluginToolName(name: string): boolean {
 /** Kill switch (contract §2 / design §Security 8). */
 export function pluginsSubsystemEnabled(): boolean {
   return process.env.LM_MCP_PLUGINS !== '0';
+}
+
+/** Second, narrower kill switch: stop seeding/auto-enabling the FIRST-PARTY plugins
+ *  that ship inside the lm-assist package, without turning off the plugin subsystem
+ *  that a node's hand-installed third-party plugins depend on. */
+export function bundledPluginsEnabled(): boolean {
+  return pluginsSubsystemEnabled() && process.env.LM_BUNDLED_PLUGINS !== '0';
 }
