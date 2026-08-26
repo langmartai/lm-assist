@@ -23,7 +23,7 @@
     "port": 5601
   },
   "service": "ui-assist-missions",
-  "category": "Node",
+  "category": "Missions",
   "sortOrder": 30,
   "managed": true
 }

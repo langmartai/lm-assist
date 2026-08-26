@@ -1,6 +1,6 @@
 {
   "uiId": "assist-manage",
-  "name": "Assist \u2014 UI Pages Manager",
+  "name": "UI Pages",
   "scope": "lm-assist",
   "service": "ui-assist-manage",
   "grant": [
@@ -10,6 +10,6 @@
     { "service": "node", "pathPrefix": "/ui-pages/registry/*", "verbs": ["DELETE"], "exact": true }
   ],
   "managed": true,
-  "category": "Tools",
-  "sortOrder": 10
+  "category": "Manage",
+  "sortOrder": 90
 }

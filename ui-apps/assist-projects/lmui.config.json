@@ -15,7 +15,7 @@
     "port": 5601
   },
   "service": "ui-assist-projects",
-  "category": "Node",
-  "sortOrder": 120,
+  "category": "Sessions",
+  "sortOrder": 14,
   "managed": true
 }

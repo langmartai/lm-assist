@@ -11,7 +11,7 @@
     "port": 5601
   },
   "service": "ui-assist-session-dashboard",
-  "category": "Node",
-  "sortOrder": 22,
+  "category": "Sessions",
+  "sortOrder": 12,
   "managed": true
 }

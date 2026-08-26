@@ -20,7 +20,7 @@
     "port": 5601
   },
   "service": "ui-assist-sessions",
-  "category": "Node",
-  "sortOrder": 20,
+  "category": "Sessions",
+  "sortOrder": 10,
   "managed": true
 }

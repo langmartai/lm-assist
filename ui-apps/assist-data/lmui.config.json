@@ -15,7 +15,7 @@
     "port": 5601
   },
   "service": "ui-assist-data",
-  "category": "Node",
-  "sortOrder": 100,
+  "category": "Fleet",
+  "sortOrder": 72,
   "managed": true
 }

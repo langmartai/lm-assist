@@ -11,7 +11,7 @@
     "port": 5601
   },
   "service": "ui-assist-backlog",
-  "category": "Node",
-  "sortOrder": 10,
+  "category": "Missions",
+  "sortOrder": 38,
   "managed": true
 }

@@ -13,7 +13,7 @@
     "port": 5601
   },
   "service": "ui-assist-clusters",
-  "category": "Node",
-  "sortOrder": 140,
+  "category": "Fleet",
+  "sortOrder": 70,
   "managed": true
 }
