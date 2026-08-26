@@ -11,6 +11,8 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { getVectorStore } from '../../vector/vector-store';
 import { compositeScore, type ScoredResult, type CompositeScoreOptions } from '../../search/composite-scorer';
+import { tokenizeSessionQuery, containsWord } from '../../search/text-scorer';
+import { getPromptIndex } from '../../search/prompt-index';
 import { getSessionCache } from '../../session-cache';
 
 // ─── Types ──────────────────────────────────────────────────
@@ -45,27 +47,35 @@ function isWithinScope(timestamp: string | undefined, scope: Scope): boolean {
 
 // ─── Session Scoring ──────────────────────────────────────────────────
 
-function tokenize(text: string): string[] {
-  return text.toLowerCase().replace(/[^a-z0-9\s\-_.]/g, ' ').split(/\s+/).filter(t => t.length > 1);
-}
+// Deliberately NOT a local tokenizer any more. This file used to carry its own copy of
+// both the tokenizer and the scorer, which is why the match-all fix to the MCP `search`
+// tool never reached the web UI: `and` survived tokenization and `lower.includes(token)`
+// matched it inside command/understand/expands, so a query returned 6,914 of ~6,914
+// sessions. The shared, fixed implementations live in search/text-scorer.ts.
 
+/**
+ * Whole-word field scoring for the FALLBACK scan. Reports which distinct terms it matched
+ * so the caller can apply a majority floor — one shared word is not a match.
+ */
 function scoreField(
   text: string | undefined | null,
   queryTokens: string[],
   queryLower: string,
   weight: number,
+  seen: Set<string>,
 ): number {
   if (!text) return 0;
   const lower = text.toLowerCase();
   let score = 0;
 
-  if (lower.includes(queryLower)) {
+  if (queryLower && lower.includes(queryLower)) {
     score += 10 * weight;
   }
 
   for (const token of queryTokens) {
-    if (lower.includes(token)) {
+    if (containsWord(lower, token)) {
       score += weight;
+      seen.add(token);
     }
   }
 
@@ -74,7 +84,7 @@ function scoreField(
 
 // ─── Shared Search Logic ──────────────────────────────────────────────────
 
-function sessionKeywordSearch(params: Record<string, string>) {
+async function sessionKeywordSearch(params: Record<string, string>) {
   const startTime = Date.now();
 
   if (!params.query || typeof params.query !== 'string') {
@@ -91,7 +101,7 @@ function sessionKeywordSearch(params: Record<string, string>) {
   const cache = getSessionCache();
   const sessions = cache.getAllSessionsFromCache();
 
-  const queryTokens = tokenize(query);
+  const queryTokens = tokenizeSessionQuery(query);
   const queryLower = query.toLowerCase();
 
   interface SessionSearchResult {
@@ -100,7 +110,69 @@ function sessionKeywordSearch(params: Record<string, string>) {
     timestamp: string;
     project: string;
     numTurns: number;
+    /** Distinct query terms this session matched (bm25 path only). */
+    terms?: number;
+    /** The prompt that matched, for display. */
+    snippet?: string;
   }
+
+  const byId = new Map(sessions.map((x) => [x.sessionId, x.cacheData] as const));
+
+  // ── Preferred: bm25 over the indexed user prompts, the same path the MCP `search`
+  // tool uses. The scan below stays as a fallback for a node whose index has not built,
+  // and the response says which one answered so a coarse result is never mistaken for a
+  // ranked one.
+  try {
+    const index = getPromptIndex();
+    await index.init();
+    if (index.hasContent() && queryTokens.length > 0) {
+      const since = scope === 'all' ? undefined : new Date(Date.now() - SCOPE_MS[scope]).toISOString();
+      const need = limit > 0 ? limit : 50;
+      const r = await index.search(query, { project: params.projectPath, since, need });
+      if (r && r.sessions.length > 0) {
+        const ranked: SessionSearchResult[] = r.sessions.map((sess, i) => {
+          const cd = byId.get(sess.sessionId);
+          return {
+            sessionId: sess.sessionId,
+            // Rank inverted into a descending score so existing consumers still sort right.
+            score: r.sessions.length - i,
+            timestamp: sess.ts || cd?.lastTimestamp || '',
+            project: sess.project || cd?.cwd || '',
+            numTurns: cd?.numTurns ?? 0,
+            terms: sess.terms,
+            snippet: sess.best.text.replace(/\s+/g, ' ').slice(0, 220),
+          };
+        });
+        return {
+          success: true,
+          data: {
+            results: limit > 0 ? ranked.slice(0, limit) : ranked,
+            total: ranked.length,
+            query,
+            scope,
+            searchTimeMs: Date.now() - startTime,
+            sessionsScanned: ranked.length,
+            path: 'prompt-index',
+            mode: r.mode,
+            queryTerms: r.queryTerms,
+            truncated: r.truncated,
+          },
+        };
+      }
+      if (r) {
+        // The index answered and found nothing. That is a real no-match, not a reason to
+        // fall through to a coarser scan that would manufacture hits.
+        return {
+          success: true,
+          data: {
+            results: [], total: 0, query, scope,
+            searchTimeMs: Date.now() - startTime, sessionsScanned: 0,
+            path: 'prompt-index', mode: r.mode, queryTerms: r.queryTerms, truncated: false,
+          },
+        };
+      }
+    }
+  } catch { /* index unavailable — fall through to the scan, which reports itself */ }
 
   const results: SessionSearchResult[] = [];
   let sessionsScanned = 0;
@@ -114,21 +186,27 @@ function sessionKeywordSearch(params: Record<string, string>) {
 
     // Score against session metadata
     let score = 0;
-    score += scoreField(cacheData.result, queryTokens, queryLower, 4);
-    score += scoreField(cacheData.cwd, queryTokens, queryLower, 2);
+    const seen = new Set<string>();
+    score += scoreField(cacheData.result, queryTokens, queryLower, 4, seen);
+    score += scoreField(cacheData.cwd, queryTokens, queryLower, 2, seen);
 
     // Score user prompts
     for (const p of cacheData.userPrompts) {
-      score += scoreField(p.text, queryTokens, queryLower, 3);
+      score += scoreField(p.text, queryTokens, queryLower, 3, seen);
     }
 
     // Score tasks
     for (const t of cacheData.tasks) {
-      score += scoreField(t.subject, queryTokens, queryLower, 3);
-      score += scoreField(t.description, queryTokens, queryLower, 1);
+      score += scoreField(t.subject, queryTokens, queryLower, 3, seen);
+      score += scoreField(t.description, queryTokens, queryLower, 1, seen);
     }
 
     if (score <= 0) continue;
+    // A majority of the query's terms, or it is not a match. Without this floor a single
+    // shared word returns the corpus.
+    if (queryTokens.length > 1 && seen.size < Math.ceil(queryTokens.length / 2)) continue;
+    // Damp by transcript size so sheer volume cannot substitute for relevance.
+    score = score / (1 + Math.log10(1 + Math.max(cacheData.userPrompts.length, 1)));
 
     results.push({
       sessionId,
@@ -150,6 +228,8 @@ function sessionKeywordSearch(params: Record<string, string>) {
       scope,
       searchTimeMs: Date.now() - startTime,
       sessionsScanned,
+      // Named so a coarse whole-transcript scan is never mistaken for the ranked path.
+      path: 'text-scan',
     },
   };
 }
@@ -200,7 +280,7 @@ export function createSessionSearchRoutes(ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/session-search$/,
       handler: async (req) => {
-        return sessionKeywordSearch(req.query as Record<string, string>);
+        return await sessionKeywordSearch(req.query as Record<string, string>);
       },
     },
     {
@@ -213,7 +293,7 @@ export function createSessionSearchRoutes(ctx: RouteContext): RouteHandler[] {
         if (body.scope) params.scope = String(body.scope);
         if (body.limit) params.limit = String(body.limit);
         if (body.projectPath) params.projectPath = String(body.projectPath);
-        return sessionKeywordSearch(params);
+        return await sessionKeywordSearch(params);
       },
     },
 

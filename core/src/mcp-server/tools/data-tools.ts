@@ -375,7 +375,7 @@ export const DATA_TOOL_DEFS = [
     annotations: { readOnlyHint: true },
     inputSchema: { type: 'object' as const, properties: {
       dataset: STR('Dataset id.'),
-      query: { type: 'object' as const, description: 'QuerySpec: { filter?: [{field, op, value, flags?}], sort?: [{field, dir}], limit?, offset? }. op ∈ eq|ne|gt|gte|lt|lte|in|nin|contains|regex|wildcard|exists (symbolic >=,>,<=,<,=,!= accepted). dir ∈ asc|desc.' },
+      query: { type: 'object' as const, description: 'QuerySpec: { filter?: [{field, op, value, flags?}], fts?, ftsMode?, sort?: [{field, dir}], limit?, offset? }. op ∈ eq|ne|gt|gte|lt|lte|in|nin|contains|regex|wildcard|exists (symbolic >=,>,<=,<,=,!= accepted). dir ∈ asc|desc. `fts` is RANKED full-text search on `sql` datasets (other backends ignore it): pass RAW TEXT, never FTS5 syntax — every term is quoted for you, so -, *, " and bare AND/OR/NOT are searched for instead of being parsed as operators or throwing. Results come back bm25-ranked (best first) unless you also pass `sort`. `ftsMode` is "and" (default, every term must appear in one record) or "or" (any term — broader). A query whose terms are all stopwords matches nothing rather than everything. Combine with `filter` to scope it, e.g. {filter:[{field:"project",op:"eq",value:"/repo"}], fts:"login redirect bug"}.' },
       limit: { type: 'number' as const, description: `Max records to return (default ${DEFAULT_MCP_QUERY_ROWS}, hard max ${MAX_QUERY_ROWS}). Overrides query.limit.` },
       offset: { type: 'number' as const, description: 'Page offset (default 0). Overrides query.offset; use with the `more` line in the response to page.' },
       key: STR('Access key (omit if local).'),
@@ -383,7 +383,7 @@ export const DATA_TOOL_DEFS = [
   },
   {
     name: 'data_search',
-    description: 'Semantic + full-text hybrid search over a search-capable dataset (the system `knowledge`/`vectors` stores, or any `vector` backend). Cache/sql/file backends return NOT_SUPPORTED — use data_query for those. Returns the best-matching records ranked by a relevance `score` (high→low) as type-aware SUMMARIES (each field/text classified text|code|json|binary with size; large values collapsed, binary never inlined). To read a specific part of a hit, call data_get(dataset, id, field/part/offset/limit). Pass `key` if you have one. The optional filter is an ARRAY of { field, op, value, flags? } (op ∈ eq|ne|gt|gte|lt|lte|in|nin|contains|regex|wildcard|exists, symbolic forms accepted).',
+    description: 'Semantic + full-text hybrid search over a search-capable dataset (the system `knowledge`/`vectors` stores, or any `vector` backend). Cache/sql/file backends return NOT_SUPPORTED — for a `sql` dataset use data_query with `fts`, which is genuine bm25-ranked full-text search, not a fallback. Returns the best-matching records ranked by a relevance `score` (high→low) as type-aware SUMMARIES (each field/text classified text|code|json|binary with size; large values collapsed, binary never inlined). To read a specific part of a hit, call data_get(dataset, id, field/part/offset/limit). Pass `key` if you have one. The optional filter is an ARRAY of { field, op, value, flags? } (op ∈ eq|ne|gt|gte|lt|lte|in|nin|contains|regex|wildcard|exists, symbolic forms accepted).',
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: 'object' as const,

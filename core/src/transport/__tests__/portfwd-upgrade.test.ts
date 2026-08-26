@@ -15,7 +15,21 @@ import {
   type PortfwdOpenResult,
 } from '../portfwd-upgrade';
 
+/**
+ * Every socket these test servers accept, so teardown can drop them.
+ *
+ * The portfwd pipe uses `allowHalfOpen` deliberately (test 2 depends on it), so a service
+ * that greets and never ends leaves a half-open socket alive: readable=false, writable=true,
+ * not destroyed. Three of those outlived the suite and kept the node process alive, so the
+ * FILE timed out even though every test in it passed.
+ */
+const accepted = new Set<net.Socket>();
+
 function listen(server: net.Server | http.Server): Promise<number> {
+  server.on('connection', (s: net.Socket) => {
+    accepted.add(s);
+    s.on('close', () => accepted.delete(s));
+  });
   return new Promise((res) => server.listen(0, '127.0.0.1', () => res((server.address() as net.AddressInfo).port)));
 }
 
@@ -27,6 +41,28 @@ function makeTargetCore(): http.Server {
     else socket.destroy();
   });
   return server;
+}
+
+
+/**
+ * Close a test server WITHOUT waiting on its live connections.
+ *
+ * `server.close()` stops accepting and then waits for every existing connection to end.
+ * The portfwd tests leave a service connection open on purpose (a server-greets-first
+ * banner is never ended by the service), so the callback never fired and the whole FILE
+ * hung — costing the runner a 240s batch timeout plus a 25-file bisect on every run, and
+ * leaving `npm test` unable to exit 0. Dropping the sockets first makes close() settle.
+ */
+function closeServer(server: net.Server | http.Server): Promise<void> {
+  return new Promise((resolve) => {
+    for (const s of accepted) { try { s.destroy(); } catch { /* ignore */ } }
+    accepted.clear();
+    (server as { closeAllConnections?: () => void }).closeAllConnections?.();
+    server.close(() => resolve());
+    // Belt and braces on runtimes without closeAllConnections: never block teardown.
+    const t = setTimeout(resolve, 2000);
+    if (typeof t.unref === 'function') t.unref();
+  });
 }
 
 /** Narrow a result to its ready socket, or fail the test. */
@@ -55,8 +91,8 @@ test('portfwd: known peer + matching IP → 101 + bidirectional pipe to local se
   });
   assert.strictEqual(got, 'HELLO');
   socket.destroy();
-  await new Promise((r) => svc.close(r));
-  await new Promise((r) => core.close(r));
+  await closeServer(svc);
+  await closeServer(core);
 });
 
 test('portfwd: half-close — response after the client FIN is NOT truncated', async () => {
@@ -83,8 +119,8 @@ test('portfwd: half-close — response after the client FIN is NOT truncated', a
     socket.end('QUERY'); // write then half-close (FIN)
   });
   assert.strictEqual(reply, 'REPLY:QUERY', 'response after client half-close must survive');
-  await new Promise((r) => svc.close(r));
-  await new Promise((r) => core.close(r));
+  await closeServer(svc);
+  await closeServer(core);
 });
 
 test('portfwd: server-greets-first banner delivered (leftover or first data)', async () => {
@@ -100,12 +136,31 @@ test('portfwd: server-greets-first banner delivered (leftover or first data)', a
   socket.on('error', () => { /* ignore */ });
   let acc = leftover.toString();
   if (!acc.includes('SSH-2.0')) {
-    acc += await new Promise<string>((resolve) => socket.once('data', (d) => resolve(d.toString())));
+    // Bounded, and it also settles on close. Awaiting a bare `once('data')` meant that if
+    // the banner never arrived — the socket closed first, or the bytes landed in
+    // `leftover` and no further data ever came — the promise never settled and the whole
+    // FILE hung, costing the runner a 240s batch timeout plus a 25-file bisect on every
+    // run and making `npm test` unable to exit 0. A test may pass or fail; it may not hang.
+    acc += await new Promise<string>((resolve) => {
+      const settle = (v: string) => {
+        clearTimeout(timer);
+        socket.off('data', onData);
+        socket.off('close', onClose);
+        socket.off('end', onClose);
+        resolve(v);
+      };
+      const onData = (d: Buffer) => settle(d.toString());
+      const onClose = () => settle('');
+      const timer = setTimeout(() => settle(''), 5000);
+      socket.on('data', onData);
+      socket.on('close', onClose);
+      socket.on('end', onClose);
+    });
   }
   assert.ok(acc.includes('SSH-2.0-lmtest'), `banner not delivered: ${JSON.stringify(acc)}`);
   socket.destroy();
-  await new Promise((r) => svc.close(r));
-  await new Promise((r) => core.close(r));
+  await closeServer(svc);
+  await closeServer(core);
 });
 
 test('portfwd: unknown peer → answered(403), service never dialed', async () => {
@@ -119,8 +174,8 @@ test('portfwd: unknown peer → answered(403), service never dialed', async () =
   const res = await openPortfwdChannel({ host: '127.0.0.1', port: corePort }, 'attacker', svcPort);
   assert.deepStrictEqual(res, { error: 'answered' }, 'a 403 must be reported as answered (peer replied)');
   assert.strictEqual(dialed, false, 'target service must not be dialed for a rejected peer');
-  await new Promise((r) => svc.close(r));
-  await new Promise((r) => core.close(r));
+  await closeServer(svc);
+  await closeServer(core);
 });
 
 test('portfwd: target service down → answered(502), NOT unreachable (must not poison peer cache)', async () => {
@@ -129,11 +184,11 @@ test('portfwd: target service down → answered(502), NOT unreachable (must not 
   const corePort = await listen(core);
   const dead = net.createServer();
   const deadPort = await listen(dead);
-  await new Promise((r) => dead.close(r)); // free the port so the dial is refused
+  await closeServer(dead); // free the port so the dial is refused
 
   const res = await openPortfwdChannel({ host: '127.0.0.1', port: corePort }, 'peerA', deadPort);
   assert.deepStrictEqual(res, { error: 'answered' }, 'a dead target PORT is answered(502), not a dead PATH');
-  await new Promise((r) => core.close(r));
+  await closeServer(core);
 });
 
 test('portfwd: source IP not matching the peer HELLO address → answered(403)', async () => {
@@ -147,8 +202,8 @@ test('portfwd: source IP not matching the peer HELLO address → answered(403)',
   const res = await openPortfwdChannel({ host: '127.0.0.1', port: corePort }, 'peerA', svcPort);
   assert.deepStrictEqual(res, { error: 'answered' }, 'source-IP mismatch must be rejected');
   assert.strictEqual(dialed, false, 'target service must not be dialed on an address mismatch');
-  await new Promise((r) => svc.close(r));
-  await new Promise((r) => core.close(r));
+  await closeServer(svc);
+  await closeServer(core);
 });
 
 test('portfwd: unknown peer HELLO address (null) → answered(403)', async () => {
@@ -157,7 +212,7 @@ test('portfwd: unknown peer HELLO address (null) → answered(403)', async () =>
   const corePort = await listen(core);
   const res = await openPortfwdChannel({ host: '127.0.0.1', port: corePort }, 'peerA', 5555);
   assert.deepStrictEqual(res, { error: 'answered' }, 'unknown peer address must be rejected');
-  await new Promise((r) => core.close(r));
+  await closeServer(core);
 });
 
 test('portfwd: peer that closes without answering (old code) → unreachable (caches)', async () => {
@@ -187,6 +242,6 @@ test('portfwd: IPv4-mapped-IPv6 peerHost normalizes and matches', async () => {
   const res = await openPortfwdChannel({ host: '127.0.0.1', port: corePort }, 'peerA', svcPort);
   const { socket } = expectSocket(res);
   socket.destroy();
-  await new Promise((r) => svc.close(r));
-  await new Promise((r) => core.close(r));
+  await closeServer(svc);
+  await closeServer(core);
 });
