@@ -15,6 +15,7 @@ import type {
 import { isNewer } from '../types';
 import { sqlDirFor } from '../paths';
 import { compileQuery } from './sql-compiler';
+import { buildFtsMatch } from './fts-query';
 
 // better-sqlite3 is a NATIVE module loaded LAZILY: importing/constructing SqlBackend must NOT
 // require it, so Core boots on a node where the binary is absent/ABI-mismatched (sql is simply
@@ -34,7 +35,13 @@ function sqlite(): any {
 function colName(p: string): string { return 'f_' + p.replace(/[^a-z0-9_]/gi, '_'); }
 function isSafeFieldPath(p: string): boolean { return /^[A-Za-z0-9_.]+$/.test(p); }
 
-const SELECT_COLS = 'id, fields, text, metadata, origin, version, deleted, created_at, updated_at';
+// Table-qualified because the fts path JOINs records_fts, which also has a `text`
+// column — an unqualified list is an "ambiguous column name" error the moment ranking
+// is switched on. Qualification is harmless for the non-join queries (same table name)
+// and the returned column names are unchanged, so rowToRecord is unaffected.
+const SELECT_COLS = 'records.id, records.fields, records.text, records.metadata, records.origin, records.version, records.deleted, records.created_at, records.updated_at';
+/** Same shape, but `text` is not read off disk (NULL keeps rowToRecord's contract). */
+const SELECT_COLS_NO_TEXT = SELECT_COLS.replace('records.text', 'NULL AS text');
 
 export function rowToRecord(row: any): DataRecord {
   return {
@@ -129,7 +136,14 @@ export class SqlEngine {
       END;
     `);
     // Declared indexed fields → generated columns + indexes (best-effort; skip if already present).
-    const existing = new Set((h.prepare(`PRAGMA table_info(records)`).all() as any[]).map((c: any) => c.name));
+    //
+    // table_xinfo, NOT table_info: `PRAGMA table_info` OMITS generated columns entirely
+    // (both VIRTUAL and STORED), so it reports a dataset that already HAS its indexed
+    // columns as having none. The ALTERs below are then re-issued on every fresh open and
+    // throw "duplicate column name" — meaning any sql dataset declaring indexedFields
+    // opened fine when created and failed for good on the next process to touch it, i.e.
+    // after the first Core restart. table_xinfo lists them (hidden=2 virtual, 3 stored).
+    const existing = new Set((h.prepare(`PRAGMA table_xinfo(records)`).all() as any[]).map((c: any) => c.name));
     // Idempotent migration for DBs created before the tombstone column existed —
     // same PRAGMA-guarded ALTER pattern as the indexed-field columns below.
     if (!existing.has('deleted')) {
@@ -180,12 +194,31 @@ export class SqlEngine {
 
   async query(dataset: string, q: QuerySpec, indexed: string[] = []): Promise<{ records: DataRecord[]; total?: number }> {
     const h = this.db(dataset);
-    const { where, whereParams, order, orderParams } = compileQuery(q, new Set(indexed));
+    // `q.fts` is RAW HUMAN TEXT, never FTS5 syntax. It is compiled to a quoted-literal
+    // MATCH expression here so no caller can hand FTS5 a grammar it will either misread
+    // (a leading `-` silently becoming NOT) or throw a syntax error on. A query whose
+    // terms are all stopwords/punctuation yields no expression: that is an empty result,
+    // not an unfiltered one — falling through to a bare scan would return the whole table
+    // for a query that matched nothing.
+    let spec = q;
+    if (q.fts) {
+      const match = buildFtsMatch(q.fts, q.ftsMode === 'or' ? 'or' : 'and');
+      if (!match) return { records: [], total: 0 };
+      spec = { ...q, fts: match };
+    }
+    const { join, where, whereParams, order, orderParams } = compileQuery(spec, new Set(indexed));
     const limit = q.limit ?? 1000;          // finite default — never an unbounded full-table materialization
     const offset = q.offset ?? 0;
-    const rows = h.prepare(`SELECT ${SELECT_COLS} FROM records ${where} ${order} LIMIT ? OFFSET ?`).all(...whereParams, ...orderParams, limit, offset);
+    const cols = q.omitText ? SELECT_COLS_NO_TEXT : SELECT_COLS;
+    const rows = h.prepare(`SELECT ${cols} FROM records ${join} ${where} ${order} LIMIT ? OFFSET ?`).all(...whereParams, ...orderParams, limit, offset);
     // Exact total for free when the page isn't full; only pay the COUNT scan when results are truncated.
-    const total = rows.length < limit ? offset + rows.length : (h.prepare(`SELECT COUNT(*) AS n FROM records ${where}`).get(...whereParams) as any).n as number;
+    // The COUNT must carry the same JOIN as the page query — dropping it would count the
+    // whole table and report a match-everything total next to a correctly filtered page.
+    const total = rows.length < limit
+      ? offset + rows.length
+      : q.countTotal === false
+        ? undefined
+        : (h.prepare(`SELECT COUNT(*) AS n FROM records ${join} ${where}`).get(...whereParams) as any).n as number;
     return { records: rows.map(rowToRecord), total };
   }
 

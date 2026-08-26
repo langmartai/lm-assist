@@ -12,7 +12,7 @@
     "port": 5601
   },
   "service": "ui-assist-content",
-  "category": "Node",
-  "sortOrder": 90,
+  "category": "Knowledge",
+  "sortOrder": 56,
   "managed": true
 }

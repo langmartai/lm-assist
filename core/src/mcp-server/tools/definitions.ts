@@ -25,14 +25,19 @@
 export const searchToolDef = {
   name: 'search',
   description:
-    'Search the user\'s past CODE SESSIONS (Claude Code terminal sessions on their machine) ' +
-    'and their personal knowledge entries (facts extracted from prior code sessions, IDs ' +
-    'like K001 / K001.2). Trigger words: "session", "code session", "local session", ' +
-    '"my past work on X", "did I work on Y", "find K001". For natural-language queries, ' +
-    'this does vector + keyword search over knowledge + session transcripts. For literal ' +
-    'IDs, jumps straight to the item. Returns ranked results with `→ detail(id)` hints.\n\n' +
-    'Does NOT search claude.ai web conversations — for those, use ' +
-    '`list_claudeai_conversations` then `read_conversation`.',
+    'Search the user\'s past CODE SESSIONS (Claude Code terminal sessions on their machine). ' +
+    'Trigger words: "session", "code session", "local session", "my past work on X", ' +
+    '"did I work on Y". Natural-language queries are ranked by bm25 full-text search over ' +
+    'the USER PROMPTS of every session on this node — assistant output and injected ' +
+    'boilerplate are excluded, so hits reflect what was ASKED, not how long the ' +
+    'transcript was. Every response names the path that answered it; if the ranked index ' +
+    'cannot answer, the reply says so and why rather than returning an unranked list. ' +
+    'Literal IDs (a session UUID, or K001 / K001.2) jump straight to the item. Returns ' +
+    'results with `→ detail(id)` hints.\n\n' +
+    'Searches SESSIONS, not knowledge entries — for knowledge use ' +
+    '`data_search({dataset:"knowledge"})` or `search_memory`. Does NOT search claude.ai ' +
+    'web conversations — for those, use `list_claudeai_conversations` then ' +
+    '`read_conversation`.',
   annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
@@ -54,14 +59,17 @@ export const searchToolDef = {
           'Filter to a single project directory (e.g. "/home/ubuntu/lm-unified-trade"). ' +
           'Omit unless the user is clearly scoped to one repo.',
       },
-      type: {
-        type: 'string',
-        enum: ['knowledge', 'all'],
-        description: 'Restrict to knowledge entries vs all sources (default).',
-      },
       limit: {
         type: 'number',
         description: 'Results per page (default 5, max 20).',
+      },
+      includeSynthetic: {
+        type: 'boolean',
+        description:
+          'Also rank injected boilerplate (skill preambles, controller passes, compaction ' +
+          'carryovers, teammate envelopes, templated reviews). Default false. These are ' +
+          'indexed but excluded, because they are ~88% of all user-channel messages and ' +
+          'would otherwise dominate every query.',
       },
       offset: { type: 'number', description: 'Pagination offset (default 0).' },
     },

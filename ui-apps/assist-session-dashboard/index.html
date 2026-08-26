@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assist — Session Dashboard</title>
+<!-- Relative refs only: the same document is served from the hub gateway AND the local
+     tier under different path roots. Both tiers splice the view-token globals (and the
+     local tier a base href) in front of the FIRST closing-head tag — so that literal
+     string must never appear in a comment, or the injection lands entombed inside it
+     and the pane boots tokenless (it did, once, on the sessions pane). -->
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<main id="root"></main>
+<!-- lmui.js is the canonical shared shim (panes sync governs it; app.js NEVER inlines
+     it). It must load first: app.js reads window.lmui for the data-plane token. -->
+<script src="assets/lmui.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

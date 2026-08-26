@@ -1,0 +1,23 @@
+/* Pane-only rules appended AFTER the compiled design system (see build.mjs).
+ *
+ * Sizing follows the pane full-height contract: the shell panel-fixes the iframe
+ * (lmui:height is liveness only), so 100vh IS the panel height — standalone and
+ * embedded alike. SessionSearch in `page` mode fills its container and scrolls its
+ * two columns internally, so body overflow stays auto and never clips. */
+html, body { height: 100%; margin: 0; }
+#root { height: 100vh; }
+body.embed { background: transparent; overflow: auto; }
+
+/* The three session-driving preview actions open ttyd consoles — outside this pane's
+ * read-only grant. They would just open a dead tab (also intercepted in data-plane.ts). */
+button[title="Open Console"],
+button[title="Fork Session"],
+button[title="New Shell"] { display: none; }
+
+/* The web app loads DM Sans / JetBrains Mono from Google Fonts — a pane's CSP
+ * blocks every external host, so the imports are stripped at build time and the
+ * stacks fall through to these. */
+:root {
+  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+}

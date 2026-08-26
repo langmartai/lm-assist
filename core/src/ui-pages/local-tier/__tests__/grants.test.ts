@@ -353,6 +353,32 @@ const PANE_CALLS: Record<string, { must: Array<[string, string]>; mustNot: Array
   // the detail-tab leaves (subagents / summary / skills / plans), and the FlowGraph quartet
   // (session-dag / related / dag / /dag/unified). The Console tab is NOT ported — it would need
   // session-driving POSTs. `fetch('/auth/me')` is the tier's own origin surface, not grant-bearing.
+  'assist-search': {
+    must: [['GET', '/knowledge'], ['GET', '/knowledge/search'], ['GET', '/knowledge/K1'],
+      ['GET', '/knowledge/K1/comments']],
+    // 🔴 The page reads knowledge and nothing else. Its session-preview branch is dead on the
+    // current web page (`setSelectedSessionId` is only ever called with null), so NO /sessions
+    // grant is declared — a grant for a code path that cannot run is pure attack surface. The
+    // generate/review corner of /knowledge is out too: those are the pipeline's own controls,
+    // and `/knowledge/*` being EXACT is what keeps the 2-segment ones unreachable.
+    mustNot: [['POST', '/knowledge'], ['POST', '/knowledge/K1'], ['DELETE', '/knowledge/K1'],
+      ['POST', '/knowledge/K1/comments'], ['POST', '/knowledge/K1/regenerate'],
+      ['GET', '/knowledge/generate/stats'], ['GET', '/knowledge/review/status'],
+      ['POST', '/knowledge/review'], ['GET', '/sessions/sid-1'], ['GET', '/projects']],
+  },
+  'assist-session-dashboard': {
+    must: [['GET', '/projects/sessions'], ['GET', '/sessions/batch-check'], ['GET', '/sessions/sid-1'],
+      ['GET', '/ttyd/processes']],
+    // 🔴 The grid POLLS (there is no stream anywhere in this page), so reads are the whole
+    // data need. What it must NOT keep is the session-DRIVING half it ships buttons for:
+    // start/stop a ttyd console and kill a session's processes. Those buttons are hidden in
+    // pane.css; this rule is why a missed one cannot do damage. `/ttyd/processes` is EXACT so
+    // the rest of the ttyd surface stays out.
+    mustNot: [['POST', '/ttyd/session/sid-1/start'], ['POST', '/ttyd/session/sid-1/stop'],
+      ['POST', '/ttyd/session/sid-1/kill'], ['GET', '/ttyd/session/sid-1'],
+      ['POST', '/sessions/sid-1/queue'], ['POST', '/sessions/batch-check'],
+      ['GET', '/sessions'], ['GET', '/projects'], ['POST', '/projects/sessions']],
+  },
   'assist-sessions': {
     must: [['GET', '/projects'], ['GET', '/projects/sessions'],
       ['GET', '/projects/-home-ubuntu-lm-assist/sessions'], ['GET', '/sessions/sid-1'],

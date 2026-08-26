@@ -1,21 +1,27 @@
 /**
- * search tool — Unified search across knowledge and file history
- *
- * Replaces: search, files_history, recent_activity, knowledge_list
+ * search tool — find the user's past CODE SESSIONS.
  *
  * Auto-detects query type:
- *   /path/to/file or .ts/.tsx → file history search
- *   K\d+ or K\d+.\d+          → knowledge ID lookup
+ *   /path/to/file or .ts/.tsx → file history + session search
+ *   K\d+ or K\d+.\d+          → knowledge ID lookup (a pointer jump, not a search)
  *   UUID pattern               → session ID lookup
- *   Otherwise                  → vector semantic search + keyword fallback
+ *   Otherwise                  → bm25 over the indexed USER PROMPTS of every session
+ *
+ * Results are SESSIONS. Knowledge is served by data_search({dataset:"knowledge"}) and
+ * search_memory; the vector/knowledge hybrid that used to run here has been removed.
+ *
+ * Every response states which path answered it. The text scan is a fallback only, and
+ * says so along with why the index could not answer — an unranked pile presented as a
+ * ranked result is the defect this tool is recovering from.
  */
 
-import { getVectorStore } from '../../vector/vector-store';
 import { getSessionCache } from '../../session-cache';
 import { getKnowledgeStore } from '../../knowledge/store';
-import { compositeScore, type ScoredResult } from '../../search/composite-scorer';
-import { tokenize, scoreSession, getProjectPathForSession } from '../../search/text-scorer';
+import { tokenizeSessionQuery, scoreSession, getProjectPathForSession } from '../../search/text-scorer';
 import { isFileQuery } from '../../search/file-matcher';
+import { getPromptIndex, type PromptSearchResult } from '../../search/prompt-index';
+import { promptIndexProgress } from '../../search/prompt-index-service';
+import { tokenizeFts } from '../../data/backends/fts-query';
 
 // ─── Tool Definition (canonical source: definitions.ts) ─────────────
 
@@ -77,7 +83,7 @@ export async function handleSearch(args: Record<string, unknown>): Promise<{
   const rawScope = (args.scope as string) || '7d';
   const scope: Scope = rawScope in SCOPE_MS ? rawScope as Scope : '7d';
   const project = args.project as string | undefined;
-  const typeFilter = (args.type as string) || 'all';
+  const includeSynthetic = args.includeSynthetic === true;
   const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
   const offset = Math.max(Number(args.offset) || 0, 0);
 
@@ -92,9 +98,9 @@ export async function handleSearch(args: Record<string, unknown>): Promise<{
     case 'session_id':
       return handleIdLookup(trimmedQuery, 'session');
     case 'file':
-      return handleFileAndSemanticSearch(query, scope, project, typeFilter, limit, offset);
+      return handleFileAndSemanticSearch(query, scope, project, includeSynthetic, limit, offset);
     default:
-      return handleSemanticSearch(query, scope, project, typeFilter, limit, offset);
+      return handleSemanticSearch(query, scope, project, includeSynthetic, limit, offset);
   }
 }
 
@@ -138,158 +144,164 @@ function handleIdLookup(
   return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
 
-// ─── Semantic Search (Vector + Text Fallback) ──────────────────────────────
+// ─── Session Search (Prompt FTS, with an explicit text fallback) ───────────
 
+/**
+ * Preferred path: bm25 over the SQLite FTS index of real user prompts.
+ *
+ * The fallback below is a whole-transcript substring scan. It is kept because a node
+ * may not have indexed yet (or may lack better-sqlite3), but it is NEVER entered
+ * silently — a caller who cannot tell which path answered cannot tell a ranked result
+ * from an unranked one, and that is precisely how a match-everything response got
+ * trusted as a search result.
+ */
 async function handleSemanticSearch(
   query: string,
   scope: Scope,
   project: string | undefined,
-  typeFilter: string,
+  includeSynthetic: boolean,
   limit: number,
   offset: number,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const vectorStore = getVectorStore();
-  const stats = await vectorStore.getStats();
-
-  if (stats.isInitialized && stats.totalVectors > 0) {
-    return handleHybridSearch(query, scope, project, typeFilter, limit, offset);
+  // The index is asked for enough SESSIONS to fill this page; without it the row budget
+  // is fixed and deep pages simply never reach the later sessions.
+  const attempt = await tryPromptIndex(query, scope, project, includeSynthetic, offset + limit);
+  if (attempt.ok) {
+    return formatSessionResults(attempt.result, query, limit, offset, attempt.label);
   }
-
-  return handleTextSearch(query, scope, project, limit, offset);
+  return handleTextSearch(query, scope, project, limit, offset, attempt.why);
 }
 
-// ─── Hybrid Search (Vector + FTS) ──────────────────────────────────────
+type IndexAttempt =
+  | { ok: true; result: PromptSearchResult; label: string }
+  | { ok: false; why: string };
 
-async function handleHybridSearch(
+/** Run the FTS path, or say precisely why it could not answer. */
+async function tryPromptIndex(
   query: string,
   scope: Scope,
   project: string | undefined,
-  typeFilter: string,
+  includeSynthetic: boolean,
+  need: number,
+): Promise<IndexAttempt> {
+  if (tokenizeFts(query).length === 0) {
+    return { ok: false, why: 'query has no indexable terms (all stopwords or punctuation)' };
+  }
+  const index = getPromptIndex();
+  try {
+    // init() BEFORE the emptiness check, so a store that cannot open at all is reported
+    // as unavailable rather than as "empty". Those have different fixes — a missing
+    // native binding is an install problem, an empty index is just a pending backfill —
+    // and naming the wrong one sends the reader after the wrong thing. (Observed live:
+    // a worktree npm install shadowed better-sqlite3 with an unbuilt copy, and the
+    // fallback blamed the backfill.)
+    await index.init();
+    if (!index.hasContent()) {
+      return { ok: false, why: 'prompt index is empty — the backfill has not run on this node yet' };
+    }
+    const since = scope === 'all' ? undefined : new Date(Date.now() - SCOPE_MS[scope]).toISOString();
+    let result = await index.search(query, { project, since, includeSynthetic, need });
+    if (!result) return { ok: false, why: 'query has no indexable terms' };
+
+    // Widen past the time window rather than report a false no-match.
+    //
+    // `scope` defaults to 7d, and that default was calibrated for a scan that read whole
+    // transcripts. Ranking only real user prompts makes the corpus far smaller: measured
+    // on this node, 7d covers 35 prompts across 10 sessions, against 2,300 across 532 for
+    // all time. So the default window misses almost everything — and the miss used to be
+    // announced as "a real no-match". Same contract as the AND→OR widening: try what the
+    // caller asked for, widen only when it finds nothing, and always say which happened.
+    let widenedScope = false;
+    if (since && result.sessions.length === 0) {
+      const all = await index.search(query, { project, includeSynthetic, need });
+      if (all && all.sessions.length > 0) { result = all; widenedScope = true; }
+    }
+    const { files, prompts } = index.status();
+    // A backfill in flight means the corpus is a PREFIX of this node's history. Searching
+    // it is fine; presenting it as complete is not — and the no-match text below asserts
+    // "this is a real no-match", which is simply false while indexing is still running.
+    const bf = promptIndexProgress();
+    const building = bf.running
+      ? ` — INDEX STILL BUILDING (${bf.done}/${bf.total} files); results are incomplete`
+      : '';
+    const label = `prompt index: bm25 over ${prompts} user prompts from ${files} sessions, ` +
+      (result.mode === 'and'
+        ? 'every term matched within a single prompt'
+        : 'ANY term matched — no single prompt contained all terms (a session may still cover them across prompts)') +
+      // The window is always stated. Widening only fires on ZERO results, so a query that
+      // finds a FEW recent sessions silently hides the rest — measured, 7d reached 1
+      // session where all-time had 38. A caller who cannot see the window cannot tell a
+      // complete answer from a recent slice of one.
+      (widenedScope
+        ? ` — WIDENED past scope="${scope}" to all time, which had no match`
+        : scope === 'all' ? '' : ` — LIMITED to scope="${scope}"; older matches are excluded (retry with scope="all")`) +
+      building;
+    return { ok: true, result, label };
+  } catch (e) {
+    // better-sqlite3 missing / db unreadable. Report it rather than quietly degrading.
+    return { ok: false, why: `prompt index unavailable: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** Render ranked sessions, with the matching prompt as the evidence for each hit. */
+function formatSessionResults(
+  result: PromptSearchResult,
+  query: string,
   limit: number,
   offset: number,
-): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const vectorStore = getVectorStore();
-
-  // Build metadata filter for type-scoped search
-  const metadataFilter = typeFilter !== 'all' ? { type: typeFilter } : undefined;
-
-  // Search with extra results for filtering and pagination
-  const fetchCount = (limit + offset) * 3;
-
-  // Hybrid search: vector + FTS with RRF merge
-  const rawResults = await vectorStore.hybridSearch(query, fetchCount, metadataFilter);
-
-  // Filter by scope and project
-  const filtered = rawResults
-    .filter(r => isWithinScope(r.timestamp, scope))
-    .filter(r => !project || r.projectPath === project);
-
-  // Build ScoredResult[]
-  const merged: ScoredResult[] = filtered.map(r => {
-    let id: string;
-    if (r.type === 'knowledge') {
-      id = r.partId || r.knowledgeId || '';
-    } else {
-      id = r.sessionId;
-    }
-    return {
-      type: r.type,
-      id,
-      sessionId: r.sessionId,
-      score: r.score,
-      finalScore: 0,
-      timestamp: r.timestamp || '',
-      phase: r.phase as 1 | 2 | undefined,
-      projectPath: r.projectPath,
-      knowledgeId: r.knowledgeId,
-      partId: r.partId,
-      machineId: r.machineId,
-    };
-  });
-
-  // Apply composite scoring
-  const ranked = compositeScore(merged, { currentProject: project });
-
-  // Filter out orphaned results (vectors exist but source data was deleted)
-  const knowledgeStore = getKnowledgeStore();
-  const resolvable = ranked.filter(r => {
-    if (r.type === 'knowledge') {
-      const kId = (r.knowledgeId || r.id || '').split('.')[0];
-      if (!kId) return false;
-      const knowledge = knowledgeStore.getKnowledge(kId, r.machineId);
-      return knowledge && knowledge.reviewRating !== 'bad' && knowledge.status !== 'excluded';
-    }
-    return true;
-  });
-
-  // Content-match: for specific queries (>15 chars), boost existing results
-  // AND inject knowledge entries whose text contains the exact query but
-  // weren't found by Vectra/BM25 (e.g. rank #36 in BM25, outside fetch window).
-  if (query.length > 15) {
-    const qLower = query.toLowerCase().trim();
-    const existingIds = new Set(resolvable.map(r => r.partId || r.id));
-    let changed = false;
-
-    // 1. Boost existing results that contain the query
-    for (const r of resolvable) {
-      if (r.type !== 'knowledge') continue;
-      const kId = (r.knowledgeId || r.id || '').split('.')[0];
-      const knowledge = knowledgeStore.getKnowledge(kId, r.machineId);
-      if (!knowledge) continue;
-      const part = r.partId ? knowledge.parts.find(p => p.partId === r.partId) : null;
-      const haystack = [part?.title || '', part?.summary || '', part?.content || ''].join(' ').toLowerCase();
-      if (haystack.includes(qLower)) {
-        r.finalScore *= 2.0;
-        changed = true;
-      }
-    }
-
-    // 2. Supplementary: scan knowledge store for content matches not in results.
-    //    ~5k parts, string.includes check is <5ms.
-    //    Compute injectionScore AFTER boost loop so it reflects boosted max.
-    const injectionScore = Math.max(...resolvable.map(r => r.finalScore), 0.05);
-    const allKnowledge = knowledgeStore.getAllKnowledge();
-    for (const k of allKnowledge) {
-      if (k.reviewRating === 'bad' || k.status === 'excluded') continue;
-      if (!isWithinScope(k.sourceTimestamp || k.createdAt, scope)) continue;
-      if (project && k.project !== project) continue;
-      if (typeFilter !== 'all' && typeFilter !== 'knowledge') continue;
-      for (const part of k.parts) {
-        if (existingIds.has(part.partId)) continue;
-        const haystack = [part.title, part.summary, part.content].join(' ').toLowerCase();
-        if (haystack.includes(qLower)) {
-          resolvable.push({
-            type: 'knowledge',
-            id: part.partId,
-            sessionId: k.sourceSessionId || '',
-            score: injectionScore,
-            finalScore: injectionScore,
-            timestamp: k.sourceTimestamp || k.createdAt || '',
-            knowledgeId: k.id,
-            partId: part.partId,
-            projectPath: k.project,
-            machineId: k.machineId,
-          });
-          existingIds.add(part.partId);
-          changed = true;
-        }
-      }
-    }
-
-    if (changed) resolvable.sort((a, b) => {
-      const diff = b.finalScore - a.finalScore;
-      if (Math.abs(diff) > 0.0001) return diff;
-      // Tiebreak by recency — newer entries first
-      return new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime();
-    });
+  label: string,
+): { content: Array<{ type: string; text: string }> } {
+  const total = result.sessions.length;
+  const page = result.sessions.slice(offset, offset + limit);
+  // A capped scan yields a FLOOR, not a total. Reporting it as a total is exactly the
+  // failure this feature replaced, one layer down: measured here, a broad query showed
+  // 114 sessions at the old fixed budget and 171 with a larger one.
+  const countText = result.truncated ? `at least ${total}` : `${total}`;
+  if (page.length === 0) {
+    const bf = promptIndexProgress();
+    // Only claim a definitive no-match when the corpus is actually complete. Paging past
+    // the end is also not a no-match — it contradicts the page the caller just read.
+    const why = bf.running
+      ? `The index is STILL BUILDING (${bf.done}/${bf.total} files) — this is NOT a definitive no-match; retry once it finishes.`
+      : offset > 0
+        ? `You paged past the end of the results — go back to offset=0.`
+        : `This is a real no-match, not an empty index — widen with scope="all", or drop a term.`;
+    return { content: [{ type: 'text', text: `No sessions matched "${query}".\n(${label})\n${why}` }] };
   }
 
-  // Apply pagination
-  const totalMatches = resolvable.length;
-  const pageResults = resolvable.slice(offset, offset + limit);
+  const cache = getSessionCache();
+  const byId = new Map(cache.getAllSessionsFromCache().map((s) => [s.sessionId, s] as const));
+  const lines: string[] = [];
+  lines.push(`Found ${countText} session${total !== 1 ? 's' : ''} (showing ${offset + 1}-${offset + page.length})`);
+  lines.push(`(${label})`);
+  if (result.truncated) {
+    lines.push(`(scan capped at ${result.scannedRows} matching prompts — more sessions exist; narrow the query for an exact count)`);
+  }
+  lines.push('');
 
-  // Format results
-  return formatResults(pageResults, totalMatches, query, offset, limit);
+  for (let i = 0; i < page.length; i++) {
+    const s = page[i];
+    const entry = byId.get(s.sessionId);
+    const cd = entry?.cacheData;
+    const projPath = s.project || (cd ? getProjectPathForSession(cd, entry!.filePath) : '');
+    const projName = projPath ? projPath.split('/').filter(Boolean).pop() : '?';
+    const turns = cd?.numTurns ?? '?';
+    // Term coverage is shown for a widened query: it is the reason this session outranks
+    // the next one, and without it an OR result looks like an undifferentiated pile.
+    const cov = result.mode === 'or' && result.queryTerms > 1
+      ? `, matched ${s.terms}/${result.queryTerms} terms`
+      : '';
+    lines.push(`${offset + i + 1}. [session] ${s.sessionId}  (${projName}, ${turns} turns${cov}${s.matches > 1 ? `, ${s.matches} matching prompts` : ''})`);
+    const snippet = s.best.text.replace(/\s+/g, ' ').slice(0, 220);
+    lines.push(`   matched prompt (turn ${s.best.turnIndex}): "${snippet}${s.best.text.length > 220 ? '…' : ''}"`);
+    lines.push(`   → detail("${s.sessionId}")`);
+    lines.push('');
+  }
+
+  if (total > offset + limit) {
+    lines.push(`More: search("${query}", offset=${offset + limit})`);
+  }
+  return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
 
 // ─── Text Search Fallback ──────────────────────────────────────────────────
@@ -300,11 +312,12 @@ async function handleTextSearch(
   project: string | undefined,
   limit: number,
   offset: number,
+  fallbackReason: string,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   const cache = getSessionCache();
   const sessions = cache.getAllSessionsFromCache();
 
-  const queryTokens = tokenize(query);
+  const queryTokens = tokenizeSessionQuery(query);
   const queryLower = query.toLowerCase();
 
   // Score sessions
@@ -331,7 +344,8 @@ async function handleTextSearch(
   const pageResults = sessionResults.slice(offset, offset + limit);
 
   if (pageResults.length === 0) {
-    return { content: [{ type: 'text', text: `No results found for "${query}" (text search)` }] };
+    return { content: [{ type: 'text', text:
+      `No results found for "${query}"\n(text scan fallback — ${fallbackReason})` }] };
   }
 
   // Index the in-scope sessions so each result can carry a topic + project +
@@ -340,7 +354,14 @@ async function handleTextSearch(
   // cap memory, so the text path must itself be informative.)
   const byId = new Map(sessions.map((s) => [s.sessionId, s] as const));
   const lines: string[] = [];
-  lines.push(`Found ${totalMatches} results (text search, showing ${offset + 1}-${offset + pageResults.length})`);
+  lines.push(`Found ${totalMatches} results (showing ${offset + 1}-${offset + pageResults.length})`);
+  // The caller must be able to tell this apart from a ranked answer. A whole-transcript
+  // substring scan is coarse: it is reported as such, with the reason the good path was
+  // unavailable, so nobody mistakes a broad result set for a precise one.
+  lines.push(`(TEXT SCAN FALLBACK, not the ranked prompt index — ${fallbackReason})`);
+  if (totalMatches >= sessions.length && sessions.length > 0) {
+    lines.push(`(warning: this matched ${totalMatches} of ${sessions.length} sessions in scope — treat as unfiltered)`);
+  }
   lines.push('');
 
   for (let i = 0; i < pageResults.length; i++) {
@@ -463,93 +484,29 @@ async function handleFileSearch(
   return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
 
-// ─── Combined File + Semantic Search ──────────────────────────────────────
+// ─── Combined File + Session Search ──────────────────────────────────────
 
+/**
+ * A path-shaped query wants the file history first, but the sessions that DISCUSSED
+ * the file are usually the reason someone is asking, so both run.
+ */
 async function handleFileAndSemanticSearch(
   query: string,
   scope: Scope,
   project: string | undefined,
-  typeFilter: string,
+  includeSynthetic: boolean,
   limit: number,
   offset: number,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  // Run file history search AND semantic search in parallel
-  const vectorStore = getVectorStore();
-  const stats = await vectorStore.getStats();
-  const hasVectra = stats.isInitialized && stats.totalVectors > 0;
-
-  const [fileResult, semanticResult] = await Promise.all([
+  const [fileResult, sessionResult] = await Promise.all([
     handleFileSearch(query, scope, project, limit, offset),
-    hasVectra
-      ? handleHybridSearch(query, scope, project, typeFilter, limit, offset)
-      : Promise.resolve(null),
+    handleSemanticSearch(query, scope, project, includeSynthetic, limit, offset),
   ]);
 
-  // If no semantic results, return file results only
-  if (!semanticResult) return fileResult;
-
   const fileText = fileResult.content[0]?.text || '';
-  const semanticText = semanticResult.content[0]?.text || '';
+  const sessionText = sessionResult.content[0]?.text || '';
+  if (fileText.startsWith('No file matches')) return sessionResult;
+  if (sessionText.startsWith('No sessions matched') || sessionText.startsWith('No results found')) return fileResult;
 
-  // If file search found nothing, return semantic only
-  if (fileText.startsWith('No file matches')) return semanticResult;
-
-  // Combine: file history first, then knowledge results
-  const combined = [fileText, '', '--- Related knowledge ---', '', semanticText].join('\n');
-  return { content: [{ type: 'text', text: combined }] };
-}
-
-// ─── Result Formatting ──────────────────────────────────────────────────
-
-function formatResults(
-  results: ScoredResult[],
-  totalMatches: number,
-  query: string,
-  offset: number,
-  limit: number,
-): { content: Array<{ type: string; text: string }> } {
-  const knowledgeStore = getKnowledgeStore();
-  const lines: string[] = [];
-
-  if (results.length === 0) {
-    return { content: [{ type: 'text', text: `No results found for "${query}"` }] };
-  }
-
-  lines.push(`Found ${totalMatches} results (showing ${offset + 1}-${offset + results.length})`);
-  lines.push('');
-
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-
-    if (r.type === 'knowledge') {
-      const kId = r.knowledgeId || r.id;
-      const knowledge = knowledgeStore.getKnowledge(kId, r.machineId);
-      // Origin suffix for remote knowledge
-      const originSuffix = knowledge?.origin === 'remote'
-        ? ` (remote: ${knowledge.machineHostname || 'unknown'}, ${knowledge.machineOS || 'unknown'})`
-        : '';
-
-      if (knowledge && r.partId) {
-        const part = knowledge.parts.find(p => p.partId === r.partId);
-        lines.push(`${offset + i + 1}. [knowledge] ${r.partId}: ${knowledge.title} → ${part?.title || 'Unknown'} [${knowledge.type}]${originSuffix}`);
-        lines.push(`   ${part?.summary || ''}`);
-        lines.push(`   → detail("${r.partId}")`);
-      } else if (knowledge) {
-        lines.push(`${offset + i + 1}. [knowledge] ${kId}: ${knowledge.title} [${knowledge.type}] (${knowledge.parts.length} parts)${originSuffix}`);
-        lines.push(`   → detail("${kId}")`);
-      }
-    } else {
-      // Session results
-      lines.push(`${offset + i + 1}. [session] ${r.sessionId}`);
-      lines.push(`   → detail("${r.sessionId}")`);
-    }
-
-    lines.push('');
-  }
-
-  if (totalMatches > offset + limit) {
-    lines.push(`More: search("${query}", offset=${offset + limit})`);
-  }
-
-  return { content: [{ type: 'text', text: lines.join('\n') }] };
+  return { content: [{ type: 'text', text: [fileText, '', '--- Sessions mentioning it ---', '', sessionText].join('\n') }] };
 }

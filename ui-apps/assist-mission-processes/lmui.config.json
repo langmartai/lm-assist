@@ -11,7 +11,7 @@
     "port": 5601
   },
   "service": "ui-assist-mission-processes",
-  "category": "Node",
-  "sortOrder": 50,
+  "category": "Missions",
+  "sortOrder": 34,
   "managed": true
 }

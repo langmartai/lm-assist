@@ -14,7 +14,7 @@
     "port": 5601
   },
   "service": "ui-assist-mission-graph",
-  "category": "Node",
-  "sortOrder": 40,
+  "category": "Missions",
+  "sortOrder": 32,
   "managed": true
 }

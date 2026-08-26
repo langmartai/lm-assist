@@ -12,7 +12,7 @@
     "port": 5601
   },
   "service": "ui-assist-scheduler",
-  "category": "Node",
-  "sortOrder": 110,
+  "category": "Missions",
+  "sortOrder": 36,
   "managed": true
 }

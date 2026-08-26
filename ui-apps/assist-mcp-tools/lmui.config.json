@@ -18,7 +18,7 @@
   ],
   "dev": { "port": 5601 },
   "service": "ui-assist-mcp-tools",
-  "category": "Node",
-  "sortOrder": 150,
+  "category": "Fleet",
+  "sortOrder": 74,
   "managed": true
 }

@@ -10,7 +10,7 @@
     "port": 5601
   },
   "service": "ui-assist-tasks",
-  "category": "Node",
-  "sortOrder": 60,
+  "category": "Sessions",
+  "sortOrder": 16,
   "managed": true
 }
