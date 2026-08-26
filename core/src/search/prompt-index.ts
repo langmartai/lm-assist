@@ -20,7 +20,7 @@ import { getDatasetRegistry } from '../data/dataset-registry';
 import { thisNodeId, dataRoot } from '../data/paths';
 import type { DataRecord } from '../data/types';
 import { classifyPromptForIndex } from './prompt-classifier';
-import { tokenizeFts } from '../data/backends/fts-query';
+import { tokenizeFts, expandCjk, hasCjk } from '../data/backends/fts-query';
 import { rankedFtsSearch } from './fts-rank';
 
 export const PROMPT_DATASET = 'session-prompts';
@@ -52,7 +52,7 @@ const INDEXED_FIELDS: Array<{ path: string; type: 'text' | 'number' }> = [
   { path: 'project', type: 'text' },
   { path: 'host', type: 'text' },
   { path: 'ts', type: 'text' },
-  { path: 'turnIndex', type: 'number' },
+  { path: 'lineIndex', type: 'number' },
   { path: 'promptClass', type: 'text' },
   { path: 'synthetic', type: 'number' },
 ];
@@ -70,9 +70,23 @@ interface Watermark {
   prompts: number;  // real prompts contributed (for status reporting)
 }
 
-interface IndexState { version: number; files: Record<string, Watermark>; }
+interface IndexState { version: number; epoch: number; files: Record<string, Watermark>; }
 
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
+
+/**
+ * Bump when the CLASSIFIER or the stored SHAPE changes, to force a full rebuild.
+ *
+ * A classifier change only affects NEWLY written rows — existing rows keep the class they
+ * were indexed with — so tightening a rule appeared to do nothing until the store was
+ * deleted by hand. That bit twice during development, and on a fleet it would mean every
+ * node silently serving results from whatever rules were current when it last backfilled.
+ * The epoch makes the rebuild a property of the code rather than of someone remembering.
+ *
+ * 2: agent role briefs + indexable-term floor + security follow-up; lineIndex rename;
+ *    CJK bigram expansion.
+ */
+const INDEX_EPOCH = 2;
 
 /** A single prompt hit, already resolved to its session. */
 export interface PromptHit {
@@ -80,7 +94,8 @@ export interface PromptHit {
   sessionId: string;
   project: string;
   ts: string;
-  turnIndex: number;
+  /** Line index within the transcript — what it has always been; `detail` slices by it. */
+  lineIndex: number;
   promptClass: string;
   text: string;
 }
@@ -122,6 +137,30 @@ const HITS_KEPT = 200;
 /** Rows scanned per single-term coverage probe. Ids only, so this stays cheap. */
 const COVERAGE_ROWS = 2000;
 
+/**
+ * Separator between a prompt's real text and its CJK bigram expansion.
+ *
+ * FTS5 here is an EXTERNAL-CONTENT index over `records.text`, so anything searchable has
+ * to live in that column — but the column is also what renders the snippet. Appending the
+ * expansion after a sentinel keeps both true: FTS sees the bigrams, and readers strip
+ * everything from the sentinel on. Only added when the text actually contains CJK.
+ */
+const CJK_SENTINEL = '\u0000cjk\u0000';
+
+/** The displayable half of a stored prompt — drops any appended CJK expansion. */
+export function displayText(stored: string | undefined): string {
+  if (!stored) return '';
+  const i = stored.indexOf(CJK_SENTINEL);
+  return i < 0 ? stored : stored.slice(0, i);
+}
+
+/** What actually gets stored: the prompt, plus bigrams when it contains CJK. */
+function indexableText(text: string): string {
+  const body = text.slice(0, MAX_INDEXED_TEXT);
+  if (!hasCjk(body)) return body;
+  return `${body}${CJK_SENTINEL}${expandCjk(body)}`;
+}
+
 /** Hand the event loop back so a long scan cannot monopolise it. */
 function yieldToLoop(): Promise<void> {
   return new Promise<void>((resolve) => setImmediate(resolve));
@@ -129,7 +168,7 @@ function yieldToLoop(): Promise<void> {
 
 export class PromptIndex {
   private backend: SqlBackend;
-  private state: IndexState = { version: STATE_VERSION, files: {} };
+  private state: IndexState = { version: STATE_VERSION, epoch: INDEX_EPOCH, files: {} };
   private statePath: string;
   private ready = false;
   private dirty = false;
@@ -174,6 +213,24 @@ export class PromptIndex {
       config: { kind: 'sql', indexedFields: INDEXED_FIELDS },
     } as any);
     this.loadState();
+    if (this.state.epoch !== INDEX_EPOCH) {
+      // Rules changed under an existing store: drop it wholesale rather than leave rows
+      // classified by the old code. Cheap and safe — every row is derived from transcripts
+      // still on disk, so a rebuild loses nothing.
+      try {
+        await this.backend.dropDataset(PROMPT_DATASET);
+        await this.backend.createDataset({
+          id: PROMPT_DATASET, backend: 'sql', ownerNode: thisNodeId(),
+          config: { kind: 'sql', indexedFields: INDEXED_FIELDS },
+        } as any);
+        console.log(`[PromptIndex] index epoch changed (${this.state.epoch} -> ${INDEX_EPOCH}) — rebuilding`);
+      } catch (e) {
+        console.error('[PromptIndex] epoch rebuild failed:', (e as Error)?.message || e);
+      }
+      this.state = { version: STATE_VERSION, epoch: INDEX_EPOCH, files: {} };
+      this.dirty = true;
+      this.flushState();
+    }
     this.ready = true;
   }
 
@@ -182,7 +239,9 @@ export class PromptIndex {
       const raw = JSON.parse(fs.readFileSync(this.statePath, 'utf8')) as IndexState;
       // A version bump invalidates every watermark rather than mixing schemas —
       // stale offsets against a changed record shape would silently skip content.
-      if (raw && raw.version === STATE_VERSION && raw.files) this.state = raw;
+      if (raw && raw.version === STATE_VERSION && raw.files) {
+        this.state = { ...raw, epoch: typeof raw.epoch === 'number' ? raw.epoch : 0 };
+      }
     } catch { /* first run — empty state */ }
   }
 
@@ -311,14 +370,14 @@ export class PromptIndex {
               project,
               host,
               ts: msg.timestamp || '',
-              turnIndex: at,
+              lineIndex: at,
               promptClass: c.promptClass,
               // stored 0/1: SQLite has no boolean, and the generated column is compared numerically
               synthetic: c.synthetic ? 1 : 0,
             },
             // FTS indexes `text` only — this is the whole reason boilerplate is
             // classified rather than concatenated in.
-            text: c.indexText.slice(0, MAX_INDEXED_TEXT),
+            text: indexableText(c.indexText),
             createdAt: msg.timestamp || now,
             updatedAt: now,
           };
@@ -403,7 +462,7 @@ export class PromptIndex {
       sessionId: String(rec.fields?.sessionId ?? ''),
       project: String(rec.fields?.project ?? ''),
       ts: String(rec.fields?.ts ?? ''),
-      turnIndex: Number(rec.fields?.turnIndex ?? 0),
+      lineIndex: Number(rec.fields?.lineIndex ?? 0),
       promptClass: String(rec.fields?.promptClass ?? 'user'),
       text: '',   // hydrated below, for the rendered page only
     }));
@@ -438,7 +497,7 @@ export class PromptIndex {
     for (const s of sessions.slice(0, Math.min(need + HYDRATE_MARGIN, sessions.length))) {
       try {
         const full = await this.backend.get(PROMPT_DATASET, s.best.id);
-        if (full?.text) s.best.text = full.text;
+        if (full?.text) s.best.text = displayText(full.text);
       } catch { /* snippet is presentation only — a miss must not fail the search */ }
     }
     return {
@@ -478,6 +537,38 @@ export class PromptIndex {
       } catch { /* a term that cannot be probed simply contributes no coverage */ }
     }
     return cov;
+  }
+
+  /**
+   * Drop everything indexed for files that no longer exist.
+   *
+   * Reacting to the watcher's `unlink` would be wrong: it also fires for moves and for
+   * atomic rewrites, so a live session could lose its rows mid-write. A stat sweep over
+   * the watermarks only removes what is genuinely gone.
+   */
+  async pruneMissing(): Promise<number> {
+    await this.init();
+    let removed = 0;
+    for (const filePath of Object.keys(this.state.files)) {
+      if (fs.existsSync(filePath)) continue;
+      const sessionId = path.basename(filePath, '.jsonl');
+      try {
+        const r = await this.backend.query(PROMPT_DATASET, {
+          filter: [{ field: 'sessionId', op: 'eq', value: sessionId }],
+          limit: 10000, omitText: true, countTotal: false,
+        });
+        for (const rec of r.records || []) await this.backend.delete(PROMPT_DATASET, rec.id);
+      } catch { continue; }   // leave the watermark so the next sweep retries
+      delete this.state.files[filePath];
+      removed++;
+    }
+    if (removed > 0) {
+      this.dirty = true;
+      this.flushState();
+      // Reclaim the pages those rows occupied instead of letting the file only ever grow.
+      try { await this.backend.admin?.(PROMPT_DATASET, 'vacuum'); } catch { /* best effort */ }
+    }
+    return removed;
   }
 
   /** Indexed-corpus summary, for honest "why did you fall back" reporting. */

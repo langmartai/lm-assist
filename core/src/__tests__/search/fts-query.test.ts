@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tokenizeFts, buildFtsMatch } from '../../data/backends/fts-query';
+import { tokenizeFts, buildFtsMatch, expandCjk, hasCjk } from '../../data/backends/fts-query';
 
 test('drops the stopword that made every query match every session', () => {
   // `and` was the whole match-all defect: the old scorer substring-tested it, so it hit
@@ -42,4 +42,31 @@ test('a query with no usable terms yields null, never an empty filter', () => {
 test('and/or modes join with the requested operator', () => {
   assert.equal(buildFtsMatch('model discovery', 'and'), '"model" AND "discovery"');
   assert.equal(buildFtsMatch('model discovery', 'or'), '"model" OR "discovery"');
+});
+
+test('CJK runs expand to overlapping bigrams so sub-word search works', () => {
+  // Chinese writes without spaces, so unicode61 treats a whole run as ONE token: a
+  // document holding that run could not be found by searching a word inside it. Bigrams —
+  // not SQLite's `trigram` tokenizer, which needs 3+ chars while most Chinese words are two.
+  assert.equal(expandCjk('搜索'), '搜索');
+  assert.equal(expandCjk('文件搜索'), '文件 件搜 搜索');
+  assert.deepEqual(tokenizeFts('文件搜索功能实现'), ['文件', '件搜', '搜索', '索功', '功能', '能实', '实现']);
+  // The query side produces a term the document side also produced — that is the match.
+  assert.ok(tokenizeFts('文件搜索功能实现').includes('搜索'));
+});
+
+test('CJK expansion leaves latin text completely alone', () => {
+  assert.equal(expandCjk('sqlite fts index'), 'sqlite fts index');
+  assert.deepEqual(tokenizeFts('sqlite fts index'), ['sqlite', 'fts', 'index']);
+});
+
+test('mixed CJK/latin keeps both halves searchable', () => {
+  const t = tokenizeFts('修复 websocket 连接问题');
+  assert.ok(t.includes('websocket'), 'latin term survives');
+  assert.ok(t.includes('连接'), 'CJK sub-word is reachable');
+});
+
+test('hasCjk gates the work', () => {
+  assert.equal(hasCjk('plain ascii only'), false);
+  assert.equal(hasCjk('has 中文 inside'), true);
 });

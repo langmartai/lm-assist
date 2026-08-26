@@ -30,6 +30,35 @@ const STOPWORDS = new Set([
 /** Cap on emitted terms — bounds the expression handed to SQLite for a pathological query. */
 const MAX_TERMS = 24;
 
+/** Han / Hiragana / Katakana / Hangul — scripts written without spaces between words. */
+const CJK_RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{2,}/gu;
+
+/**
+ * Slice CJK runs into overlapping BIGRAMS so sub-word search works.
+ *
+ * Chinese/Japanese/Korean put no spaces between words, so FTS5's unicode61 tokenizer
+ * treats a whole run as ONE token: a document holding 文件搜索功能实现 cannot be found by
+ * searching 搜索, even though the characters are right there. Only a character-for-character
+ * match of the entire run hits.
+ *
+ * Expanding to overlapping 2-char tokens (文件 件搜 搜索 索功 …) on BOTH sides makes any
+ * sub-run findable. Bigrams rather than SQLite's built-in `trigram` tokenizer because
+ * trigram needs 3+ characters and most Chinese words are exactly two — verified on this
+ * build: trigram returns 0 rows for 搜索, bigram expansion returns the row.
+ */
+export function expandCjk(text: string): string {
+  return String(text || '').replace(CJK_RUN, (run) => {
+    const out: string[] = [];
+    for (let i = 0; i < run.length - 1; i++) out.push(run.slice(i, i + 2));
+    return out.join(' ');
+  });
+}
+
+/** True when the text contains any CJK at all — lets callers skip the work entirely. */
+export function hasCjk(text: string): boolean {
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(String(text || ''));
+}
+
 /**
  * Split raw text into FTS-safe terms: unicode letters/digits/underscore only,
  * lowercased, stopwords and 1-character tokens dropped, de-duplicated, bounded.
@@ -43,6 +72,9 @@ export function tokenizeFts(raw: string): string[] {
   // in composed form — a confident false negative on text the corpus does contain.
   let norm: string;
   try { norm = String(raw || '').normalize('NFC'); } catch { norm = String(raw || ''); }
+  // CJK runs become space-separated bigrams so they tokenize into searchable units,
+  // matching how the indexer stores them.
+  norm = expandCjk(norm);
   for (const t of norm.toLowerCase().split(/[^\p{L}\p{N}_]+/u)) {
     if (t.length < 2) continue;             // single chars match far too much to be worth a term
     if (STOPWORDS.has(t)) continue;

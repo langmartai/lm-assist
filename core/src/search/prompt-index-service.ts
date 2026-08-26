@@ -73,6 +73,13 @@ export async function runBackfill(index: PromptIndex = getPromptIndex()): Promis
       if ((i + 1) % BACKFILL_BATCH === 0) await sleep(BACKFILL_PAUSE_MS);
     }
     index.flushState();
+    // After the sweep, drop anything whose transcript is gone. Doing it here rather than
+    // on the watcher's `unlink` avoids acting on moves and atomic rewrites, and it is the
+    // retention policy that matters: the store only holds what still exists on disk.
+    try {
+      const pruned = await index.pruneMissing();
+      if (pruned > 0) console.log(`[PromptIndex] pruned ${pruned} deleted session(s)`);
+    } catch (e) { console.error('[PromptIndex] prune failed:', (e as any)?.message || e); }
   } finally {
     backfill.running = false;
   }
@@ -120,9 +127,10 @@ export function startPromptIndexService(): void {
   // to run on the same boot and again periodically — they are REWRITTEN in place rather
   // than appended, so there is no watcher tail to follow.
   const refreshMemory = () => {
-    getMemoryIndex().refresh().catch((e) => {
-      console.error('[MemoryIndex] refresh failed:', e?.message || e);
-    });
+    const mi = getMemoryIndex();
+    mi.refresh()
+      .then(() => mi.pruneMissing())
+      .catch((e) => { console.error('[MemoryIndex] refresh failed:', e?.message || e); });
   };
   refreshMemory();
   const memTimer = setInterval(refreshMemory, MEMORY_REFRESH_MS);

@@ -293,7 +293,7 @@ function formatSessionResults(
       : '';
     lines.push(`${offset + i + 1}. [session] ${s.sessionId}  (${projName}, ${turns} turns${cov}${s.matches > 1 ? `, ${s.matches} matching prompts` : ''})`);
     const snippet = s.best.text.replace(/\s+/g, ' ').slice(0, 220);
-    lines.push(`   matched prompt (turn ${s.best.turnIndex}): "${snippet}${s.best.text.length > 220 ? '…' : ''}"`);
+    lines.push(`   matched prompt (line ${s.best.lineIndex}): "${snippet}${s.best.text.length > 220 ? '…' : ''}"`);
     lines.push(`   → detail("${s.sessionId}")`);
     lines.push('');
   }

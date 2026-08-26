@@ -19,6 +19,7 @@ import { thisNodeId, dataRoot } from '../data/paths';
 import { getProjectsDir } from '../utils/path-utils';
 import type { DataRecord } from '../data/types';
 import { rankedFtsSearch } from './fts-rank';
+import { expandCjk, hasCjk } from '../data/backends/fts-query';
 
 export const MEMORY_DATASET = 'memory-files';
 
@@ -33,8 +34,10 @@ const INDEXED_FIELDS: Array<{ path: string; type: 'text' | 'number' }> = [
 const MAX_INDEXED_TEXT = 40000;
 
 interface Watermark { mtimeMs: number; size: number }
-interface IndexState { version: number; files: Record<string, Watermark>; }
-const STATE_VERSION = 1;
+interface IndexState { version: number; epoch: number; files: Record<string, Watermark>; }
+const STATE_VERSION = 2;
+/** Bump to force a rebuild when the stored shape changes (see PromptIndex.INDEX_EPOCH). */
+const INDEX_EPOCH = 2;
 
 export interface MemoryHit {
   projectId: string;
@@ -51,7 +54,7 @@ export interface MemorySearchResult {
 
 export class MemoryIndex {
   private backend: SqlBackend;
-  private state: IndexState = { version: STATE_VERSION, files: {} };
+  private state: IndexState = { version: STATE_VERSION, epoch: INDEX_EPOCH, files: {} };
   private statePath: string;
   private ready = false;
   private dirty = false;
@@ -86,8 +89,22 @@ export class MemoryIndex {
     } as any);
     try {
       const raw = JSON.parse(fs.readFileSync(this.statePath, 'utf8')) as IndexState;
-      if (raw && raw.version === STATE_VERSION && raw.files) this.state = raw;
+      if (raw && raw.version === STATE_VERSION && raw.files) {
+        this.state = { ...raw, epoch: typeof raw.epoch === 'number' ? raw.epoch : 0 };
+      }
     } catch { /* first run */ }
+    if (this.state.epoch !== INDEX_EPOCH) {
+      try {
+        await this.backend.dropDataset(MEMORY_DATASET);
+        await this.backend.createDataset({
+          id: MEMORY_DATASET, backend: 'sql', ownerNode: thisNodeId(),
+          config: { kind: 'sql', indexedFields: INDEXED_FIELDS },
+        } as any);
+      } catch { /* rebuild is best effort; a stale store still answers */ }
+      this.state = { version: STATE_VERSION, epoch: INDEX_EPOCH, files: {} };
+      this.dirty = true;
+      this.flushState();
+    }
     this.ready = true;
   }
 
@@ -148,7 +165,12 @@ export class MemoryIndex {
       fields: { projectId, filename, host: thisNodeId(), mtimeMs: st.mtimeMs },
       // Whole file: memory files ARE the topical signal — unlike a transcript there is
       // no assistant chatter or tool output to exclude.
-      text: `${filename}\n${raw}`.slice(0, MAX_INDEXED_TEXT),
+      text: (() => {
+        const body = `${filename}\n${raw}`.slice(0, MAX_INDEXED_TEXT);
+        // Memory files are the likeliest place for Chinese notes; without bigrams a CJK
+        // query only matches a whole unbroken run. Appended, so the body stays readable.
+        return hasCjk(body) ? `${body}\n${expandCjk(body)}` : body;
+      })(),
       createdAt: new Date(st.mtimeMs).toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -192,6 +214,22 @@ export class MemoryIndex {
         rank: i,
       })),
     };
+  }
+
+  /** Drop rows for memory files that no longer exist (same rationale as PromptIndex). */
+  async pruneMissing(): Promise<number> {
+    await this.init();
+    let removed = 0;
+    for (const filePath of Object.keys(this.state.files)) {
+      if (fs.existsSync(filePath)) continue;
+      const projectId = path.basename(path.dirname(path.dirname(filePath)));
+      try { await this.backend.delete(MEMORY_DATASET, `${projectId}::${path.basename(filePath)}`); }
+      catch { continue; }
+      delete this.state.files[filePath];
+      removed++;
+    }
+    if (removed > 0) { this.dirty = true; this.flushState(); }
+    return removed;
   }
 
   hasContent(): boolean { return Object.keys(this.state.files).length > 0; }

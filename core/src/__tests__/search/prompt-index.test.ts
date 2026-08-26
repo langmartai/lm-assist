@@ -289,3 +289,40 @@ test('AND mode does not pay for coverage probes', async () => {
   assert.equal(r!.mode, 'and');
   assert.equal(r!.sessions.length, 1);
 });
+
+test('a CJK prompt is findable by a sub-word query', async () => {
+  const { index, dir } = freshIndex('cjk');
+  await index.indexFile(writeSession(dir, 'zh', ['修复微信客户端的消息轮询问题']));
+  await index.indexFile(writeSession(dir, 'other', ['unrelated english session about widgets']));
+
+  // Without bigram expansion this returns nothing: unicode61 holds the whole run as one token.
+  const r = await index.search('消息轮询');
+  assert.equal(r!.sessions.length, 1);
+  assert.equal(r!.sessions[0].sessionId, 'zh');
+  // The rendered snippet must be the real text, not the appended bigram expansion.
+  assert.ok(r!.sessions[0].best.text.startsWith('修复微信'), 'snippet leaked the expansion');
+  assert.ok(!r!.sessions[0].best.text.includes(' '), 'expansion is space-separated; the body is not');
+});
+
+test('deleting a transcript prunes its rows', async () => {
+  const { index, dir } = freshIndex('prune');
+  const keep = writeSession(dir, 'keeper', ['xray subsystem work that stays']);
+  const gone = writeSession(dir, 'goner', ['xray subsystem work that disappears']);
+  await index.indexFile(keep);
+  await index.indexFile(gone);
+  assert.equal((await index.search('xray subsystem'))!.sessions.length, 2);
+
+  fs.rmSync(gone);
+  assert.equal(await index.pruneMissing(), 1);
+  const r = await index.search('xray subsystem');
+  assert.deepEqual(r!.sessions.map((s) => s.sessionId), ['keeper']);
+  assert.equal(index.isIndexed(gone), false, 'the watermark must go too, or it is never re-scanned');
+});
+
+test('pruning leaves a session whose file still exists', async () => {
+  const { index, dir } = freshIndex('noprune');
+  const f = writeSession(dir, 'alive', ['yankee subsystem still here']);
+  await index.indexFile(f);
+  assert.equal(await index.pruneMissing(), 0);
+  assert.equal((await index.search('yankee subsystem'))!.sessions.length, 1);
+});
