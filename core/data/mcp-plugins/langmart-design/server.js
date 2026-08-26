@@ -5,16 +5,18 @@
  * platform, built against lm-assist MCP Plugin Contract v1 (FROZEN).
  *
  * A thin forwarder: every tool is exactly one GET against the LangMart
- * gateway (gateway-type1) REST API — the same endpoints the platform's own
- * in-process assistant tools call. No business logic lives here; the
+ * gateway REST API — the same endpoints the platform's own in-process
+ * assistant tools call. No business logic lives here; the
  * gateway's server-side authorization is authoritative on every call.
  *
  * READ-ONLY BY CONSTRUCTION — two independent layers:
  *   1. No mutating tool exists: all 30 tools read platform state; nothing
  *      can express a create/update/delete, key rotation, or script run.
  *   2. The single HTTP client below hardcodes method GET — no code path in
- *      this process can emit any other verb. (This matters because the
- *      gateway does not enforce per-key read-only scoping server-side.)
+ *      this process can emit any other verb. This layer is what makes the
+ *      plugin read-only: treat the granted credential as fully privileged
+ *      for its account and never relax the GET-only construction on the
+ *      assumption that the key itself is narrowly scoped.
  *
  * TRANSPORT / GRANTS (contract §6 — the process inherits nothing):
  *   env LANGMART_API_BASE — gateway origin, no path suffix:
@@ -22,9 +24,9 @@
  *     https://api.xeenhub.com      (development)
  *     http://localhost:8081        (local dev gateway; loopback http only)
  *   env LANGMART_API_KEY — a NORMAL user API key (sk-langmart-…), sent as
- *     "Authorization: Bearer". MCP-OAuth-issued tokens will NOT work: the
- *     gateway 403s them on /api/* (requireNotMcpToken). The key's own
- *     role/org decides what these tools can see — grant a member-role key.
+ *     "Authorization: Bearer". MCP-OAuth-issued tokens will NOT work — the
+ *     gateway rejects them on /api/*. The key's own role/org decides what
+ *     these tools can see — grant a member-role key.
  *
  * The key exists only in lm-assist's grant store; it is never echoed in
  * results, errors, or logs, and no credential appears in this payload.

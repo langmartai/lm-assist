@@ -13,7 +13,7 @@ carrying the lm-assist connector. Consumers configure nothing.
 ## How it works
 
 `server.js` is a dependency-free MCP stdio server that forwards each tool
-call as exactly one **GET** to the LangMart gateway (gateway-type1) REST API
+call as exactly one **GET** to the LangMart gateway REST API
 — the same endpoints the platform's in-process assistant tools use. The
 HTTP client hardcodes GET and no mutating tool is defined, so the plugin is
 read-only by construction regardless of what the granted key could do.

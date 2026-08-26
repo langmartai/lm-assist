@@ -154,19 +154,18 @@ function parseBundledIndex(sourceDir: string): BundledIndex {
 type GrantProvider = (opts: SeedOptions) => Record<string, string>;
 
 /**
- * `langmart-design` talks to the LangMart PUBLIC API (`/api/*` on gateway-type1).
+ * `langmart-design` talks to the LangMart PUBLIC API (`/api/*` on the gateway).
  * Both values it needs are already on the node in `~/.lm-assist/hub.json`:
  *
- *  - the hub api key is an `sk-langassist-…` row in the very same `api_keys` table as
- *    a user's `sk-langmart-…` key (same user, same org, `key_kind` NULL), so
- *    `authenticate()` accepts it and `requireNotMcpToken` does not 403 it. Verified
- *    live against api.langmart.ai, not inferred from the shape of the string.
+ *  - the hub api key is an ordinary account key for the same user and organisation, so
+ *    the gateway accepts it on `/api/*` like any other. Verified against the live API,
+ *    not inferred from the shape of the string.
  *  - the api origin is the hub origin with the `assist-api.` host swapped for `api.`,
- *    which keeps dev (xeenhub) and prod (langmart) self-selecting instead of hardcoded.
+ *    which keeps dev and prod self-selecting instead of hardcoded.
  *
- * NOTE the key is read+write at the gateway (the gateway does not enforce per-key
- * scoping — `api_keys.permissions` is dead). Read-only is a property of the PLUGIN,
- * which hardcodes GET; do not weaken that on the assumption the key is limited.
+ * NOTE treat the granted key as FULLY PRIVILEGED for its account. Read-only is a
+ * property of the PLUGIN, which hardcodes GET — never relax that on the assumption that
+ * the credential itself is narrowly scoped.
  */
 const langmartDesignGrants: GrantProvider = (opts) => {
   const hub = opts.hubConfig ?? loadHubConfigSafely();

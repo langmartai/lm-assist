@@ -99,14 +99,16 @@ node already holds. A value a human granted always outranks a derived one.
 | `LANGMART_API_KEY` | `apiKey` | the `sk-langassist-…` hub key |
 | `LANGMART_API_BASE` | `hubUrl`, `assist-api.<domain>` → `https://api.<domain>` | keeps dev/prod self-selecting |
 
-The hub key works on the gateway's public `/api/*` because it is an ordinary row in the same
-`api_keys` table as a user's `sk-langmart-…` key — same user, same org, `key_kind` NULL, so
-`authenticate()` accepts it and `requireNotMcpToken` does not 403 it. Verified live against
-`api.langmart.ai`, not inferred from the shape of the string.
+The hub key works on the gateway's public `/api/*` because it is an ordinary account key for the
+same user and organisation — verified against the live API, not inferred from the shape of the
+string.
 
-🔴 That key is **read+write** at the gateway, which does not enforce per-key scoping
-(`api_keys.permissions` is dead). Read-only is a property of the **plugin**, which hardcodes
-`method: 'GET'`. Do not weaken that on the assumption the key is limited.
+🔴 Treat a granted key as **fully privileged for its account**. Read-only is a property of the
+**plugin**, which hardcodes `method: 'GET'`; never relax that on the assumption that the
+credential itself is narrowly scoped.
+
+(Where a doc like this needs to explain *why* a control matters, state the rule — not which
+control is missing or where. This file is published.)
 
 An unrecognised hub host yields **no** base URL rather than a guess — a wrong base would send
 the node's key to a host nobody reviewed — and a half-derived grant is dropped entirely.
