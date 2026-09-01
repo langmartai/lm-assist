@@ -1,7 +1,7 @@
 {
   "name": "lm-assist",
-  "version": "0.2.0",
-  "description": "Self-hosted control plane for Claude Code \u2014 observe, control, automate, and extend Claude Code across machines",
+  "version": "0.2.1",
+  "description": "Full observability & control for the Claude product line \u2014 sessions, conversations, Cowork, agents, memory, connectors, usage",
   "author": {
     "name": "langmartai"
   },

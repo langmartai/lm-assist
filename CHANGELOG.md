@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.2.1] - 2026-09-01
+
+First patch on the 0.2.0 line — two fixes plus the documentation & examples wave.
+
+### Fixed
+- **Subagents report the type they actually ran as** (#18 — the repo's first external contribution,
+  thanks @lerrua): the real type is read from `attributionAgent` on the transcript's assistant lines,
+  with the parent Task's `subagent_type` as the authoritative override, replacing the hardcoded
+  `general-purpose`. `CACHE_VERSION` 13 triggers a lazy one-time re-parse. Hardening follow-up: the
+  extracted value must be a sanely-sized string (a transcript is parsed content), and the new test is
+  hermetic (stubbed home dir — fixtures never touch the real `~/.claude/projects`).
+- **Connector login browsers open on their own service**: the shared browser launcher gained a
+  `startUrl` option — LinkedIn and Gmail login windows now open on linkedin.com / mail.google.com
+  instead of first painting claude.ai and navigating after the fact.
+
+### Docs
+- **`examples/`** — 8 per-use-case walkthroughs with masked screenshots from a live deployment:
+  MCP connector install, claude.ai browser auth (+ automatic connector upkeep), full claude.ai
+  conversation search, UI panes, cross-node memory, and the Gmail / WhatsApp / LinkedIn connectors.
+- **`docs/capability-map.svg`** — three doors, one Core: Web UI, the MCP connector (the main door,
+  entered from claude.ai conversations, Cowork sessions, and local/remote Claude Code sessions),
+  and the Claude Code skills plugin.
+- **README repositioned**: full observability & control for the Claude product line — coverage
+  table, cross-node/cross-session framing, screenshot gallery.
+- Install/upgrade guidance truth-up: npm `latest` now carries the chokidar pin, so plain
+  `lm-assist upgrade` is documented as safe again.
+
 ## [0.2.0] - 2026-09-01
 
 First npm publish since 0.1.70 (2026-04-03) — roughly 1,690 commits (728 feat, 443 fix). The project's

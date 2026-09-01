@@ -36,9 +36,9 @@
     },
     {
       "name": "lm-assist",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": "./",
-      "description": "Self-hosted control plane for Claude Code. 860+ API endpoints, 280+ MCP tools, 15 insight views, web terminal, fleet, missions, service connectors.",
+      "description": "Full observability & control for the Claude product line. 860+ API endpoints, 280+ MCP tools, 15 insight views, web terminal, fleet, missions, service connectors.",
       "category": "productivity",
       "homepage": "https://github.com/langmartai/lm-assist"
     }
