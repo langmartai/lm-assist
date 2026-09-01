@@ -52,7 +52,7 @@
   <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#0f172a">
     <text x="488" y="188">🚀 bootstrap + guide — self-teaching surface</text>
     <text x="488" y="215" font-weight="700">🗂️ sessions — local · remote (CCR) · cloud</text>
-    <text x="488" y="242">🔍 search · 🧠 memory · 🕹️ terminal driving</text>
+    <text x="488" y="242" font-weight="700">🧠 memory &amp; rules — every project, every node</text>
     <text x="488" y="269">🧭 missions + scheduler control</text>
     <text x="488" y="296">🗄️ data service — cache · vector · sql</text>
     <text x="488" y="323">💾 backups + claude.ai conversation search</text>
@@ -62,6 +62,7 @@
     <text x="488" y="431">🎙️ voice · 🚚 nodes · clusters · transfers</text>
     <text x="488" y="458">🧩 ext plugins + bundled first-party tools</text>
     <text x="488" y="485" font-weight="700">🪟 UI panes — hand you a live dashboard URL</text>
+    <text x="488" y="512">🔍 fleet-wide search · 🕹️ terminal driving</text>
   </g>
 
   <!-- ───────────────── Skills card ───────────────── -->

@@ -214,7 +214,15 @@ Per-use-case walkthroughs with screenshots from a live deployment, in [`examples
 [MCP connector install](./examples/mcp-connector-install/) ·
 [claude.ai browser auth + automatic connector upkeep](./examples/claudeai-browser-auth/) ·
 [full claude.ai conversation search](./examples/claudeai-conversation-search/) ·
+[UI panes](./examples/ui-panes/) ·
+[cross-node memory](./examples/cross-node-memory/) ·
 [Gmail](./examples/gmail-connector/) · [WhatsApp](./examples/whatsapp-connector/) · [LinkedIn](./examples/linkedin-connector/)
+
+| | |
+|---|---|
+| <a href="./examples/ui-panes/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/ui-panes/ui-pane-mission-graph-masked.png" alt="Mission graph pane on its own URL"></a><br><sub>**UI panes** — ask for the mission graph in chat, get a live dashboard URL</sub> | <a href="./examples/gmail-connector/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/gmail-connector/gmail-inbox-masked.png" alt="Gmail through the connector, content masked"></a><br><sub>**Gmail connector** — your own logged-in browser, driven over CDP (content masked)</sub> |
+| <a href="./examples/whatsapp-connector/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/whatsapp-connector/whatsapp-masked.png" alt="WhatsApp Web through the connector, content masked"></a><br><sub>**WhatsApp connector** — reads and sends via the connector's own tab (content masked)</sub> | <a href="./examples/linkedin-connector/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/linkedin-connector/linkedin-feed-masked.png" alt="LinkedIn feed through the connector, content masked"></a><br><sub>**LinkedIn connector** — no personal API exists, so a real browser does the work (content masked)</sub> |
+| <a href="./examples/mcp-connector-install/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/mcp-connector-install/mcp-tools-bootstrap.png" alt="MCP tool registry with bootstrap selected"></a><br><sub>**MCP tools** — 280+ tools, per-tool overrides and on/off, fleet-synced</sub> | <a href="./examples/cross-node-memory/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/cross-node-memory/memory-page-masked.png" alt="Memory page across all projects, content masked"></a><br><sub>**Cross-node memory** — every project's and every machine's Claude memory, one surface</sub> |
 
 ## Documentation
 
