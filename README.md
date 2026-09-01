@@ -205,6 +205,14 @@ The **observe** skill activates on questions like "what's running and what has i
 
 All session endpoints support `ifModifiedSince` for efficient polling, and three indexing dimensions: `lineIndex` (JSONL position), `turnIndex` (conversation turn), and `userPromptIndex` (user message count). Full reference: [`docs/api-endpoints.md`](./docs/api-endpoints.md).
 
+## Examples
+
+Per-use-case walkthroughs with screenshots from a live deployment, in [`examples/`](./examples/):
+[MCP connector install](./examples/mcp-connector-install/) ·
+[claude.ai browser auth + automatic connector upkeep](./examples/claudeai-browser-auth/) ·
+[full claude.ai conversation search](./examples/claudeai-conversation-search/) ·
+[Gmail](./examples/gmail-connector/) · [WhatsApp](./examples/whatsapp-connector/) · [LinkedIn](./examples/linkedin-connector/)
+
 ## Documentation
 
 The docs are organized in [`docs/README.md`](./docs/README.md) — getting started, architecture, API references, feature guides, connector guides, and operations.

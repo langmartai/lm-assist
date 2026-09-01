@@ -5,6 +5,7 @@ from elsewhere); this page is the navigation layer.
 
 ## Start here
 
+- [../examples/](../examples/README.md) — per-use-case walkthroughs with screenshots: MCP connector install, claude.ai browser auth, conversation search, Gmail/WhatsApp/LinkedIn connectors
 - [how-it-works.md](./how-it-works.md) — how the pieces fit: Core API, Web UI, MCP server, hooks, statusline
 - [install-and-modes.md](./install-and-modes.md) — install paths, dev vs prod modes, which port is serving
 - [build-pack-install-upgrade.md](./build-pack-install-upgrade.md) — the authoritative build → pack → install → upgrade → deploy reference
