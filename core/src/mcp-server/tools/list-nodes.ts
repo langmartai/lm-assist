@@ -4,7 +4,7 @@
  * Multi-node selection is resolved at the langmart hub: the hub holds the live
  * registry of every lm-assist worker a user has connected, so it answers
  * `list_nodes` with the full set and routes node-targeted calls to the right
- * worker (see LangMartDesign assist-api `/internal/mcp-relay`).
+ * worker (see the hub's assist-api `/internal/mcp-relay`).
  *
  * This handler is the fallback for the cases where the call actually reaches a
  * worker's own MCP server:

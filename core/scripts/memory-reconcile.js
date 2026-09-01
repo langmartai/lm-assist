@@ -219,8 +219,9 @@ function computeOutdatedCandidates(records) {
     }
   }
 
-  const projectRoot = '/home/ubuntu/lm-unified-trade';
+  const projectRoot = process.env.LM_RECONCILE_PROJECT_ROOT || null; // fleet root comes from env, not code
   for (const r of records) {
+    if (!projectRoot) break;
     if (!r.complete) continue;
     const pathRe = /\b((?:scripts|core|docs|web|trades|events|analyses)\/[a-zA-Z0-9_./:@-]+\.[a-z]{2,5})\b/g;
     let m;

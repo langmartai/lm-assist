@@ -144,7 +144,7 @@ export const memoryCrossHostToolDef = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      project_id: { type: 'string', description: 'Project slug from memory_projects (e.g. "C--home-lm-unified-trade").' },
+      project_id: { type: 'string', description: 'Project slug from memory_projects (e.g. "C--home-user-my-project").' },
       query: { type: 'string', description: 'Relevance query over memory file bodies + frontmatter.' },
     },
     required: ['project_id', 'query'],

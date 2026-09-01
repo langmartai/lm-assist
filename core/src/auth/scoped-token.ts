@@ -2,7 +2,7 @@
  * Scoped, revocable API tokens — a narrow companion to the full rotating
  * api-token (see api-token.ts).
  *
- * WHY: embedded browser clients (e.g. the lm-unified-trade chart-chat panel)
+ * WHY: embedded browser clients (e.g. an embedded chart-chat panel)
  * need to call a small slice of the core API directly from the page. The full
  * api-token must NEVER ship to a browser — it grants everything on the node.
  * A scoped token grants exactly one named scope's route allow-list, expires on

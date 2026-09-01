@@ -24,7 +24,7 @@ export function useLanAuthGuard(): boolean {
       // Localhost always passes
       if (isLocalhost) { setChecked(true); return; }
 
-      // Cloud proxy always passes — already authenticated by LangMartDesign
+      // Cloud proxy always passes — already authenticated by the hub gateway
       const proxyInfo = detectProxyInfo();
       if (proxyInfo.isProxied) { setChecked(true); return; }
 

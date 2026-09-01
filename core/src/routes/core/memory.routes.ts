@@ -46,8 +46,8 @@ function getApi(): MemoryApi {
 // Live-confirmed divergence on this node: LM_HOST_ID is unset, this node has
 // no _hosts.md row matching its own IP in some project (falls through to
 // os.hostname() = "ubuntu-Virtual-Machine")... but in
-// /home/ubuntu/lm-unified-trade/memory/_hosts.md the row `linux-117` matches
-// this machine's 10.0.1.117 interface IP, so memory-map.js resolves
+// /home/user/my-project/memory/_hosts.md the row `linux-117` matches
+// this machine's LAN interface IP, so memory-map.js resolves
 // liveNode = "linux-117" while selfHostId() resolves to the hub gatewayId
 // (or hostname if the hub isn't connected) — divergent. So this handler
 // re-implements memory-map.js's exact chain instead of delegating to

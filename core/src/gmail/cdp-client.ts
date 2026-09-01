@@ -1109,7 +1109,7 @@ export interface GmailStatus {
    * The identity Gmail will actually send as unless a compose overrides it.
    * 🔴 MEASURED: this is NOT necessarily `self` — on the reference account the
    * compose opened as `support@langmart.ai` while `self` was
-   * `yi.huang@databunny.sg`. Reporting only `self` would tell the operator the
+   * the primary address. Reporting only `self` would tell the operator the
    * wrong thing about every message they are about to send.
    */
   defaultSendAs: string | null;

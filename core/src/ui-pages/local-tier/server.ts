@@ -46,7 +46,7 @@
  *
  * ⚠️ OPERATIONAL: pane ports are EPHEMERAL (listen(0)) and bound on 0.0.0.0, so a host that
  * firewalls inbound traffic to `localUiPort` alone would let a LAN viewer reach the dispatcher
- * and then fail on the redirect. MEASURED on THIS host (10.0.1.117, 2026-08-13): `ufw status` is
+ * and then fail on the redirect. MEASURED on THIS host (the LAN IP, 2026-08-13): `ufw status` is
  * inactive and the iptables INPUT policy is ACCEPT, so nothing filters a LAN viewer's path to an
  * ephemeral pane port. That is a ONE-HOST measurement, not a fleet property — the INPUT chain
  * here does carry targeted DROP rules (source 172.28.0.0/16, a container bridge, irrelevant to a
@@ -218,7 +218,7 @@ function ensurePaneOrigin(uiId: string): Promise<number> {
 /**
  * The host the VIEWER dialled, from its own Host header — never the socket address.
  *
- * Cookies are scoped by HOST, so a redirect that swapped `myhost.local` for `10.0.1.117`
+ * Cookies are scoped by HOST, so a redirect that swapped `myhost.local` for `the LAN IP`
  * would strand the session it just minted. The charset is narrow enough that nothing can be
  * smuggled into the Location header; a missing/odd Host falls back to loopback. A viewer
  * "attacking" its own Host header only ever redirects itself.
@@ -477,7 +477,7 @@ async function serveDocument(
  * 🔴 It is served on ANY transport, with no Sec-Fetch-Dest condition. The previous version
  * refused an ABSENT header to block silent cookie planting on a shared origin; over plain http
  * to a LAN IP no browser sends that header at all, so the rule refused every REAL cross-pane
- * navigation too — measured Chrome 145: 127.0.0.1 → 302, 10.0.1.117 → 403 on the identical
+ * navigation too — measured Chrome 145: 127.0.0.1 → 302, the LAN IP → 403 on the identical
  * click. The planting it was buying is worthless now; the deadness it was costing was total.
  */
 async function serveGo(
@@ -692,7 +692,7 @@ async function serveData(
   // plus the traversal/encoded-separator refusals, in the order that matters — see grants.ts. It
   // also subsumes the raw+decoded `..`/`//` reject this block used to do inline, so there is ONE
   // place left that decides what a data path means. Same order as the hub's evaluator
-  // (LangMartDesign/ui-gateway/src/data/routes.ts: canonicalUpstreamPath → grantAllows → relay
+  // (ui-gateway/src/data/routes.ts: canonicalUpstreamPath → grantAllows → relay
   // the canonical form), which is why the two now agree on crafted input and not just clean input.
   const resolved = resolveDataTarget(dataPath, uiId);
   if (resolved === null) {

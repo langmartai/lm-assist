@@ -168,7 +168,7 @@ export function ConsolePanel({
       sessionId: con.sessionId,
       projectPath: con.projectPath,
     });
-    // Include machineId for hub/proxy modes (needed by LangMartDesign console page)
+    // Include machineId for hub/proxy modes (needed by the hub console page)
     const mid = selectedMachineId || (proxy.isProxied ? proxy.machineId : null);
     if (mid) params.set('machineId', mid);
     window.open(`${proxy.basePath || ''}/console?${params.toString()}`, `terminal-${con.sessionId}`);

@@ -9,8 +9,8 @@
  * The rules are duplicated (deliberately, by hand) in three other places that a hand-typed
  * URL can reach without passing through any of the others:
  *   - the browser shim            ui-apps/<pane>/assets/lmui.js  (throws, never truncates)
- *   - the hub gateway             LangMartDesign ui-gateway/src/registry/nav-params.ts
- *   - the shell's forwarder       LangMartDesign assist-web/src/lib/pane-nav.ts
+ *   - the hub gateway             ui-gateway/src/registry/nav-params.ts
+ *   - the shell's forwarder       assist-web/src/lib/pane-nav.ts
  * Keep the four tables in sync or a deep link that works on one tier silently loses a
  * param on another.
  *

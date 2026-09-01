@@ -56,7 +56,7 @@ export const searchToolDef = {
       project: {
         type: 'string',
         description:
-          'Filter to a single project directory (e.g. "/home/ubuntu/lm-unified-trade"). ' +
+          'Filter to a single project directory (e.g. "/home/user/my-project"). ' +
           'Omit unless the user is clearly scoped to one repo.',
       },
       limit: {

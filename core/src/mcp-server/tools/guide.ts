@@ -390,7 +390,7 @@ WHEN: you want a NEW Claude Code session on a node that is driveable from claude
    **Send ESCAPE, never ENTER.** Enter activates the HIGHLIGHTED row — which can be "Disconnect this session", i.e. it tears down the very connection you just made.
 4. \`terminal_slash({name:<tmux>, cmd:"rename", args:"<name>"})\` → renames the LIVE session, with no restart and no context loss. (The CLI help for \`--remote-control [name]\` implies naming is start-time-only. That is MISLEADING — \`/rename\` works at runtime.)
 5. VERIFY with \`terminal_capture\`: the new name appears in the status bar, and \`/rc\` shows remote control active.
-NAMING: \`<node-ip-last-octet>-<repo>-ccr[-N]\` — e.g. \`117-lm-assist-ccr\`, \`117-lm-assist-ccr-2\` (both verified on 10.0.1.117).
+NAMING: \`<node-ip-last-octet>-<repo>-ccr[-N]\` — e.g. \`117-lm-assist-ccr\`, \`117-lm-assist-ccr-2\` (both verified).
 
 GOTCHAS ON THIS PATH — each one cost a real session
 • \`ccr_connect\` can fail with an opaque **"MCP tool call failed"** EVEN WHEN \`ccr_preflight\` returned \`allowedModes\` including \`connect\` and \`connectStrategy: attach-existing\`. A green preflight is not a working connect — fall back to the native \`/remote-control\` inject above rather than re-running the preflight.

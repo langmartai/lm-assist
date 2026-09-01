@@ -458,7 +458,7 @@ export interface SendAsLike {
  *
  * Exactly one row must be marked default, because that identity decides who
  * every outgoing message is FROM. MEASURED on the reference account: the compose
- * opened as `support@langmart.ai`, not as the signed-in `yi.huang@databunny.sg`
+ * opened as `support@langmart.ai`, not as the signed-in primary
  * — so "who is this from" is never inferable and a wrong default is a wrong
  * sender on real mail. Zero defaults is the `make default` parse failing; two is
  * the same gluing matching too much.

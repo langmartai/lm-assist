@@ -3,7 +3,7 @@
  *
  * THE GIT QUESTION, ANSWERED BY MEASUREMENT: removal never touches git history
  * and never affects the remote. The store's `.gitignore` excludes every payload
- * directory, and the GitHub tree confirms it — `langmartai/claude-backup` holds
+ * directory, and the GitHub tree confirms it — the private backup remote holds
  * 6 files, 41 KB, all scripts and status. The payload was never committed, so
  * there is nothing to rewrite. Only `STATUS.md`/`status.json` are versioned, and
  * they commit forward normally.

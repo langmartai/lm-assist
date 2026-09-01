@@ -125,7 +125,7 @@ export const VIEWPORT = { width: 1920, height: 1080, deviceScaleFactor: 1, mobil
  *
  * 🔴 MEASURED 2026-07-29 and the single most surprising fact about this
  * account: the compose dialog's hidden `input[name="from"]` was
- * `support@langmart.ai`, NOT the primary `yi.huang@databunny.sg`. The account
+ * `support@langmart.ai`, NOT the signed-in primary address. The account
  * carries 8 send-as identities. So "who is this mail from" is NEVER inferable
  * from the signed-in address and must be READ.
  */

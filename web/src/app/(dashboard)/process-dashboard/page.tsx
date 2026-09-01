@@ -1276,7 +1276,7 @@ export default function ProcessDashboardPage() {
     if (!process.sessionId) return;
     const params = new URLSearchParams({ sessionId: process.sessionId });
     if (process.projectPath) params.set('projectPath', process.projectPath);
-    // Include machineId for hub mode or proxy mode (needed by LangMartDesign console page)
+    // Include machineId for hub mode or proxy mode (needed by the hub console page)
     const mid = proxy.isProxied ? proxy.machineId : (!isLocal ? process.machineId : null);
     if (mid) params.set('machineId', mid);
     const basePath = proxy.isProxied ? proxy.basePath : '';

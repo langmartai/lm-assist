@@ -1,10 +1,10 @@
 /**
  * Backup collector configuration.
  *
- * THE STORE IS ADOPTED, NOT INVENTED. `E:\claude-backup` on 107
- * (DESKTOP-GDKLATG) was built by a PowerShell script (`backup-claude.ps1`) that
+ * THE STORE IS ADOPTED, NOT INVENTED. `E:\claude-backup` on the collector
+ * node was built by a PowerShell script (`backup-claude.ps1`) that
  * this module replaces as the engine. Its directory layout, `status.json` shape
- * and private GitHub remote (`langmartai/claude-backup`) all keep working —
+ * and private GitHub remote all keep working —
  * 4.7 GB of already-captured history stays valid, and the existing snapshots
  * become searchable the moment they are indexed.
  *
@@ -38,14 +38,17 @@ export interface RemoteTarget {
   home: string;
 }
 
-export const REMOTE_TARGETS: RemoteTarget[] = [
-  { name: 'linux-117', sshHost: '10.0.1.117', home: '/home/ubuntu' },
-  { name: 'linux-123', sshHost: '10.0.1.123', home: '/home/yi' },
-];
+/** Remote targets come from the collector's stored config (`backup.json`
+ *  `remoteTargets`) — a fleet's host layout is runtime state, not shipped
+ *  code. Each entry: `{ name, sshHost, home }`. */
+export const REMOTE_TARGETS: RemoteTarget[] = (() => {
+  const t = readStored().remoteTargets;
+  return Array.isArray(t) ? t : [];
+})();
 
-/** The collector's own `.claude`. `windows-desk` IS node 107 — 10.0.1.107 is
- *  this machine, not a separate host. The prior session had to discover that;
- *  it is recorded here so nobody looks for a missing fourth node. */
+/** The collector's own `.claude`. `windows-desk` IS the collector machine
+ *  itself, not a separate host. The prior session had to discover that;
+ *  it is recorded here so nobody looks for a missing extra node. */
 export const LOCAL_TARGET: TargetName = 'windows-desk';
 
 export const ALL_TARGETS: TargetName[] = [
@@ -67,6 +70,7 @@ interface StoredConfig {
   localSource?: string;
   keepSnapshots?: number;
   claudeAiBaseUrl?: string;
+  remoteTargets?: RemoteTarget[];
 }
 
 function readStored(): StoredConfig {

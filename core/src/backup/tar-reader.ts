@@ -9,7 +9,7 @@
  *
  * Handles ustar `prefix` and GNU `L` long-name records, which matter here
  * because Claude Code session paths are routinely past the 100-byte name field
- * (`projects/C--home-lm-unified-trade/<uuid>.jsonl`). Dropping those would
+ * (`projects/C--home-user-my-project/<uuid>.jsonl`). Dropping those would
  * silently lose exactly the entries the index exists to find.
  */
 

@@ -282,14 +282,14 @@ function findNeighbors(target, allRecords) {
 // ---------------------------------------------------------------------------
 function resolveProjectPath(projectSlug) {
   if (!projectSlug) return null;
-  // projectSlug is the projectId, e.g. "-home-ubuntu-lm-unified-trade"
+  // projectSlug is the projectId, e.g. "-home-user-my-project"
   // It is the absolute path with / replaced by - (with leading -)
   // Strategy: try converting - back to / with leading slash
   const attempt1 = "/" + projectSlug.replace(/^-/, "").split("-").join("/");
   if (attempt1 && fs.existsSync(attempt1)) return attempt1;
 
   // Try a smarter approach: split on - and find a valid prefix
-  // "-home-ubuntu-lm-unified-trade" -> try /home/ubuntu/lm-unified-trade, /home/ubuntu/lm/unified/trade, etc.
+  // "-home-user-my-project" -> try /home/user/my-project, /home/user/my/project, etc.
   const parts = projectSlug.replace(/^-/, "").split("-");
   // Try progressively joined paths: join first N parts with / rest with -
   for (let split = parts.length - 1; split >= 1; split--) {
@@ -303,16 +303,6 @@ function resolveProjectPath(projectSlug) {
     if (fs.existsSync(candidate2)) return candidate2;
   }
 
-  // Known fallbacks
-  const known = [
-    "/home/ubuntu/lm-unified-trade",
-    "/home/ubuntu/lm-assist",
-    "/home/ubuntu",
-  ];
-  for (const k of known) {
-    if (projectSlug.includes("lm-unified-trade") && k.includes("lm-unified-trade")) return k;
-    if (projectSlug.includes("lm-assist") && k.includes("lm-assist")) return k;
-  }
   return null;
 }
 
@@ -335,9 +325,9 @@ function buildPrompt(record, neighbors) {
   // not just where it is stored — a cross-project record gets checked against the right codebase.
   const refShorts = (record.referencedProjects && record.referencedProjects.length) ? record.referencedProjects : [];
   const verifyPaths = [];
-  for (const s of refShorts) { if (s === "(home)" || s === "(user-global)") continue; const pp = "/home/ubuntu/" + s; try { if (fs.existsSync(pp)) verifyPaths.push(pp); } catch (e) {} }
+  for (const s of refShorts) { if (s === "(home)" || s === "(user-global)") continue; const pp = path.join(os.homedir(), s); try { if (fs.existsSync(pp)) verifyPaths.push(pp); } catch (e) {} }
   if (verifyPaths.length === 0) { const sp = resolveProjectPath(record.project); if (sp) verifyPaths.push(sp); }
-  if (verifyPaths.length === 0) verifyPaths.push("/home/ubuntu/lm-unified-trade");
+  if (verifyPaths.length === 0) verifyPaths.push(os.homedir());
   const projectPath = verifyPaths.join(", ");
 
   const sessionPath = record.originSessionId

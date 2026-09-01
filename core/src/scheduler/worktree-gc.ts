@@ -22,10 +22,11 @@
  */
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 export interface WorktreeGcConfig {
-  /** Repo roots to scan. Defaults cover the known fleet repos + any distinct mission env.repo. */
+  /** Repo roots to scan. Defaults cover the local lm-assist checkout + any distinct mission env.repo. */
   roots?: string[];
   dryRun?: boolean;
   /** Trim a kept worktree's .next/cache when idle this long. */
@@ -65,7 +66,7 @@ export interface WorktreeGcDeps {
   cacheMtimeMs(p: string): number | null;
 }
 
-const DEFAULT_ROOTS = ['/home/ubuntu/lm-assist', '/home/ubuntu/lm-unified-trade'];
+const DEFAULT_ROOTS = [path.join(os.homedir(), 'lm-assist')];
 
 function defaultDeps(): WorktreeGcDeps {
   return {

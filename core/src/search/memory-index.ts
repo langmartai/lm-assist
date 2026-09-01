@@ -146,7 +146,7 @@ export class MemoryIndex {
    *
    * Project cwds come from the session cache rather than from decoding the project
    * directory name: that encoding replaces `/` with `-` and is lossy for any path that
-   * already contains a hyphen (`lm-unified-trade` would decode to `lm/unified/trade`).
+   * already contains a hyphen (`my-hyphenated-project` would decode to `my/hyphenated/project`).
    */
   private listMemoryFiles(): Array<{ file: string; projectId: string; host: string; source: 'live' | 'repo' }> {
     const out: Array<{ file: string; projectId: string; host: string; source: 'live' | 'repo' }> = [];
