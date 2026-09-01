@@ -1,18 +1,29 @@
 # lm-assist
 
-## The Self-Hosted Control Plane for Claude Code
+## Full Observability & Control for the Claude Product Line
 
-Observe, control, automate, and extend Claude Code — on one machine or across your whole fleet. Full session visibility, a web dashboard, 860+ REST endpoints, and 280+ MCP tools that put every capability inside Claude Code and claude.ai itself.
+One self-hosted platform that sees and steers everything Claude does for you — **Claude Code sessions (local, remote, and cloud/CCR), claude.ai conversations, Cowork sessions, Agent SDK runs, your Claude memory, MCP connectors, and usage limits** — with three ways in: a **web dashboard**, a **REST API** (860+ endpoints), and **280+ MCP tools** that work from inside Claude itself: a claude.ai conversation, a Cowork session, or a Claude Code session. And it all extends **cross-node and cross-session** across your whole fleet.
 
 [![Discord](https://img.shields.io/discord/1475647234669543558?logo=discord&label=Discord&color=5865F2)](https://discord.gg/xb2BNnk4)
 
-- **Observe** — real-time execution tracking, per-model cost & token breakdown, 15 insight views per session, full-text search
-- **Control** — web terminal from any browser, drive live sessions, start/abort agents, claude.ai/code remote sessions (CCR)
-- **Fleet** — enroll any number of machines, one surface: cross-node sessions, memory & rules sync, transfers, placement
-- **Automate** — mission control, scheduled jobs, auto-resume of stalled sessions, model-limit fallback
-- **Extend** — MCP plugin system with bundled first-party plugins; service connectors for Gmail, LinkedIn, WhatsApp, VMs, containers, and the desktop
+### What's covered
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg" alt="lm-assist architecture" width="700"></a>
+| Claude surface | What lm-assist gives you |
+|---|---|
+| **Claude Code — local sessions** | 15 insight views, live web terminals, per-model costs, drive · resume · abort |
+| **Claude Code — remote & cloud (CCR)** | bridge local sessions to claude.ai/code (load · mirror · connect); start, drive, and stop cloud code sessions |
+| **claude.ai conversations** | list · read · create · rename · fork · token measurement · full-text search across the whole account |
+| **Cowork sessions** | create and track Cowork tasks from any Claude session |
+| **Agent SDK runs** | the same session engine — full inspection of programmatic agents, headless runner included |
+| **Memory & rules** | every project, every machine: search, compare, import; rules auto-converge with per-OS scoping |
+| **MCP connectors & tools** | 280+ tools with per-tool overrides and on/off; automatic connector upkeep on claude.ai |
+| **Usage & limits** | live rate-limit/quota windows (5h · 7d), per-model token & cost breakdown, statusline |
+
+**Everything above is cross-node and cross-session.** Enroll machines with a one-time keypack and every row of that table is reachable from every other machine — and from inside any Claude session: a claude.ai chat can read a code session running on your Windows box, drive a terminal on your Linux server, message another live session, or pull a different project's memory.
+
+### Three doors, one Core
+
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/capability-map.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/capability-map.svg" alt="lm-assist capability map — the Web UI, the MCP connector (the main door, used from claude.ai conversations, Cowork sessions, and local/remote Claude Code sessions), and the Claude Code skills plugin, all over one Core" width="900"></a>
 
 ### Install
 
@@ -35,10 +46,11 @@ npm install -g lm-assist
 
 ## Why lm-assist
 
-Claude Code and the Agent SDK have no built-in dashboard, no fleet story, and no way to reach your sessions when you step away from the terminal. lm-assist is a local service that runs beside Claude Code, reads the session files it already writes, and turns everything into an API, a web UI, and MCP tools — so the visibility and control live wherever you are, including inside a Claude conversation.
+The Claude products don't ship a unified dashboard: Claude Code lives in a terminal, claude.ai conversations in a browser tab, Cowork and cloud sessions in their own views, and the Agent SDK in your logs. lm-assist is a local service that runs beside Claude Code, reads the session files it already writes, proxies the claude.ai surfaces you're signed into, and turns everything into an API, a web UI, and MCP tools — so the visibility and control live wherever you are, including inside a Claude conversation.
 
 | Without lm-assist | With lm-assist |
 |-------------------|---------------|
+| Each Claude surface is its own silo | Code, claude.ai, Cowork, cloud & SDK — one platform |
 | Scroll through terminal output | 15 specialized views per session |
 | No cost visibility | Per-model token & cost breakdown |
 | Can't see what agents are doing | Real-time execution dashboard |
@@ -101,7 +113,11 @@ The Next.js dashboard ships in the package: sessions browser, session detail wit
 
 ---
 
-## Data Sources
+## Architecture & Data Sources
+
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg" alt="lm-assist architecture" width="700"></a>
+
+How the pieces fit in depth: [`docs/how-it-works.md`](./docs/how-it-works.md) · [`docs/architecture.md`](./docs/architecture.md).
 
 lm-assist reads the same JSONL session files regardless of how they were created:
 
@@ -207,8 +223,6 @@ The **observe** skill activates on questions like "what's running and what has i
 All session endpoints support `ifModifiedSince` for efficient polling, and three indexing dimensions: `lineIndex` (JSONL position), `turnIndex` (conversation turn), and `userPromptIndex` (user message count). Full reference: [`docs/api-endpoints.md`](./docs/api-endpoints.md).
 
 ## Examples
-
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/capability-map.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/capability-map.svg" alt="lm-assist capability map — the Web UI, the MCP connector (the main door, used from claude.ai conversations, Cowork sessions, and local/remote Claude Code sessions), and the Claude Code skills plugin, all over one Core" width="900"></a>
 
 Per-use-case walkthroughs with screenshots from a live deployment, in [`examples/`](./examples/):
 [MCP connector install](./examples/mcp-connector-install/) ·
