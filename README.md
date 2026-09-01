@@ -91,6 +91,7 @@ Many machines, one surface. Connect nodes to the optional LangMart Hub and every
 - **MCP connector** — 280+ scope-gated tools inside Claude Code or claude.ai: sessions, search, memory, terminal driving, missions, data, transfers, backups, GitHub, nodes, VMs, containers, desktop automation, and the service connectors below. A `bootstrap` tool teaches a connecting session the whole surface.
 - **Service connectors** driving the operator's own logged-in browser via CDP: **Gmail**, **LinkedIn**, **WhatsApp** — plus **VM management** (Hyper-V/KVM), **container management** (Docker), and **desktop automation** (screenshot, input, OCR, window control)
 - **MCP plugin system** — third-party plugins expose tools as `ext__<plugin>__<tool>` ([contract](./docs/mcp-plugin-contract.md)); first-party plugins ship bundled in the package, seeded and trusted on boot with checksum-pinned payloads
+- **UI panes** — every dashboard is also a standalone page with its own gateway URL, so a Claude session can *show you UI* instead of describing it: ask for the mission graph in a claude.ai chat and get a live link ([example](./examples/ui-panes/)); pages run under per-page API grants and platform SSO
 
 ### Web Dashboard
 

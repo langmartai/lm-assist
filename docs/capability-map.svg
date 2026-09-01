@@ -61,6 +61,7 @@
     <text x="488" y="404">🖥️ VMs · 🐳 containers · 🖱️ desktop · 🐙 GitHub</text>
     <text x="488" y="431">🎙️ voice · 🚚 nodes · clusters · transfers</text>
     <text x="488" y="458">🧩 ext plugins + bundled first-party tools</text>
+    <text x="488" y="485" font-weight="700">🪟 UI panes — hand you a live dashboard URL</text>
   </g>
 
   <!-- ───────────────── Skills card ───────────────── -->

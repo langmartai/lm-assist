@@ -18,6 +18,7 @@ door lives inside the Claude Code terminal. All three land on the same Core.
 | [mcp-connector-install](./mcp-connector-install/) | Put lm-assist's 280+ MCP tools inside Claude Code and claude.ai |
 | [claudeai-browser-auth](./claudeai-browser-auth/) | Give a node a claude.ai browser session — and what lm-assist then automates for the connector |
 | [claudeai-conversation-search](./claudeai-conversation-search/) | Full-text search across ALL your claude.ai conversations |
+| [ui-panes](./ui-panes/) | Claude hands you a live dashboard URL mid-conversation — pluggable UI pages on the gateway |
 | [gmail-connector](./gmail-connector/) | Read and act on Gmail from any Claude session (CDP, your own logged-in browser) |
 | [whatsapp-connector](./whatsapp-connector/) | WhatsApp reads/sends through the connector's own WhatsApp Web tab |
 | [linkedin-connector](./linkedin-connector/) | LinkedIn reads/writes with no personal API — a real driven browser |
