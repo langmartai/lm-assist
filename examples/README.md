@@ -9,7 +9,10 @@ fleet, whether you're in a claude.ai conversation, a Cowork session, or a Claude
 or remote/CCR). The **Web UI** is where you watch and drive things visually; the **skills & plugin**
 door lives inside the Claude Code terminal. All three land on the same Core — and what that Core
 manages is every kind of Claude work: local Claude Code sessions, remote/cloud code sessions (CCR),
-and claude.ai conversations themselves.
+and claude.ai conversations themselves. Inside the MCP door the map separates **core** (everything
+Claude: sessions, conversations, memory, missions, panes, usage) from **extended** (beyond Claude,
+via the ext MCP API: browser-driven connectors like Gmail/LinkedIn/WhatsApp, VMs, containers,
+desktop, data, transfers, plugins).
 
 > **About the screenshots:** they are captured from real accounts on a live deployment, so all
 > personal content (email text, chat names, message previews, account identifiers, keys, internal
