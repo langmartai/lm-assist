@@ -2,6 +2,13 @@
 
 One folder per use case — a walkthrough, the exact commands/tools involved, and screenshots from a real running fleet.
 
+![lm-assist capability map — three doors into one control plane, with the MCP connector as the main door used from claude.ai conversations, Cowork sessions, and local or remote Claude Code sessions](../docs/capability-map.svg)
+
+**How to read it:** the **MCP connector** (center) is the main door — it's how Claude itself uses your
+fleet, whether you're in a claude.ai conversation, a Cowork session, or a Claude Code session (local
+or remote/CCR). The **Web UI** is where you watch and drive things visually; the **skills & plugin**
+door lives inside the Claude Code terminal. All three land on the same Core.
+
 > **About the screenshots:** they are captured from real accounts on a live deployment, so all
 > personal content (email text, chat names, message previews, account identifiers, keys, internal
 > addresses) is deliberately blurred at capture time. The UI chrome is what matters.

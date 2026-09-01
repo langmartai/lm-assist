@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 850" role="img" aria-label="lm-assist capability map: the Web UI, the MCP connector, and the Claude Code skills plugin are three doors into one Core API and its fleet">
+  <title>lm-assist capability map — three doors, one control plane</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="850" fill="#ffffff"/>
+
+  <!-- heading -->
+  <text x="640" y="34" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="21" font-weight="700" fill="#0f172a">One control plane, three doors — pick the door that fits the moment</text>
+
+  <!-- actors -->
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="13.5" fill="#334155" text-anchor="middle">
+    <text x="240" y="66">🧑 you, in a browser — any device, anywhere</text>
+    <text x="640" y="58" font-weight="700" fill="#047857">🤖 Claude working for you — the main use case</text>
+    <text x="640" y="76" font-size="12.5">💬 claude.ai conversation · 👥 Cowork session · 🖥️ Claude Code, local or remote (CCR)</text>
+    <text x="1040" y="66">⌨️ you, in the Claude Code terminal</text>
+  </g>
+  <g stroke="#475569" stroke-width="1.4">
+    <line x1="240" y1="74" x2="240" y2="92" marker-end="url(#arrow)"/>
+    <line x1="640" y1="81" x2="640" y2="92" marker-end="url(#arrow)"/>
+    <line x1="1040" y1="74" x2="1040" y2="92" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- ───────────────── Web UI card ───────────────── -->
+  <rect x="40" y="96" width="400" height="428" rx="12" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.6"/>
+  <text x="64" y="130" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="18" font-weight="700" fill="#1d4ed8">🖥️ Web UI</text>
+  <text x="64" y="150" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#475569">watch and drive everything visually · :3848</text>
+  <line x1="64" y1="162" x2="416" y2="162" stroke="#bfdbfe" stroke-width="1"/>
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#0f172a">
+    <text x="64" y="188">📊 sessions browser — 15 insight views</text>
+    <text x="64" y="215">🕹️ live web terminal (ttyd)</text>
+    <text x="64" y="242">🧭 missions dashboard + graph</text>
+    <text x="64" y="269">🧠 memory &amp; rules pages</text>
+    <text x="64" y="296">🛰️ CCR remote — claude.ai/code parity</text>
+    <text x="64" y="323">⏰ scheduler jobs</text>
+    <text x="64" y="350">🔧 MCP tool registry — override / on-off</text>
+    <text x="64" y="377">🔍 prompt search (bm25, CJK-aware)</text>
+    <text x="64" y="404">📋 tasks kanban · 🗃️ projects</text>
+    <text x="64" y="431">⚙️ settings — connection · LAN · experiments</text>
+  </g>
+
+  <!-- ───────────────── MCP card ───────────────── -->
+  <rect x="464" y="96" width="400" height="428" rx="12" fill="#f0fdf4" stroke="#10b981" stroke-width="3"/>
+  <rect x="744" y="108" width="104" height="24" rx="12" fill="#10b981"/>
+  <text x="796" y="124" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="12" font-weight="700" fill="#ffffff">★ main door</text>
+  <text x="488" y="130" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="18" font-weight="700" fill="#047857">🔌 MCP connector</text>
+  <text x="488" y="150" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#475569">280+ tools Claude can call for you, fleet-wide</text>
+  <line x1="488" y1="162" x2="840" y2="162" stroke="#a7f3d0" stroke-width="1"/>
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#0f172a">
+    <text x="488" y="188">🚀 bootstrap + guide — self-teaching surface</text>
+    <text x="488" y="215">🗂️ sessions · search · memory — cross-host</text>
+    <text x="488" y="242">🕹️ drive live terminals &amp; sessions</text>
+    <text x="488" y="269">🧭 missions + scheduler control</text>
+    <text x="488" y="296">🗄️ data service — cache · vector · sql</text>
+    <text x="488" y="323">💾 backups + claude.ai conversation search</text>
+    <text x="488" y="350">🌐 claude.ai account · conversations · CCR</text>
+    <text x="488" y="377">✉️ Gmail · 💼 LinkedIn · 💬 WhatsApp · 📱 mobile</text>
+    <text x="488" y="404">🖥️ VMs · 🐳 containers · 🖱️ desktop · 🐙 GitHub</text>
+    <text x="488" y="431">🎙️ voice · 🚚 nodes · clusters · transfers</text>
+    <text x="488" y="458">🧩 ext plugins + bundled first-party tools</text>
+  </g>
+
+  <!-- ───────────────── Skills card ───────────────── -->
+  <rect x="888" y="96" width="352" height="428" rx="12" fill="#faf5ff" stroke="#a855f7" stroke-width="1.6"/>
+  <text x="912" y="130" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="18" font-weight="700" fill="#7e22ce">🧩 Skills &amp; plugin</text>
+  <text x="912" y="150" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#475569">slash commands + hooks, right in the terminal</text>
+  <line x1="912" y1="162" x2="1216" y2="162" stroke="#e9d5ff" stroke-width="1"/>
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#0f172a">
+    <text x="912" y="188">⚡ /sessions · /projects · /summary · /run</text>
+    <text x="912" y="215">👁️ observe skill — “what's running? cost?”</text>
+    <text x="912" y="242">🧭 route skill — work goes to the right</text>
+    <text x="912" y="260" fill="#475569" font-size="12.5">     session (stay / resume / queue / new)</text>
+    <text x="912" y="287">🛠️ /assist-setup · /assist-status</text>
+    <text x="912" y="314">🔍 /assist-search — knowledge &amp; prompts</text>
+    <text x="912" y="341">🌐 /web · /web-sessions · /web-tasks</text>
+    <text x="912" y="368">📎 context-inject hook — past learnings</text>
+    <text x="912" y="386" fill="#475569" font-size="12.5">     land in new sessions automatically</text>
+    <text x="912" y="413">📟 statusline — cost · context % · limits</text>
+  </g>
+
+  <!-- arrows into core -->
+  <g stroke="#475569" stroke-width="1.6" fill="none">
+    <line x1="240" y1="524" x2="240" y2="576" marker-end="url(#arrow)"/>
+    <line x1="640" y1="524" x2="640" y2="576" marker-end="url(#arrow)"/>
+    <line x1="1040" y1="524" x2="1040" y2="576" marker-end="url(#arrow)"/>
+  </g>
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" fill="#475569">
+    <text x="250" y="556">REST + SSE</text>
+    <text x="650" y="548">MCP — local (Claude Code)</text>
+    <text x="650" y="562">or via hub (claude.ai)</text>
+    <text x="1050" y="556">loopback REST</text>
+  </g>
+
+  <!-- core bar -->
+  <rect x="40" y="580" width="1200" height="66" rx="12" fill="#f8fafc" stroke="#64748b" stroke-width="1.6"/>
+  <text x="640" y="608" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16.5" font-weight="700" fill="#0f172a">⚙️ lm-assist Core — session engine · 860+ REST endpoints · MCP server · :3100</text>
+  <text x="640" y="630" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="12.5" fill="#475569">reads the session files Claude Code already writes — no external database, no API key required</text>
+
+  <!-- fleet band -->
+  <g stroke="#475569" stroke-width="1.6" fill="none">
+    <line x1="352" y1="646" x2="352" y2="694" marker-end="url(#arrow)"/>
+    <line x1="928" y1="646" x2="928" y2="694" marker-end="url(#arrow)"/>
+  </g>
+  <text x="362" y="676" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" fill="#475569">outbound WebSocket (optional)</text>
+  <text x="938" y="676" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" fill="#475569">local files + processes</text>
+
+  <rect x="40" y="698" width="624" height="110" rx="12" fill="#fffbeb" stroke="#d97706" stroke-width="1.6"/>
+  <text x="64" y="728" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="15.5" font-weight="700" fill="#92400e">🌩️ LangMart Hub — optional fleet relay</text>
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#0f172a">
+    <text x="64" y="754">🔑 one-time keypack enrollment for new machines</text>
+    <text x="64" y="781">🌍 reach every enrolled node from claude.ai or any browser</text>
+  </g>
+
+  <rect x="688" y="698" width="552" height="110" rx="12" fill="#f1f5f9" stroke="#64748b" stroke-width="1.4"/>
+  <text x="712" y="728" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="15.5" font-weight="700" fill="#0f172a">💻 your machines</text>
+  <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#0f172a">
+    <text x="712" y="754">🐧 Linux · 🍎 macOS · 🪟 Windows — one Core per node</text>
+    <text x="712" y="781">📂 sessions · 🧠 memory · 🔗 connector browsers live here</text>
+  </g>
+
+  <line x1="664" y1="753" x2="686" y2="753" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+
+  <text x="640" y="836" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#64748b">Same Core underneath. Most days start at the MCP door — Claude does the work; the Web UI is where you watch, the terminal is where you type.</text>
+</svg>

@@ -207,6 +207,8 @@ All session endpoints support `ifModifiedSince` for efficient polling, and three
 
 ## Examples
 
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/capability-map.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/capability-map.svg" alt="lm-assist capability map — the Web UI, the MCP connector (the main door, used from claude.ai conversations, Cowork sessions, and local/remote Claude Code sessions), and the Claude Code skills plugin, all over one Core" width="900"></a>
+
 Per-use-case walkthroughs with screenshots from a live deployment, in [`examples/`](./examples/):
 [MCP connector install](./examples/mcp-connector-install/) ·
 [claude.ai browser auth + automatic connector upkeep](./examples/claudeai-browser-auth/) ·
