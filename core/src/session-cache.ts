@@ -906,7 +906,9 @@ export class SessionCache {
       if (!updated.claudeCodeVersion && msg.version) {
         updated.claudeCodeVersion = msg.version;
       }
-      if (!updated.attributionAgent && msg.attributionAgent) {
+      // A transcript is parsed content — the value flows into the rendered agent
+      // type, so only a sanely-sized string may ride through.
+      if (!updated.attributionAgent && typeof msg.attributionAgent === 'string' && msg.attributionAgent.length <= 256) {
         updated.attributionAgent = msg.attributionAgent;
       }
       if (!updated.teamName && msg.teamName) {
