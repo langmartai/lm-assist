@@ -33,6 +33,10 @@ Illustrative session:
   Posted as the signed-in account.
 ```
 
+The connector's actual feed (content blurred):
+
+![LinkedIn feed through the connector, content masked](./linkedin-feed-masked.png)
+
 Notes:
 - LinkedIn **virtualizes** its lists: a read captures only what is currently rendered, and results
   accumulate across calls — there is no "fetch history".

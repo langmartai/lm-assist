@@ -186,7 +186,7 @@ export async function gmailLogin(
 
   // Headless MUST carry a normal UA or Google degrades the sign-in flow.
   const extraArgs = headless ? [`--user-agent=${headlessUa()}`] : undefined;
-  const launch = await launchChrome({ userDataDir: profileDir, port, headless, extraArgs });
+  const launch = await launchChrome({ userDataDir: profileDir, port, headless, extraArgs, startUrl: GMAIL_URL });
   if (!launch.ok) {
     return toLoginError(launch);
   }

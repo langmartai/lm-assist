@@ -167,7 +167,7 @@ export async function linkedinLogin(
   const headless = opts.headless ?? false;
   const profileDir = profileDirFor(opts.profile || 'linkedin');
 
-  const launch = await launchChrome({ userDataDir: profileDir, port, headless });
+  const launch = await launchChrome({ userDataDir: profileDir, port, headless, startUrl: LINKEDIN_URL });
   if (!launch.ok) {
     return toLoginError(launch);
   }

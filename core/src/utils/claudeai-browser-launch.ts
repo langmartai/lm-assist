@@ -51,6 +51,13 @@ export interface LaunchOptions {
   port?: number;
   /** Run hidden (no window). Useful for CI; humans want headless=false. */
   headless?: boolean;
+  /**
+   * URL the browser opens on. Defaults to claude.ai (this launcher's original
+   * job). Connectors launching their own persistent-profile browsers pass
+   * their own — a LinkedIn/Gmail login window that first paints claude.ai
+   * reads as the wrong browser to the operator standing at the machine.
+   */
+  startUrl?: string;
   /** Extra browser flags. */
   extraArgs?: string[];
   /**
@@ -61,6 +68,54 @@ export interface LaunchOptions {
    * Defaults to the first available Chromium browser.
    */
   browser?: BrowserKind | 'any-chromium';
+}
+
+/**
+ * Pure arg builder — exported for tests. Ordering is load-bearing and matches
+ * the historical behavior exactly: chromium puts the URL after the flags with
+ * `--headless=new` appended after it, `--profile-directory` unshifted to the
+ * front, and extraArgs always last; firefox pushes `--headless` before the URL.
+ */
+export function buildBrowserArgs(
+  family: 'firefox' | 'chromium',
+  cfg: {
+    port: number;
+    userDataDir: string;
+    profileDirectory?: string;
+    headless?: boolean;
+    startUrl?: string;
+    extraArgs?: string[];
+  },
+): string[] {
+  const startUrl = cfg.startUrl || 'https://claude.ai/';
+  let args: string[];
+  if (family === 'firefox') {
+    // Firefox: --remote-debugging-port is supported but only exposes
+    // WebDriver-BiDi by default. CDP support is partial and varies by
+    // version; many endpoints (Storage.getCookies, Page.addScriptToEvalu-
+    // ateOnNewDocument) are not implemented. Caller should treat this
+    // as best-effort.
+    args = [
+      '--remote-debugging-port', String(cfg.port),
+      '--profile', cfg.userDataDir,
+      '--no-remote',
+    ];
+    if (cfg.headless) args.push('--headless');
+    args.push(startUrl);
+  } else {
+    args = [
+      `--remote-debugging-port=${cfg.port}`,
+      `--user-data-dir=${cfg.userDataDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-features=ChromeWhatsNewUI,PrivacySandboxSettings4',
+      startUrl,
+    ];
+    if (cfg.profileDirectory) args.unshift(`--profile-directory=${cfg.profileDirectory}`);
+    if (cfg.headless) args.push('--headless=new');
+  }
+  if (cfg.extraArgs) args.push(...cfg.extraArgs);
+  return args;
 }
 
 export interface LaunchResult {
@@ -317,33 +372,14 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
   }
 
   // Build args. Chromium and Firefox use different syntaxes.
-  let args: string[];
-  if (browser.family === 'firefox') {
-    // Firefox: --remote-debugging-port is supported but only exposes
-    // WebDriver-BiDi by default. CDP support is partial and varies by
-    // version; many endpoints (Storage.getCookies, Page.addScriptToEvalu-
-    // ateOnNewDocument) are not implemented. Caller should treat this
-    // as best-effort.
-    args = [
-      '--remote-debugging-port', String(port),
-      '--profile', userDataDir,
-      '--no-remote',
-    ];
-    if (opts.headless) args.push('--headless');
-    args.push('https://claude.ai/');
-  } else {
-    args = [
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${userDataDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-features=ChromeWhatsNewUI,PrivacySandboxSettings4',
-      'https://claude.ai/',
-    ];
-    if (profileDirectory) args.unshift(`--profile-directory=${profileDirectory}`);
-    if (opts.headless) args.push('--headless=new');
-  }
-  if (opts.extraArgs) args.push(...opts.extraArgs);
+  const args = buildBrowserArgs(browser.family === 'firefox' ? 'firefox' : 'chromium', {
+    port,
+    userDataDir,
+    profileDirectory: profileDirectory ?? undefined,
+    headless: opts.headless,
+    startUrl: opts.startUrl,
+    extraArgs: opts.extraArgs,
+  });
 
   // GUI mode on Linux needs DISPLAY. lm-assist's daemon process often has
   // no DISPLAY (started before X server / from systemd). If we're going
