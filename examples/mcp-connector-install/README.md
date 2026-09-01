@@ -33,6 +33,12 @@ In any connected conversation, call `bootstrap` once with no arguments. It loads
 of use-case playbooks — what the fleet can do and how — paged so nothing is truncated. From then on
 `guide(topic)` answers "how do I …" questions on demand.
 
+Here it is for real — a claude.ai conversation bootstrapping the connector and reaching sessions
+across three machines in one turn (sidebar masked; note the honest "this tool doesn't report
+running state" caveat — the model reads the playbooks, not marketing):
+
+![A real claude.ai conversation: bootstrap, list_nodes, and per-node session counts across the fleet](./claudeai-bootstrap-masked.png)
+
 ## Managing the surface
 
 The **MCP Tools** page shows every tool the Core exposes — scope badges, per-tool description
