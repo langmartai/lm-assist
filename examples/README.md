@@ -22,6 +22,9 @@ and claude.ai conversations themselves.
 | [claudeai-conversation-search](./claudeai-conversation-search/) | Full-text search across ALL your claude.ai conversations |
 | [ui-panes](./ui-panes/) | Claude hands you a live dashboard URL mid-conversation — pluggable UI pages on the gateway |
 | [cross-node-memory](./cross-node-memory/) | Claude Code memory made one surface across every project and machine — search, compare, import |
+| [backlog-tracking](./backlog-tracking/) | A fleet-synced issue/idea graph with typed edges that sessions and missions both work from |
+| [mission-autopilot](./mission-autopilot/) | Self-driving Claude Code sessions — mission controller, workflows, auto-resume, model-limit fallback |
+| [transfer-and-backup](./transfer-and-backup/) | Resumable cross-node file transfer + searchable backup of every host's Claude state |
 | [gmail-connector](./gmail-connector/) | Read and act on Gmail from any Claude session (CDP, your own logged-in browser) |
 | [whatsapp-connector](./whatsapp-connector/) | WhatsApp reads/sends through the connector's own WhatsApp Web tab |
 | [linkedin-connector](./linkedin-connector/) | LinkedIn reads/writes with no personal API — a real driven browser |

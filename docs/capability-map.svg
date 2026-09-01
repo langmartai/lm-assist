@@ -53,7 +53,7 @@
     <text x="488" y="188">🚀 bootstrap + guide — self-teaching surface</text>
     <text x="488" y="215" font-weight="700">🗂️ sessions — local · remote (CCR) · cloud</text>
     <text x="488" y="242" font-weight="700">🧠 memory &amp; rules — every project, every node</text>
-    <text x="488" y="269">🧭 missions + scheduler control</text>
+    <text x="488" y="269" font-weight="700">🧭 missions · workflows · backlog — self-driving</text>
     <text x="488" y="296">🗄️ data service — cache · vector · sql</text>
     <text x="488" y="323">💾 backups + claude.ai conversation search</text>
     <text x="488" y="350" font-weight="700">🌐 claude.ai conversations — read · rename · fork</text>

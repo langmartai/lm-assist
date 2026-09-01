@@ -94,9 +94,10 @@ Many machines, one surface. Connect nodes to the optional LangMart Hub and every
 
 ### Automate
 
-- **Mission control** — a mission graph with a fleet-elected controller that spawns, watches, and re-engages worker sessions
+- **Mission control** — a mission graph with a fleet-elected controller (itself a Claude session) that spawns, watches, answers, and re-engages worker sessions; workflows make the shapes repeatable
+- **Backlog** — a fleet-synced idea/issue graph (typed items, typed edges: `blocks` · `depends-on` · `parent-of`) that sessions file into and missions work from
 - Scheduled jobs: one-time, recurring, or trigger-only, with full run capture and guard conditions
-- Auto-resume stalled sessions (network failures included); automatic model fallback when a model hits its limit
+- **Resilience** — sessions stalled on server/network errors auto-resume with capped, never-give-up backoff; a session that hits a model's usage limit is switched to a model with headroom (verified against the live status line) instead of idling through the window
 
 ### Extend
 
@@ -230,6 +231,9 @@ Per-use-case walkthroughs with screenshots from a live deployment, in [`examples
 [full claude.ai conversation search](./examples/claudeai-conversation-search/) ·
 [UI panes](./examples/ui-panes/) ·
 [cross-node memory](./examples/cross-node-memory/) ·
+[backlog tracking](./examples/backlog-tracking/) ·
+[mission autopilot](./examples/mission-autopilot/) ·
+[transfer & backup](./examples/transfer-and-backup/) ·
 [Gmail](./examples/gmail-connector/) · [WhatsApp](./examples/whatsapp-connector/) · [LinkedIn](./examples/linkedin-connector/)
 
 | | |
@@ -237,6 +241,7 @@ Per-use-case walkthroughs with screenshots from a live deployment, in [`examples
 | <a href="./examples/ui-panes/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/ui-panes/ui-pane-mission-graph-masked.png" alt="Mission graph pane on its own URL"></a><br><sub>**UI panes** — ask for the mission graph in chat, get a live dashboard URL</sub> | <a href="./examples/gmail-connector/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/gmail-connector/gmail-inbox-masked.png" alt="Gmail through the connector, content masked"></a><br><sub>**Gmail connector** — your own logged-in browser, driven over CDP (content masked)</sub> |
 | <a href="./examples/whatsapp-connector/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/whatsapp-connector/whatsapp-masked.png" alt="WhatsApp Web through the connector, content masked"></a><br><sub>**WhatsApp connector** — reads and sends via the connector's own tab (content masked)</sub> | <a href="./examples/linkedin-connector/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/linkedin-connector/linkedin-feed-masked.png" alt="LinkedIn feed through the connector, content masked"></a><br><sub>**LinkedIn connector** — no personal API exists, so a real browser does the work (content masked)</sub> |
 | <a href="./examples/mcp-connector-install/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/mcp-connector-install/mcp-tools-bootstrap.png" alt="MCP tool registry with bootstrap selected"></a><br><sub>**MCP tools** — 280+ tools, per-tool overrides and on/off, fleet-synced</sub> | <a href="./examples/cross-node-memory/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/cross-node-memory/memory-page-masked.png" alt="Memory page across all projects, content masked"></a><br><sub>**Cross-node memory** — every project's and every machine's Claude memory, one surface</sub> |
+| <a href="./examples/mission-autopilot/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/mission-autopilot/missions-page-masked.png" alt="Missions page with the controller conversation, content masked"></a><br><sub>**Mission autopilot** — a fleet-elected controller drives worker sessions; auto-resume + model-limit fallback underneath</sub> | <a href="./examples/backlog-tracking/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/backlog-tracking/backlog-page-masked.png" alt="Backlog graph with typed edges, content masked"></a><br><sub>**Backlog** — a fleet-synced issue/idea graph sessions and missions both work from</sub> |
 
 ## Documentation
 
