@@ -63,7 +63,7 @@ Real-time tracking of every session, from every source.
 
 ### Control
 
-Your sessions, reachable from anywhere.
+Your sessions, reachable from anywhere — and *session* means all three kinds of Claude work: **local Claude Code sessions**, **remote/cloud code sessions (CCR)**, and **claude.ai conversations** (list, read, create, rename, fork, measure tokens).
 
 - Web terminal (ttyd) from any browser; drive a live session's prompt from the API or from Claude itself
 - Start, resume, and abort agent executions; SDK runner for headless programmatic runs

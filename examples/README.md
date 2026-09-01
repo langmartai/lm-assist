@@ -7,7 +7,9 @@ One folder per use case — a walkthrough, the exact commands/tools involved, an
 **How to read it:** the **MCP connector** (center) is the main door — it's how Claude itself uses your
 fleet, whether you're in a claude.ai conversation, a Cowork session, or a Claude Code session (local
 or remote/CCR). The **Web UI** is where you watch and drive things visually; the **skills & plugin**
-door lives inside the Claude Code terminal. All three land on the same Core.
+door lives inside the Claude Code terminal. All three land on the same Core — and what that Core
+manages is every kind of Claude work: local Claude Code sessions, remote/cloud code sessions (CCR),
+and claude.ai conversations themselves.
 
 > **About the screenshots:** they are captured from real accounts on a live deployment, so all
 > personal content (email text, chat names, message previews, account identifiers, keys, internal
