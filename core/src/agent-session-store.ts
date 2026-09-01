@@ -4400,7 +4400,12 @@ export class AgentSessionStore extends EventEmitter {
       parentSessionId,
       parentUuid: parentUuid || undefined,
       cwd: agentCwd || cacheData.cwd,
-      type: 'general-purpose' as SubagentType,  // Default, could be extracted from parent session
+      // The agent type comes from `attributionAgent` (e.g. `my-plugin:oracle`), which Claude
+      // Code stamps on the transcript's assistant lines — the first line is a `user` line and
+      // never carries it. For agents spawned without a Task invocation (compact,
+      // prompt_suggestion, aside_question) this is the only source; where an invocation does
+      // exist, getSessionSubagents() prefers its `subagent_type`.
+      type: (cacheData.attributionAgent || 'general-purpose') as SubagentType,
       prompt,
       status,
       numTurns: cacheData.numTurns,
@@ -4602,6 +4607,13 @@ export class AgentSessionStore extends EventEmitter {
           // Copy parentUuid from invocation to session (for chat timeline positioning)
           if (invocation.parentUuid && !session.parentUuid) {
             session.parentUuid = invocation.parentUuid;
+          }
+          // The Task tool's `subagent_type` argument is the authoritative type, so it wins
+          // over the type the session resolved from `attributionAgent`. A bare
+          // 'general-purpose' is the invocation's own fallback rather than a stated type,
+          // and defers to the attribution-derived one.
+          if (invocation.type && invocation.type !== 'general-purpose') {
+            session.type = invocation.type;
           }
         }
       }
