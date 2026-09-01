@@ -91,7 +91,7 @@ Recover if Core won't boot with `ERR_REQUIRE_ESM`:
 2. `core` is a workspace — a nested `core/node_modules/chokidar@5` wins resolution from `core/dist`. Remove it so it hoists to root v3: `rm -rf core/node_modules/chokidar`.
 3. Verify: `node -e "const p=require.resolve('chokidar',{paths:['./core/dist']}); require(p); console.log(require(p.replace(/index\.js$/,'package.json')).version)"` → prints `3.6.0`, no throw.
 
-**⚠️ Upgrade hazard:** `lm-assist upgrade` / `npm install -g lm-assist@latest` reinstalls from npm. Until a version carrying `chokidar: ^3.6.0` is **published to npm** (npm `latest` still ships `^5.0.0`), every upgrade RE-BREAKS startup and needs the recovery above. A build/install from this repo is fine (pin committed here).
+**⚠️ Upgrade hazard (RESOLVED 2026-09-01):** npm `latest` (≥0.2.0) now carries `chokidar: ^3.6.0`, so `lm-assist upgrade` / `npm install -g lm-assist@latest` no longer breaks boot. Installing a version **≤0.1.70** still ships `^5.0.0` and needs the recovery above. A build/install from this repo is always fine (pin committed here).
 
 ### Agent SDK (`@anthropic-ai/claude-agent-sdk`) is ESM-only — `import()` must survive tsc
 

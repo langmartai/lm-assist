@@ -17,8 +17,8 @@ code + the fleet operational learnings. Companion to `CLAUDE.md` (## Development
 | **Action** | BUILD (tsc→`core/dist` + `next build`) · PACK (`npm pack`→tgz) · INSTALL (fresh) · UPGRADE (replace) | **DEPLOY** = push new code onto an *existing* install (the ops path = **dist-sync**, NOT a reinstall) |
 
 **Three load-bearing facts:**
-1. **npm `latest` = 0.1.70** (ancient + chokidar-broken). **The whole fleet runs LOCAL builds, never npm.** So `lm-assist upgrade` (no flag) is a **trap** — it pulls 0.1.70 and re-breaks boot.
-2. **chokidar must stay `^3.6.0`** (v4/v5 are ESM-only → `ERR_REQUIRE_ESM` → Core never binds `:3100/:3200`). The repo + every `npm pack` tgz carry the pin; only `npm i -g lm-assist@latest` ships the broken `^5`.
+1. **npm `latest` = 0.2.0** (published 2026-09-01, chokidar-pinned) — plain `lm-assist upgrade` is **safe again**. One nuance survives: local builds can run AHEAD of npm, and `upgrade.js` has no downgrade guard, so a no-flag upgrade would replace a newer local build with npm's older one — use `--from <tgz>` for local builds.
+2. **chokidar must stay `^3.6.0`** (v4/v5 are ESM-only → `ERR_REQUIRE_ESM` → Core never binds `:3100/:3200`). The repo + every `npm pack` tgz + npm ≥0.2.0 carry the pin; only installs of **≤0.1.70** ship the broken `^5`.
 3. **Three version files must stay in sync** for a release: `package.json`, `.claude-plugin/plugin.json`, and the **lm-assist entry** in `.claude-plugin/marketplace.json` (that file also lists `claude-code-multisession` + `claude-code-webui` — different projects, ignore them). Currently all three = **0.1.133**.
 
 Always run `npm` from the **repo ROOT** — installing inside `core/`/`web/` nests a `node_modules` that shadows the chokidar hoist. Node **≥20.9** required (Next 16 build dies on 18).
@@ -81,8 +81,8 @@ lm-assist start
 curl -s localhost:3100/health     # "runningFrom":"npm"
 ```
 
-### 3c. From npm — **don't (currently)**
-`npm i -g lm-assist@latest` → **0.1.70**, chokidar-broken (`ERR_REQUIRE_ESM`). The fleet never uses this until a fixed version is published.
+### 3c. From npm — **fine as of 0.2.0**
+`npm i -g lm-assist@latest` → **0.2.0** (published 2026-09-01), chokidar-pinned, boots clean. Only explicitly installing a version **≤0.1.70** still hits `ERR_REQUIRE_ESM`.
 
 ### 3d. Join the fleet (enrollment) + hub — separate, user-confirmed
 ```bash
@@ -99,7 +99,7 @@ lm-assist setup --key <KEY>         # default hubUrl wss://assist-api.langmart.a
 ## 4. UPGRADE (replace an existing install)
 
 ### 4a. CLI — `lm-assist upgrade [--from <spec>]`
-- `lm-assist upgrade` → npm `latest` (= **0.1.70 → AVOID**).
+- `lm-assist upgrade` → npm `latest` (= **0.2.0** as of 2026-09-01 — safe; note it will replace a NEWER local build, no downgrade guard).
 - `lm-assist upgrade --from <spec>` → a chosen build. Runs **synchronously** (foreground, live output); copies `upgrade.js` to tmpdir first (Windows EBUSY).
 - **`--from` spec forms** (`resolveSource()`): local `.tgz`/`.tar.gz` path · unpacked dir · bare version `0.1.134` (→ `lm-assist@0.1.134`) · `github:org/repo#ref` · release URL · omitted/`latest` = published.
 
@@ -144,7 +144,12 @@ Build standalone (Node 20, `NEXT_PUBLIC_LOCAL_API_PORT=<port> next build`) → *
 
 ---
 
-## 6. Current fleet state (2026-07-01) + how to make it clean
+## 6. Current fleet state (2026-07-01 snapshot) + how to make it clean
+
+> **UPDATE 2026-09-01:** v0.2.0 is published to npm and as a GitHub Release
+> (`releases/download/v0.2.0/lm-assist-0.2.0.tgz`); the three version files = 0.2.0.
+> The snapshot below describes 2026-07-01; the clean-up recipe still applies — run it
+> with 0.2.0.
 
 - **`main` = `e7ccc5e`** (pushed to origin). 3 version files = **0.1.133**. **npm latest = 0.1.70; 0.1.133 is NOT on npm.**
 - Fleet **runs `e7ccc5e` dist** (verified by marker) on these BASE npm-installs: **117 = 0.1.133, 123/107 = 0.1.127** → `lm-assist version` **misreports** (says 0.1.133/0.1.127; actually runs `e7ccc5e`). `install-source.json`: 117 `published@0.1.133` (really a local build — the label is misleading), 107 `published@0.1.126`, 123 absent.
@@ -159,7 +164,7 @@ Build standalone (Node 20, `NEXT_PUBLIC_LOCAL_API_PORT=<port> next build`) → *
 ---
 
 ## Gotchas index
-- **chokidar `^3.6.0`** only (v4/v5 ESM → `ERR_REQUIRE_ESM`); `npm i -g …@latest` re-breaks it.
+- **chokidar `^3.6.0`** only (v4/v5 ESM → `ERR_REQUIRE_ESM`); fixed on npm as of 0.2.0 — only ≤0.1.70 installs re-break it.
 - **Agent SDK** dynamic `import()` must survive tsc (`new Function('m','return import(m)')`).
 - Run `npm` from **repo root**; Node **≥20.9**.
 - **`taskkill` hangs** on Windows over SSH → `process.kill` / `Stop-Process`.
