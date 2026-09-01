@@ -1,6 +1,6 @@
 # lm-assist
 
-Monorepo for the LM Assistant — a web UI for managing Claude Code sessions, with a backend API for session management, knowledge, and hub connectivity.
+Monorepo for the LM Assistant — a self-hosted control plane for Claude Code: session observability and control (web UI + REST API), fleet connectivity over the hub, an MCP server exposing the whole surface inside Claude sessions, missions/automation, cross-host memory, and service connectors.
 
 > **This file is an INDEX.** It carries only what bites you when you are not thinking about it;
 > everything else lives in a topic file below and is read on demand.

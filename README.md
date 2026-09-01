@@ -1,16 +1,18 @@
 # lm-assist
 
-## The Observability Platform for Claude Code & Agent SDK
+## The Self-Hosted Control Plane for Claude Code
 
-Monitor, debug, and control AI coding agents with full session visibility, real-time execution tracking, and 155+ REST API endpoints.
+Observe, control, automate, and extend Claude Code — on one machine or across your whole fleet. Full session visibility, a web dashboard, 860+ REST endpoints, and 280+ MCP tools that put every capability inside Claude Code and claude.ai itself.
 
 [![Discord](https://img.shields.io/discord/1475647234669543558?logo=discord&label=Discord&color=5865F2)](https://discord.gg/xb2BNnk4)
 
-- **Monitor** — real-time execution tracking, per-model cost & token breakdown, SSE event stream
-- **Debug** — 15 insight views per session: Chat, Thinking, Agents, Plans, Team, DAG, Files, Git & more
-- **Control** — web terminal from any browser, start/abort agents via API, remote access from anywhere
+- **Observe** — real-time execution tracking, per-model cost & token breakdown, 15 insight views per session, full-text search
+- **Control** — web terminal from any browser, drive live sessions, start/abort agents, claude.ai/code remote sessions (CCR)
+- **Fleet** — enroll any number of machines, one surface: cross-node sessions, memory & rules sync, transfers, placement
+- **Automate** — mission control, scheduled jobs, auto-resume of stalled sessions, model-limit fallback
+- **Extend** — MCP plugin system with bundled first-party plugins; service connectors for Gmail, LinkedIn, WhatsApp, VMs, containers, and the desktop
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg" alt="lm-assist Architecture — Observability Platform for Claude Code & Agent SDK" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg" alt="lm-assist architecture" width="700"></a>
 
 ### Install
 
@@ -21,68 +23,78 @@ Monitor, debug, and control AI coding agents with full session visibility, real-
 
 Then **open a new Claude Code session** and run `/assist-setup`.
 
+Or directly from npm:
+
+```bash
+npm install -g lm-assist
+```
+
 > **Read:** [Inside Claude Code: The Session File Format and How to Inspect It](https://databunny.medium.com/inside-claude-code-the-session-file-format-and-how-to-inspect-it-b9998e66d56b) — technical breakdown of the JSONL session format, message types, subagent trees, and how lm-assist surfaces it all.
 
 ---
 
 ## Why lm-assist
 
-Claude Code and the Agent SDK have no built-in dashboard. You get a terminal or logs. When you're running multiple agents, debugging a failed execution, or tracking costs across a fleet of machines — you need full visibility into every session, every subagent, every tool call, every token spent.
+Claude Code and the Agent SDK have no built-in dashboard, no fleet story, and no way to reach your sessions when you step away from the terminal. lm-assist is a local service that runs beside Claude Code, reads the session files it already writes, and turns everything into an API, a web UI, and MCP tools — so the visibility and control live wherever you are, including inside a Claude conversation.
 
 | Without lm-assist | With lm-assist |
 |-------------------|---------------|
 | Scroll through terminal output | 15 specialized views per session |
 | No cost visibility | Per-model token & cost breakdown |
 | Can't see what agents are doing | Real-time execution dashboard |
-| No way to inspect subagent trees | Full DAG visualization |
-| Terminal-only access | Web UI from any device, anywhere |
-| Agent SDK runs are black boxes | Same session inspection as CLI |
+| One machine at a time | Enrolled fleet, one surface for all nodes |
+| Sessions end when you walk away | Auto-resume, scheduling, mission control |
+| Claude can't act on your infrastructure | 280+ MCP tools inside Claude Code & claude.ai |
 
 ---
 
-## Three Pillars
+## What It Does
 
-### 1. Monitor
+### Observe
 
-Real-time execution tracking via REST API.
+Real-time tracking of every session, from every source.
 
-- Session list with slug names, live status, running process detection
-- Per-session and per-project cost tracking with per-model token breakdown
-- SSE event stream for real-time updates (`GET /stream`)
-- Multi-machine fleet dashboard via LangMart Hub
-- Statusline: context %, rate limits (5h/7d), cost, RAM, PID
+- Session list with live status and running-process detection; per-session and per-project cost tracking with per-model token breakdown
+- 15 insight views per session: Chat, Thinking, Agents, Plans, Team, DAG, Files, Git & more; full subagent trees
+- Real full-text search over your prompt history (bm25/FTS5, CJK-aware) plus vector search
+- SSE event stream for live updates; statusline with context %, rate limits, cost
 
-**Key endpoints:** `GET /monitor/executions` · `GET /stream` · `GET /sessions` · `GET /projects/sessions`
+**Key endpoints:** `GET /monitor/executions` · `GET /stream` · `GET /sessions` · `GET /sessions/:id/dag` · `GET /search`
 
-### 2. Debug
+### Control
 
-15 data dimensions per session, all accessible via API.
+Your sessions, reachable from anywhere.
 
-- Conversation, thinking blocks, tool calls, subagent hierarchy, DAG
-- File changes, git operations, plans, tasks, team coordination
-- Fork tracking, session summaries, skill traces
+- Web terminal (ttyd) from any browser; drive a live session's prompt from the API or from Claude itself
+- Start, resume, and abort agent executions; SDK runner for headless programmatic runs
+- **CCR** — bridge a local Claude Code session to claude.ai/code and operate it from the claude.ai UI: read-only replay, one-way mirror, or full two-way drive behind a safety gate
+- Proxied Claude Code OAuth surface (14 endpoints) and claude.ai web-session surface (28 endpoints) — see [`docs/claude-code-routes.md`](./docs/claude-code-routes.md) and [`docs/claude-ai-routes.md`](./docs/claude-ai-routes.md)
+- **Voice** — talk to a claude.ai conversation from the browser, with selectable voices
 
-**Key endpoints:** `GET /sessions/:id` · `GET /sessions/:id/dag` · `GET /sessions/:id/subagents` · `GET /sessions/:id/conversation`
+### Fleet
 
-### 3. Control
+Many machines, one surface. Connect nodes to the optional LangMart Hub and every enrolled machine's sessions, memory, and tools are reachable from anywhere — including from a claude.ai conversation.
 
-Full runtime management API.
+- One-time keypack enrollment for fresh nodes (`lm-assist login <keypack>`)
+- Node clusters, selection profiles, placement, per-node build/upgrade tracking
+- Cross-node data service (cache / vector / sql) with access keys and sync; resumable bulk file transfer; direct port-forwarding
+- Memory and rules that follow you across hosts: auto-converging user rules (per-OS scoping) and cross-host memory search
 
-- Start and abort agent executions
-- SDK runner for programmatic headless execution
-- Session cache warm/clear
-- Web terminal (ttyd) from any browser
-- Remote access via LangMart Hub
+### Automate
 
-**Claude Code OAuth (14 endpoints)** — proxies `api.anthropic.com` using Claude Code's OAuth token from `~/.claude/.credentials.json`. See [`docs/claude-code-routes.md`](./docs/claude-code-routes.md) for the full per-endpoint reference. Quick map: `/claude-code/{oauth-status, usage, profile, roles, account-settings, cli-bootstrap, grove, penguin, policy-limits, settings, user-settings, team-memory, mcp-servers, mcp-registry}`.
+- **Mission control** — a mission graph with a fleet-elected controller that spawns, watches, and re-engages worker sessions
+- Scheduled jobs: one-time, recurring, or trigger-only, with full run capture and guard conditions
+- Auto-resume stalled sessions (network failures included); automatic model fallback when a model hits its limit
 
-**claude.ai web-session (28 endpoints)** — proxies claude.ai's web backend via a cookie file OR a real Chrome tab through MCP. See [`docs/claude-ai-routes.md`](./docs/claude-ai-routes.md) for both paths, the health-check interface, and the via-chrome agent loop pattern. Quick map: `/claude-ai/{healthz, account-profile, conversations[/:uuid[/{completion,title}]], projects, memory, bootstrap, artifacts/:uuid/versions, org, org/{subscription, usage, skills, mcp-bootstrap, styles, model-config/:model, memory-settings, cowork-settings, sync-settings, sync/gdrive-progress, notifications}, account/invites, user-access, sessions-active}` · `POST /claude-ai/via-chrome[/...]`.
+### Extend
 
-**Other key endpoints:** `POST /monitor/abort/:executionId` · `POST /ttyd/start` · `POST /agent/execute` · `POST /agent/session/:sessionId/resume` · `POST /hub/connect`
+- **MCP connector** — 280+ scope-gated tools inside Claude Code or claude.ai: sessions, search, memory, terminal driving, missions, data, transfers, backups, GitHub, nodes, VMs, containers, desktop automation, and the service connectors below. A `bootstrap` tool teaches a connecting session the whole surface.
+- **Service connectors** driving the operator's own logged-in browser via CDP: **Gmail**, **LinkedIn**, **WhatsApp** — plus **VM management** (Hyper-V/KVM), **container management** (Docker), and **desktop automation** (screenshot, input, OCR, window control)
+- **MCP plugin system** — third-party plugins expose tools as `ext__<plugin>__<tool>` ([contract](./docs/mcp-plugin-contract.md)); first-party plugins ship bundled in the package, seeded and trusted on boot with checksum-pinned payloads
 
 ### Web Dashboard
 
-See [claude-code-webui](https://github.com/langmartai/claude-code-webui) for the full web dashboard with 15 insight tabs, web terminal, task kanban, and mobile support.
+The Next.js dashboard ships in the package: sessions browser, session detail with all insight views, live terminal, missions, memory & rules, CCR remote, scheduler, MCP tool registry, settings. Pluggable UI panes let additional pages be served through the hub gateway.
 
 <a href="https://langmart.ai/images/assist/session-browser.png"><img src="https://langmart.ai/images/assist/session-browser.png" alt="Session Browser" width="700"></a>
 
@@ -101,8 +113,6 @@ lm-assist reads the same JSONL session files regardless of how they were created
 
 ---
 
----
-
 ## Install
 
 ### Quick start
@@ -111,9 +121,7 @@ lm-assist reads the same JSONL session files regardless of how they were created
 npm install -g lm-assist
 ```
 
-The postinstall script automatically starts services, installs the statusline, and installs the [Claude Code Multisession](https://github.com/langmartai/claude-code-multisession) plugin.
-
-**Open a new Claude Code session** and type `/sessions` to verify.
+The postinstall script starts the services, installs the statusline, and installs the [Claude Code Multisession](https://github.com/langmartai/claude-code-multisession) plugin. **Open a new Claude Code session** and type `/sessions` to verify.
 
 ### Plugin marketplace
 
@@ -123,313 +131,83 @@ Add the marketplace once — then install any combination of plugins:
 /plugin marketplace add langmartai/lm-assist
 ```
 
-Three packages work together:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  claude-code-multisession          (Claude Code plugin) │
-│  Skills: observe, route                                 │
-│  Commands: /projects /sessions /summary /run            │
-├─────────────────────────────────────────────────────────┤
-│  claude-code-webui                 (Claude Code plugin) │
-│  Skill: dashboard                                       │
-│  Commands: /web /web-sessions /web-tasks                │
-├─────────────────────────────────────────────────────────┤
-│  lm-assist                              (npm package)   │
-│  Foundation: 155+ API endpoints, Next.js web dashboard, │
-│  session engine, cost tracking, statusline              │
-│  Commands: /assist /assist-setup /assist-status ...     │
-└─────────────────────────────────────────────────────────┘
-```
-
-**lm-assist** is the foundation — the API server and web dashboard that powers everything. The plugins add skills and commands on top.
-
 | Install command | Layer | What you get |
 |----------------|-------|-------------|
-| `npm install -g lm-assist` | Foundation | API server (:3100), web dashboard (:3848), statusline, 155+ endpoints |
+| `npm install -g lm-assist` | Foundation | Core API (:3100), web dashboard (:3848), MCP server, statusline |
+| `/plugin install lm-assist@langmartai` | Setup & diagnostics | `/assist-setup` `/assist-status` `/assist-search` `/assist-logs` |
 | `/plugin install claude-code-multisession@langmartai` | Skills | observe + route skills, `/projects` `/sessions` `/summary` `/run` |
 | `/plugin install claude-code-webui@langmartai` | Web access | dashboard skill, `/web` `/web-sessions` `/web-tasks` |
-| `/plugin install lm-assist@langmartai` | Setup & diagnostics | `/assist-setup` `/assist-status` `/assist-search` `/assist-logs` |
 
-Install all three for the full experience, or pick what you need.
+**lm-assist** is the foundation — the API server, MCP server, and web dashboard that power everything. The plugins add skills and commands on top. Install all of them for the full experience, or pick what you need.
 
 ### Install from source
 
 ```bash
 git clone https://github.com/langmartai/lm-assist.git
 cd lm-assist
-npm install && npm run build
+npm install --ignore-scripts && npm run build
 ./core.sh start
 ```
 
-Then in Claude Code: `/plugin install .`
+Full build/pack/install/upgrade/deploy reference: [`docs/build-pack-install-upgrade.md`](./docs/build-pack-install-upgrade.md).
+
+### Join a fleet
+
+```bash
+lm-assist login --new-node     # on an enrolled node: mint a one-time keypack
+lm-assist login <lmkp_…>       # on the fresh node: redeem it
+```
 
 ## Services
 
 | Service | Port | Description |
 |---------|------|-------------|
-| Core API | 3100 | REST API — sessions, monitor, agents, tasks, knowledge |
-| Web UI | 3848 | Next.js dashboard — 15 insight tabs, terminal, settings |
+| Core API | 3100 | REST API — sessions, monitor, agents, missions, memory, connectors |
+| Web UI | 3848 | Next.js dashboard — insight views, terminal, missions, settings |
 
 ```bash
 lm-assist start       # Start both services
 lm-assist stop        # Stop all services
 lm-assist status      # Health check + process info
-lm-assist upgrade     # Upgrade to latest version
+lm-assist upgrade     # Upgrade to the latest published version
 ```
 
 ## Skills & Commands
 
-Skills and commands are provided by the [Claude Code Multisession](https://github.com/langmartai/claude-code-multisession) plugin — installed automatically via `/assist-setup`.
-
-### Skills (auto-triggered via Claude Code Multisession)
-
-Skills activate automatically when Claude detects relevant intent — no slash command needed.
-
-| Skill | Triggers on | What it does |
-|-------|------------|--------------|
-| **observe** | "what's running?", "session costs", "show subagents", "run this on project X" | Full observability — monitor sessions, debug agents, control executions, manage summaries |
-| **route** | Prompt mentions another project's features or codebase | Cross-project routing — evaluates whether to stay, resume, fork, queue, or start new |
-
-### Commands
+Provided by the plugins above — auto-installed via `/assist-setup`.
 
 | Command | Description |
 |---------|-------------|
 | `/sessions` | Session list with costs, turns, running status |
-| `/summary` | Summarize current session, generate display name, record learning |
+| `/summary` | Summarize the current session, generate a display name |
 | `/run <prompt>` | Execute an agent with pre-flight checks |
 | `/assist` | Open the web UI in your browser |
 | `/assist-status` | Show status of all components |
 | `/assist-setup` | Start services and verify integrations |
-| `/assist-search` | Search the knowledge base |
-| `/assist-logs` | View context-inject hook logs |
-| `/assist-mcp-logs` | View MCP tool call logs |
+| `/assist-search` | Search prompts & knowledge |
 
-### Use Cases with Examples
-
-**"What sessions are running and how much have they cost?"**
-```
-> /sessions
-Sessions (3 running, 415 total)
-───────────────────────────────────────────────────────────────────────
-Status  Name                         Project            Model      Cost  Turns
-───────────────────────────────────────────────────────────────────────
-[RUN]   observability-platform-build  lm-assist          opus    $307.66  1462
-[RUN]   trade-delta-analysis          my-trading-app   opus    $153.20   822
-[RUN]   anti-kelly-system             my-trading-app   opus     $35.49   433
-        two-track-dashboard           my-trading-app   opus    $107.43   516
-        skill-validation-test         lm-assist          opus      $0.63    11
-───────────────────────────────────────────────────────────────────────
-Total cost: $604.41
-```
-
-**"Summarize what this session has been doing"**
-```
-> /summary
-Session Summary
-═══════════════
-Name:    observability-platform-build
-Project: lm-assist
-Turns:   1462 | Cost: $307.66
-Status:  in progress
-
-What this session is about:
-  Building the lm-assist observability platform — session summaries,
-  cross-project routing, prompt queue, auto-learning.
-
-What was accomplished:
-  • Session slug/customTitle parsing from Claude Code JSONL
-  • Knowledge system kill switch (saves ~100MB)
-  • Observability skill + routing skill + 3 new commands
-  • Persistent session summaries with delta tracking
-  • Universal prompt queue with source/target context
-  • Auto-learning signals that evolve routing over time
-```
-
-**"Fix the delta analysis bug in the trading pipeline"**
-
-The route skill auto-detects this belongs to another project:
-```
-This task appears to belong to my-trading-app, not the current project.
-
-Relevant session found: trade-delta-analysis
-Summary: Implemented delta analysis mode for /analyze command...
-Status: idle (not running)
-
-Recommendation: RESUME
-Reason: This session built all existing delta modes and knows the spec,
-flag table, and pre-launch copy patterns.
-
-To resume:  claude --resume def67890-session-id
-```
-
-**"Run a security review on this project"**
-```
-> /run review all API endpoints for security vulnerabilities
-Checking running executions... OK: none running.
-
-Execution started: agent-1774468578687-1p2cnh
-  Session: nifty-wishing-boole
-  Status: running
-  Monitor with: /sessions
-  Web UI: http://localhost:3848
-```
-
-**"What's the cost breakdown by project?"**
-
-The observe skill activates:
-```
-Project costs:
-  lm-assist              $308.29  (80 sessions)
-  my-trading-app       $892.15  (440 sessions)
-  my-web-platform          $45.20  (12 sessions)
-  my-agent-framework              $23.50  (15 sessions)
-```
-
-### Session Intelligence
-
-lm-assist learns from every interaction to route prompts smarter over time:
-
-- **Session summaries** — LLM-generated descriptions stored with delta tracking. Updated incrementally as sessions grow.
-- **Project summaries** — Comprehensive reference generated by agents that explore each project's CLAUDE.md, scripts, configs, and codebase.
-- **Prompt queue** — When a session is busy, new work is queued with full context (original intent, formatted prompt, routing reason, context hint).
-- **Auto-learning** — Keywords, commands, and routing patterns accumulate with frequency counts. After a few interactions, routing skips deep scans entirely.
-
-```
-Learning context for my-trading-app:
-  Frequently mentioned: delta analysis(3x), anti-kelly(2x), regime analysis(1x)
-  Areas worked in: analysis pipeline(1x)
-  Routing patterns: delta analysis → trade-delta-analysis session
-```
-
-### Multi-Project Concurrent Development
-
-lm-assist shines when you're working across multiple projects simultaneously. The routing skill, session summaries, and prompt queue work together to keep context organized.
-
-**Scenario: You're building lm-assist while also maintaining a trading platform and a web gateway.**
-
-**1. Start your day — see everything at a glance:**
-```
-> /sessions
-Sessions (5 running, 547 total)
-───────────────────────────────────────────────────────────────────
-Status  Name                         Project            Model      Cost  Turns
-───────────────────────────────────────────────────────────────────
-[RUN]   observability-platform-build  lm-assist          opus    $355.84  1573
-[RUN]   trade-delta-analysis          my-trading-app   opus    $153.20   843
-[RUN]   anti-kelly-system             my-trading-app   opus     $35.49   433
-        two-track-dashboard           my-trading-app   opus    $107.43   516
-        gateway-ssl-upgrade           my-web-platform     opus     $12.30    85
-───────────────────────────────────────────────────────────────────
-Total cost: $664.26
-```
-
-**2. You're in lm-assist and say "fix the regime analysis stale data bug"**
-
-The route skill detects this belongs to another project:
-```
-This task belongs to my-trading-app (regime analysis is part of the trading pipeline).
-
-Relevant session: trade-delta-analysis
-Summary: Implemented delta analysis mode for /analyze. Knows all delta
-patterns, flag tables, and pre-launch copy rules.
-Status: running (T:843, $153.20)
-
-Recommendation: QUEUE (session is running)
-Queued as high priority. Will process when current work completes.
-
-Queue for trade-delta-analysis (2 pending):
-  [high]   fix the regime analysis stale data bug
-  [normal] add S/R interaction delta mode
-```
-
-**3. Back in lm-assist, you say "add error handling to the learning store"**
-
-The route skill checks the current session summary:
-```
-STAY — "learning store" matches current session work (observability-platform-build).
-The session summary mentions auto-learning, learning signals, and learning store.
-```
-No routing. Work continues in the current session.
-
-**4. You say "the gateway SSL cert is expiring, renew it on SG"**
-
-The route skill identifies this as a simple remote operation:
-```
-This involves my-web-platform (gateway) on the SG server.
-But it's a simple operations task — can handle from here via SSH.
-
-Running: ssh user@prod-server 'sudo certbot renew'
-```
-No project switch needed.
-
-**5. You say "deploy the trading dashboard changes to production"**
-
-Route skill identifies the target:
-```
-This belongs to my-trading-app (trading dashboard).
-
-Relevant session: two-track-dashboard (completed, 516 turns)
-Summary: Built two-track cross-product trading dashboard with spread
-and cross-product opportunity tables.
-
-Recommendation: RESUME
-Reason: This session built the dashboard and knows the deployment process.
-
-To resume: claude --resume abc12345-session-id
-```
-
-**6. End of day — summarize what happened:**
-```
-> /summary
-Session Summary: observability-platform-build
-  Today: added error handling to learning store, fixed 3 bugs,
-  queued 2 tasks for trade-delta-analysis, deployed gateway cert.
-
-> /sessions my-trading-app
-  trade-delta-analysis: processed 2 queued prompts (regime fix, S/R delta)
-  two-track-dashboard: deployed to production
-  anti-kelly-system: idle since yesterday
-```
-
-**Key patterns for multi-project work:**
-
-| Situation | What happens |
-|-----------|-------------|
-| Task for current project | Route skill says STAY — no context switch |
-| Task for another project, relevant session running | QUEUE — prompt waits, processes when session is free |
-| Task for another project, session idle | RESUME — switch to that session with full context |
-| Simple cross-project operation (ssh, curl, read) | Handle locally — no project switch |
-| Task for unknown project | Route skill asks for clarification |
-| Same task mentioned again | Learning signals shortcut the routing — instant match |
-
-**How learning makes it faster over time:**
-
-First time: "fix delta analysis" → scan all project summaries → find my-trading-app → 4 API calls
-
-After learning: "fix delta analysis" → signal says `delta analysis(5x) → my-trading-app` → 1 API call
-
-The more you work across projects, the smarter routing gets. Keywords, commands, and routing patterns accumulate automatically.
+The **observe** skill activates on questions like "what's running and what has it cost?"; the **route** skill detects when a prompt belongs to another project and recommends stay / resume / queue / new — and both learn from your usage over time (session summaries, prompt queue, routing signals).
 
 ---
 
-## Key API Endpoints
+## API Surface
 
-| Category | Endpoints | Highlights |
-|----------|-----------|------------|
-| **Sessions** | 27 | List, detail, delta fetch, batch-check, conversation, subagents, forks, DAG |
-| **Monitor** | 6 | Running executions, summary, abort, SSE stream |
-| **Projects** | 12 | List projects, sessions per project, git info, worktree detection, costs |
-| **Terminal** | 13 | ttyd start/stop/status, WebSocket proxy, tmux attach |
-| **Tasks** | 22 | Task lists, aggregated tasks, ready tasks, dependency tracking |
-| **Summaries** | 10 | Session summaries, project summaries, needs-update check |
-| **Queue** | 10 | Prompt queue with source/target, priority, dispatch/complete lifecycle |
-| **Learning** | 4 | Record signals, query by project, learning context generation |
-| **Search** | 4 | Session content search, recent sessions, vector search |
-| **Skills** | 9 | Skills analytics, chains, traces, per-session breakdown |
-| **Knowledge** | 21 | List, search, generate, review (optional — can be disabled) |
+860+ REST endpoints across the Core API. The broad map:
 
-All endpoints support `ifModifiedSince` for efficient polling. Session data supports three indexing dimensions: `lineIndex` (JSONL position), `turnIndex` (conversation turn), and `userPromptIndex` (user message count).
+| Category | Highlights |
+|----------|-----------|
+| **Sessions & search** | List, detail, delta fetch, conversation, subagents, DAG, forks; bm25 + vector search |
+| **Monitor & control** | Running executions, abort, SSE stream, agent execute/resume, terminal driving |
+| **Missions & scheduler** | Mission graph, controller, workflows, scheduled jobs |
+| **Fleet** | Nodes, clusters, enrollment, builds/upgrades, transfers, port-forwards, data service |
+| **Memory & rules** | Cross-host memory, rule sync, knowledge (optional) |
+| **Integrations** | Claude Code OAuth proxy, claude.ai web-session proxy, GitHub, connectors (Gmail/LinkedIn/WhatsApp), VM, container, desktop, voice |
+
+All session endpoints support `ifModifiedSince` for efficient polling, and three indexing dimensions: `lineIndex` (JSONL position), `turnIndex` (conversation turn), and `userPromptIndex` (user message count). Full reference: [`docs/api-endpoints.md`](./docs/api-endpoints.md).
+
+## Documentation
+
+The docs are organized in [`docs/README.md`](./docs/README.md) — getting started, architecture, API references, feature guides, connector guides, and operations.
 
 ## Configuration
 
@@ -438,6 +216,8 @@ No API key needed — lm-assist works entirely with your local Claude Code sessi
 ```bash
 API_PORT=3100                    # Core API port (default: 3100)
 WEB_PORT=3848                    # Web UI port (default: 3848)
+TIER_AGENT_HUB_URL=wss://...     # Optional hub gateway WebSocket URL
+TIER_AGENT_API_KEY=sk-...        # Optional hub API key
 ```
 
 ## Platform Support
@@ -446,30 +226,30 @@ WEB_PORT=3848                    # Web UI port (default: 3848)
 |----------|---------|-------|
 | Linux | Full | All features including web terminal |
 | macOS | Full | All features including web terminal |
-| Windows | Partial | Everything except console/terminal access (ttyd not available) |
+| Windows | Full core | Sessions, MCP, desktop automation, VM/container; no ttyd web terminal |
 | Mobile / Tablet | Web UI | Monitor, debug, and control from any device on your network |
 
 ## Who It's For
 
-- **Solo developers** using Claude Code — see what's happening across all your sessions
-- **Teams building with Agent SDK** — observability for your agent pipelines
-- **DevOps managing agent fleets** — multi-machine dashboard, cost tracking, process management
-- **AI product builders** — debug agent behavior with 15 insight views
+- **Solo developers** using Claude Code — see and steer everything across all your sessions and machines
+- **Teams building with the Agent SDK** — observability and control for agent pipelines
+- **Operators running agent fleets** — enrollment, placement, upgrades, cost tracking, automation
+- **AI product builders** — debug agent behavior with full session introspection
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
+See [CHANGELOG.md](CHANGELOG.md) — v0.2.0 is the first npm publish since 0.1.70 and consolidates roughly 1,700 commits of features.
 
 ## Requirements
 
-- Node.js >= 18
+- Node.js >= 20.9
 - Claude Code (for slash commands and MCP integration)
 
 ## Related
 
 - [claude-code-multisession](https://github.com/langmartai/claude-code-multisession) — Skills plugin: cross-project session routing, `/projects`, `/sessions`, `/summary`, `/run`
-- [claude-code-webui](https://github.com/langmartai/claude-code-webui) — Web dashboard plugin: 15 insight tabs, web terminal, `/web`, `/web-sessions`, `/web-tasks`
-- [Knowledge system](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88) — Optional: auto-extract knowledge from sessions, MCP tools, context injection. Off by default, enable in Settings > Data Loading
+- [claude-code-webui](https://github.com/langmartai/claude-code-webui) — Web dashboard plugin: insight tabs, web terminal, `/web`, `/web-sessions`, `/web-tasks`
+- [Knowledge system](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88) — Optional: auto-extract knowledge from sessions, MCP tools, context injection. Off by default.
 
 ## License
 

@@ -1,44 +1,35 @@
 # LM Assist npm Package
 
-LM Assistant is now available as an npm package for easy installation and deployment.
+lm-assist ships on npm as a prebuilt package — the Core API, the web dashboard, the MCP server, and the CLI in one install.
 
 ## Installation
 
-### Global Installation
 ```bash
-npm install -g lm-assist
-```
-
-### Local Project Installation
-```bash
-npm install lm-assist
-```
-
-### Using npx (No Installation)
-```bash
-npx lm-assist start
+npm install -g lm-assist        # global (recommended) — postinstall starts services
+npx lm-assist start             # or run without installing
 ```
 
 ## Quick Start
 
-### Start Services
 ```bash
 lm-assist start
 ```
 
 This starts:
-- **API Server** on http://localhost:3100
+- **Core API** on http://localhost:3100
 - **Web UI** on http://localhost:3848
 
 ### Other Commands
+
 ```bash
-lm-assist stop              # Stop all services
-lm-assist restart           # Restart services
-lm-assist status            # Check service health
-lm-assist logs core         # View API logs
-lm-assist logs web          # View Web UI logs
-lm-assist build             # Rebuild application
-lm-assist hub start         # Connect to LangMart Hub
+lm-assist stop                    # Stop all services
+lm-assist restart                 # Restart services
+lm-assist status                  # Check service health
+lm-assist logs core|web           # View logs
+lm-assist upgrade                 # Upgrade to the latest published version
+lm-assist upgrade --from <spec>   # Upgrade to a tgz / version / github:ref / URL
+lm-assist login <keypack>         # Enroll this machine into a fleet
+lm-assist hub start|stop|status   # Hub connection
 ```
 
 ## Screenshots
@@ -70,114 +61,60 @@ lm-assist hub start         # Connect to LangMart Hub
 ### MCP Tool Logs
 ![MCP Tool Logs](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/mcp-tool-logs.png)
 
-### Context Hook Logs
-![Context Hook Logs](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/context-hook-logs.png)
-
 ### Settings
 ![Settings](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/settings.png)
 
 ## Configuration
 
-### Environment Variables
-Create a `.env` file in your working directory:
+Optional — lm-assist works with your local Claude Code session data out of the box. Create a `.env` in your working directory to customize:
 
 ```bash
-ANTHROPIC_API_KEY=sk-your-key-here
 API_PORT=3100
 WEB_PORT=3848
-TIER_AGENT_HUB_URL=wss://hub.example.com
-TIER_AGENT_API_KEY=sk-hub-api-key
+TIER_AGENT_HUB_URL=wss://hub.example.com   # optional fleet hub
+TIER_AGENT_API_KEY=sk-hub-api-key          # optional hub key
 ```
 
 See `.env.example` in the package for all available options.
 
 ## Requirements
 
-- **Node.js:** 18.0.0 or higher
+- **Node.js:** 20.9 or higher
 - **npm:** 9.0.0 or higher
-- **Python:** 3.8+ (for ttyd support)
 
 ## Package Contents
 
-The npm package includes:
-
-- **Backend API** — Node.js/TypeScript REST API with:
-  - Session management
-  - Knowledge base with vector search
-  - MCP server for context integration
-  - Hub client for remote relay
-
-- **Frontend UI** — Next.js 16 with React 19 providing:
-  - Session browsing and management
-  - Knowledge views
-  - Settings and configuration
-  - Real-time terminal integration
+- **Core API** — REST API (860+ endpoints): sessions, monitor, agents, missions, memory, search, fleet, connectors
+- **MCP server** — 280+ scope-gated tools for Claude Code and claude.ai, plus the ext-plugin loader and bundled first-party plugins
+- **Web UI** — Next.js dashboard: session insight views, terminal, missions, memory/rules, settings
+- **CLI** — `lm-assist` service manager with upgrade and fleet enrollment
 
 ## Data Storage
 
 All data is stored locally:
 
-- **Sessions:** `~/.claude/projects/*/sessions/*.jsonl`
+- **Sessions:** `~/.claude/projects/` (read from Claude Code's own files)
 - **Tasks:** `~/.claude/tasks/`
-- **Config:** `~/.lm-assist/`
-- **Knowledge:** `~/.lm-assist/knowledge`
-
-## API Endpoints
-
-The API server (port 3100) provides endpoints for:
-
-- **Sessions:** `/sessions`, `/sessions/:id`
-- **Projects:** `/projects`, `/projects/:path/sessions`
-- **Tasks:** `/tasks`, `/task-store/tasks`
-- **Knowledge:** `/knowledge`, `/knowledge/search`
-- **Health:** `/health`, `/status`
-
-See the [GitHub repository](https://github.com/langmartai/lm-assist) for complete API documentation.
+- **Config & state:** `~/.lm-assist/`
 
 ## License
 
-GNU Affero General Public License v3 (AGPL-3.0-or-later)
-
-All modifications and derivative works must be licensed under the same terms.
+GNU Affero General Public License v3 (AGPL-3.0-or-later). All modifications and derivative works must be licensed under the same terms.
 
 ## Support
 
 - **GitHub:** https://github.com/langmartai/lm-assist
 - **Issues:** https://github.com/langmartai/lm-assist/issues
+- **Docs:** https://github.com/langmartai/lm-assist/tree/main/docs
 
 ## Development
-
-For development installation from source:
 
 ```bash
 git clone https://github.com/langmartai/lm-assist.git
 cd lm-assist
-npm install
+npm install --ignore-scripts
 npm run build
 ./core.sh start
 ```
 
-## Troubleshooting
-
-### Port Already in Use
-```bash
-lm-assist start --api-port 3101 --web-port 3849
-```
-
-### Clear Cache and Rebuild
-```bash
-lm-assist clean
-lm-assist build
-```
-
-### View Detailed Logs
-```bash
-lm-assist logs core
-lm-assist logs web
-```
-
-### Hub Connection Issues
-```bash
-lm-assist hub status
-lm-assist hub logs
-```
+See [`docs/build-pack-install-upgrade.md`](docs/build-pack-install-upgrade.md) for the full build/pack/upgrade reference.

@@ -1,6 +1,99 @@
 # Changelog
 
-## [Unreleased] — Gmail CDP connector (9 MCP tools) (2026-07-29)
+## [0.2.0] - 2026-09-01
+
+First npm publish since 0.1.70 (2026-04-03) — roughly 1,690 commits (728 feat, 443 fix). The project's
+scope has grown from single-machine session observability into a **self-hosted control plane for
+Claude Code**: observe, control, automate, and extend Claude Code across every machine you run it on.
+Everything below this section down to [0.1.70] — including the blocks labeled `[Unreleased → 0.2.0]` —
+ships in this release; versions 0.1.71–0.1.135 existed only as plugin/tarball builds and were never
+published to npm.
+
+### Packaging & upgrade — why this publish matters
+- **`npm install -g lm-assist` works again.** npm's previous `latest` (0.1.70) shipped `chokidar ^5`,
+  which is ESM-only: Core crashed on boot with `ERR_REQUIRE_ESM` and never bound its port. The pin is
+  back at `^3.6.0` in both package files, and this publish makes plain `lm-assist upgrade` safe again.
+- Node engine floor is **≥ 20.9** (the Next 16 web build requires it; `engines` enforces it).
+- `./core.sh pack` produces the reproducible prebuilt tarball (`lm-assist-<ver>.tgz`) — the supported
+  deploy artifact; `lm-assist upgrade --from <tgz|version|github:ref|url>` installs any chosen build.
+- `upgrade.js` hardened: git-source-build warning (native postinstall trap), Windows EBUSY tarball
+  fallback, kill → install → restart ordering.
+- The `ccr/` bridge scripts and the real `core/scripts/upgrade.js` now actually ship in the package.
+
+### MCP connector — the fleet in every Claude session
+- **285 registered MCP tools** (scope-gated per caller) reachable from Claude Code or claude.ai via
+  the hub connector: sessions, search, memory, terminal driving, missions, data, transfers, backups,
+  GitHub, nodes, UI panes, service connectors, VMs, containers, desktop, and more.
+- `bootstrap` + `guide(topic)` teach a connecting session the whole surface progressively; the tool
+  catalogue was trimmed 87.6K → 64.7K tokens at connect time; a per-tool registry overlay allows
+  fleet-synced description overrides and enable/disable; every result carries a provenance footer
+  (`⟦lm-assist@hub · node · cluster⟧`); the worst unbounded outputs got size ceilings.
+
+### Fleet — many machines, one surface
+- Hub client + relay; **one-time keypack enrollment** (`lm-assist login <lmkp_…>`) for fresh nodes.
+- Node clusters (scoped election/placement/sync), node selection registry (`node_select`,
+  `node_profile`), per-node build/upgrade tracking (`node_builds`, `node_upgrade`), machine-access
+  profiles, graceful lifecycle restarts.
+- Cross-node data service (cache / vector / sql backends) with access keys and sync; bulk file
+  transfer with resumable jobs; direct port-forward transport (~4× faster than relaying).
+- Memory + rules sync across hosts: auto-converging user rules with per-OS scoping, cross-host
+  memory search and mirror indexing.
+
+### Missions & automation
+- Mission graph (tags, relationships, history, provenance), fleet-elected mission controller,
+  onboarding + workflow registries, placement and spawn, per-mission views.
+- Scheduler jobs: one-time / recurring / trigger-only, full run capture (bounded stdout/stderr
+  history), guard conditions, dry-run and test modes.
+- Auto-resume of stalled sessions (network errors included), model-limit auto-fallback, stall
+  status reporting.
+
+### Sessions, search & knowledge
+- Real full-text search: **bm25 FTS5 over user prompts** (the old scorer effectively matched every
+  session), CJK sub-word search, deleted-session pruning, self-applying index rebuilds; memory
+  search noise fixed (a query that used to hit 110/121 memory files now hits the 1 that matters).
+- Sessions page first paint 7.6–10.7 s → 1.3–3.1 s; compact conversation payloads
+  (`includeToolResults` / `includeSystemMessages`: 748 KB vs 7.8 MB raw); session DAG views;
+  session footprints (one-call cross-fleet snapshot); `rename_session`; delta/conditional fetch.
+- The knowledge pipeline remains optional and off by default.
+
+### Claude Code & claude.ai integration
+- **CCR**: drive Claude Code sessions from claude.ai/code — load / mirror / connect modes behind a
+  safety gate, a `/ccr` page with claude.ai/code look and function, live-session remote-control
+  connect, local + cloud restart, cloud worker lifecycle (ephemeral, resumable).
+- claude.ai web-session proxy (28 endpoints) + Claude Code OAuth proxy (14 endpoints); conversation
+  token measurement + fork; connector/marketplace/plugin management tools; auth monitor with
+  proactive OAuth renew and guided login.
+- **Voice**: browser voice for claude.ai conversations over HTTPS (`LM_HTTPS=1`), selectable voice,
+  startup latency ~22 s → 2–4 s, transcript-to-conversation binding fixes.
+
+### Service connectors (the operator's own logged-in browser, CDP-driven)
+- **Gmail**, **LinkedIn**, **WhatsApp** connectors with MCP tools + loopback REST surfaces;
+  per-connector Chrome profiles on separate debug ports so all of them run side by side.
+- **VM management** (Hyper-V + KVM, both e2e-verified), **container management** (Docker, with
+  managed-label guards and volume-root gating), **desktop automation** (screenshot / input / OCR /
+  window control, Linux + Windows), GitHub query/mutate tools.
+
+### Web UI
+- Pluggable UI panes (gateway-hostable pages; bundled session-dashboard and search panes), shell
+  sidebar grouping, memory/rules pages v2, mission dashboard, CCR Remote page, scheduler page.
+
+### Extensibility — plugins as a first-class surface
+- **MCP ext-plugin loader**: third-party plugins expose tools as `ext__<plugin>__<tool>`, with a
+  documented contract (`docs/mcp-plugin-contract.md` + JSON schema).
+- **Bundled first-party plugins** ship in the package (`core/data/mcp-plugins/`), seeded and trusted
+  on boot, with checksum-pinned payloads and a sticky per-owner opt-out. First bundled plugin:
+  `langmart-design` (LangMart platform read-only tools).
+- Fleet-editable content registry: the bootstrap/guide prose is 25 editable docs, synced fleet-wide.
+
+### Security & robustness
+- MCP OAuth identity hardening (hub identity can no longer be impersonated via client-supplied ids).
+- Elevated / VM / container command surfaces gated by strict input charsets and managed-resource
+  labels; relay pane access is grant-scoped.
+- Bounded MCP results (size ceilings with honest truncation envelopes), bounded single-flight slots,
+  event-loop blocking fixes (`/health` p99 5 s → sub-ms), caller-identity latency fix (a 1.8 s
+  synchronous sweep removed from the hot path).
+
+## [Unreleased → 0.2.0] — Gmail CDP connector (9 MCP tools) (2026-07-29)
 
 ### Added
 - **Gmail connector (CDP-only).** Drives the operator's OWN logged-in `mail.google.com` session in a real Chrome over the DevTools Protocol, mirroring the LinkedIn connector's shape. 9 MCP tools appear in any Claude Code / claude.ai session connected to the node: reads `gmail_status`, `gmail_list_threads`, `gmail_read_thread`, `gmail_search`, `gmail_labels`; writes `gmail_send`, `gmail_reply`, `gmail_draft`; admin `gmail_login`. REST surface under `/gmail/*` on loopback; 15-minute session keep-alive. Dedicated profile at `~/.lm-assist/gmail[-dev]/login-profile/<name>/` on debug port **9224** (distinct from WhatsApp's 9222 and LinkedIn's 9223, so all three run side by side).
@@ -14,7 +107,7 @@
 - Verified on a real Workspace account (2026-07-29) that Google does **not** refuse an interactive sign-in in a Chrome launched with a custom `--user-data-dir` and an open `--remote-debugging-port`, on both a Windows and a Linux host, and that the session survives a restart — a headed one-time login followed by **headless** operation against the same profile lands back in the inbox. Headless must force a normal User-Agent or Google serves the degraded `WebLiteSignIn` flow.
 - `gmail_send` / `gmail_reply` / `gmail_draft` are implemented but were deliberately **not** exercised live, since they write to a real mailbox.
 
-## [Unreleased] — Windows browser-launch fix + prebuilt-tgz deploy path (2026-07-27)
+## [Unreleased → 0.2.0] — Windows browser-launch fix + prebuilt-tgz deploy path (2026-07-27)
 
 ### Fixed
 - **Headless/headed browser launch on Windows** (`claudeai-browser-launch.ts`): the post-spawn `isPidAlive(child.pid)` guard treated Chrome's normal Windows self-relaunch (the spawned process exits while the real browser keeps running on the debug port) as a failure, returning `SPAWN_FAILED` even though the browser was up. It now accepts a re-parented PID as long as the debug port is still live (the foreign-Chrome risk is already excluded by the pre-spawn port-free check). This is what broke `linkedin_login` on the Windows node despite a working session.
@@ -24,7 +117,7 @@
 - **`./core.sh pack`** — new target that produces the supported prod artifact `lm-assist-<ver>.tgz` (`npm install --ignore-scripts && npm pack`, building core + web). `./core.sh` dependency installs now use `--ignore-scripts` so a fresh checkout doesn't die on the onnxruntime postinstall.
 - Docs: `guide("install")`, CLAUDE.md (commands list + bootstrapping gotcha) now state the git-source-build hazard and the `./core.sh pack` → tarball deploy flow.
 
-## [Unreleased] — LinkedIn CDP connector (16 MCP tools) (2026-07-27)
+## [Unreleased → 0.2.0] — LinkedIn CDP connector (16 MCP tools) (2026-07-27)
 
 ### Added
 - **LinkedIn connector (CDP-only).** LinkedIn has no usable personal messaging/posting API, so this connector drives the operator's OWN logged-in linkedin.com session in a real Chrome over the DevTools Protocol and mirrors messaging into the shared store — same shape as the WhatsApp connector. 16 MCP tools appear in any Claude Code / claude.ai session connected to the node: reads `linkedin_status`, `linkedin_list_conversations`, `linkedin_read_messages`, `linkedin_search`, `linkedin_read_feed`, `linkedin_read_notifications`, `linkedin_search_people`; writes `linkedin_send_message`, `linkedin_post`, `linkedin_publish_article`, `linkedin_follow`, `linkedin_connect`, `linkedin_message_profile`, `linkedin_comment`, `linkedin_delete_post`; admin `linkedin_login`. REST surface under `/linkedin/*` on loopback; 15-minute session keep-alive.
@@ -130,7 +223,7 @@ Proactive Claude Code OAuth auto-renew: the auth-monitor now refreshes the token
   kill-and-resumed only when idle ≥ missionSessionIdleCloseMin, or with `force:true`;
   never resumed over a running process. New `force` param on both surfaces.
 
-## [Unreleased]
+## [Unreleased → 0.2.0]
 
 ### CCR — bootstrap/guide now teaches operating Claude Code Remote sessions + the `ccr/` deploy fix (2026-06-21)
 
