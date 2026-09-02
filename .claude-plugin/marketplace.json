@@ -12,11 +12,11 @@
   "plugins": [
     {
       "name": "claude-code-multisession",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "source": {
         "source": "url",
         "url": "https://github.com/langmartai/claude-code-multisession.git",
-        "sha": "79facbed827fa289a092f5fb37fe482c7665cebe"
+        "sha": "09743b26f6ac8e5467f54565576c21c4ae83b40a"
       },
       "description": "One prompt to control all your Claude Code sessions. Monitor costs, debug agents, route work across projects, queue prompts, auto-learn routing.",
       "category": "productivity",
@@ -24,11 +24,11 @@
     },
     {
       "name": "claude-code-webui",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "source": {
         "source": "url",
         "url": "https://github.com/langmartai/claude-code-webui.git",
-        "sha": "43bf81c355c9a7954f93c8334dcb8a0cd99ae8e0"
+        "sha": "3881778b528a448ba9e07c19189324eed9930f9a"
       },
       "description": "Web dashboard for Claude Code. Browse sessions with 15 insight views, debug subagent trees, control terminals from any browser.",
       "category": "productivity",
