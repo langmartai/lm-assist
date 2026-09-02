@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 882" role="img" aria-label="lm-assist capability map: the Web UI, the MCP connector, and the Claude Code skills plugin are three doors into one Core API and its fleet; the MCP door groups core Claude features apart from extended beyond-Claude tools">
-  <title>lm-assist capability map — three doors, one control plane</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 882" role="img" aria-label="lm-assist capability map: four doors into one Core API and its fleet — the MCP connector (the main door), the Web UI, the Claude Code skills plugin, and the Core's own REST API for systems; the MCP door groups core Claude features apart from extended beyond-Claude tools">
+  <title>lm-assist capability map — four doors, one control plane</title>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
@@ -9,7 +9,7 @@
   <rect x="0" y="0" width="1280" height="882" fill="#ffffff"/>
 
   <!-- heading -->
-  <text x="640" y="34" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="21" font-weight="700" fill="#0f172a">One control plane, three doors — pick the door that fits the moment</text>
+  <text x="640" y="34" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="21" font-weight="700" fill="#0f172a">One control plane, four doors — pick the door that fits the moment</text>
 
   <!-- actors -->
   <g font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="13.5" fill="#334155" text-anchor="middle">
@@ -103,7 +103,7 @@
 
   <!-- core bar -->
   <rect x="40" y="612" width="1200" height="66" rx="12" fill="#f8fafc" stroke="#64748b" stroke-width="1.6"/>
-  <text x="640" y="640" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16.5" font-weight="700" fill="#0f172a">⚙️ lm-assist Core — session engine · 860+ REST endpoints · MCP server · :3100</text>
+  <text x="640" y="640" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16.5" font-weight="700" fill="#0f172a">⚙️ lm-assist Core — session engine · 860+ REST endpoints (the fourth door, for systems) · MCP server · :3100</text>
   <text x="640" y="662" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="12.5" fill="#475569">reads the session files Claude Code already writes — no external database, no API key required</text>
 
   <!-- fleet band -->
@@ -130,5 +130,5 @@
 
   <line x1="664" y1="785" x2="686" y2="785" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
 
-  <text x="640" y="868" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#64748b">Same Core underneath. Most days start at the MCP door — Claude does the work; the Web UI is where you watch, the terminal is where you type.</text>
+  <text x="640" y="868" text-anchor="middle" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#64748b">Same Core underneath. Most days start at the MCP door — Claude does the work; the Web UI is where you watch, the terminal is where you type, and systems script the REST API directly.</text>
 </svg>

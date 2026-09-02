@@ -1,5 +1,7 @@
 # lm-assist Documentation
 
+**Full component registry: [components.md](./components.md)** — every shipped component with its path, doors, docs, and freshness (first built / last touched).
+
 Organized index of everything under `docs/`. Files keep their historical paths (many are deep-linked
 from elsewhere); this page is the navigation layer.
 

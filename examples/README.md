@@ -2,14 +2,14 @@
 
 One folder per use case — a walkthrough, the exact commands/tools involved, and screenshots from a real running fleet.
 
-![lm-assist capability map — three doors into one control plane, with the MCP connector as the main door used from claude.ai conversations, Cowork sessions, and local or remote Claude Code sessions](../docs/capability-map.svg)
+![lm-assist capability map — four doors into one control plane, with the MCP connector as the main door used from claude.ai conversations, Cowork sessions, and local or remote Claude Code sessions](../docs/capability-map.svg)
 
 **How to read it:** the **MCP connector** (center) is the main door — it's how Claude itself uses your
 fleet, whether you're in a claude.ai conversation, a Cowork session, or a Claude Code session (local
 or remote/CCR). The **Web UI** is where you watch and drive things visually; the **skills & plugin**
-door lives inside the Claude Code terminal. All three land on the same Core — and what that Core
-manages is every kind of Claude work: local Claude Code sessions, remote/cloud code sessions (CCR),
-and claude.ai conversations themselves. Inside the MCP door the map separates **core** (everything
+door lives inside the Claude Code terminal; the Core's own **REST API** is the fourth door, for
+systems. All four land on the same Core — and what that Core manages is every kind of Claude work:
+local Claude Code sessions, remote/cloud code sessions (CCR), and claude.ai conversations themselves. Inside the MCP door the map separates **core** (everything
 Claude: sessions, conversations, memory, missions, panes, usage) from **extended** (beyond Claude,
 via the ext MCP API: browser-driven connectors like Gmail/LinkedIn/WhatsApp, VMs, containers,
 desktop, data, transfers, plugins).
