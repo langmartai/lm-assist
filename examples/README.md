@@ -29,7 +29,7 @@ desktop, data, transfers, plugins).
 | [mission-autopilot](./mission-autopilot/) | Self-driving Claude Code sessions — mission controller, workflows, auto-resume, model-limit fallback |
 | [transfer-and-backup](./transfer-and-backup/) | Resumable cross-node file transfer + searchable backup of every host's Claude state |
 | [gmail-connector](./gmail-connector/) | Read and act on Gmail from any Claude session (CDP, your own logged-in browser) |
-| [whatsapp-connector](./whatsapp-connector/) | WhatsApp reads/sends through the connector's own WhatsApp Web tab |
+| [whatsapp-connector](./whatsapp-connector/) | WhatsApp via the Meta Cloud API connector (webhook-ingested store, template/24h rules); personal WhatsApp Web provider in an open PR |
 | [linkedin-connector](./linkedin-connector/) | LinkedIn reads/writes with no personal API — a real driven browser |
 
 All connector tools are node-scoped: they are advertised fleet-wide, but each call routes to one
