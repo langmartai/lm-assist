@@ -28,7 +28,7 @@ desktop, data, transfers, plugins).
 | [backlog-tracking](./backlog-tracking/) | A fleet-synced issue/idea graph with typed edges that sessions and missions both work from |
 | [mission-autopilot](./mission-autopilot/) | Self-driving Claude Code sessions — mission controller, workflows, auto-resume, model-limit fallback |
 | [transfer-and-backup](./transfer-and-backup/) | Resumable cross-node file transfer + searchable backup of every host's Claude state |
-| [build-your-own-mcp-plugin](./build-your-own-mcp-plugin/) | **Advanced** — from a claude.ai chat, build a new extended-MCP plugin on a node, enable it as the owner, reconnect, set permissions, and call it end to end |
+| [build-your-own-mcp-plugin](./build-your-own-mcp-plugin/) | **Advanced** — one claude.ai prompt, no terminal: an agent on the node builds and enables a new extended-MCP plugin, Claude reconnects the connector, sets permissions, and calls it end to end |
 | [gmail-connector](./gmail-connector/) | Read and act on Gmail from any Claude session (CDP, your own logged-in browser) |
 | [whatsapp-connector](./whatsapp-connector/) | WhatsApp via the Meta Cloud API connector (webhook-ingested store, template/24h rules); personal WhatsApp Web provider in an open PR |
 | [linkedin-connector](./linkedin-connector/) | LinkedIn reads/writes with no personal API — a real driven browser |

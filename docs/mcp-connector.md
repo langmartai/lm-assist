@@ -97,7 +97,7 @@ Governed tools softly refuse once until it has been called; `guide(topic)` answe
 
 ## Advanced: extend the connector with your own plugin
 
-Any standard MCP stdio server dropped into a node's plugin directory becomes `ext__<plugin>__<tool>` on this same connector — governed by the loader (disabled until the owner enables it, checksum-pinned, audited). The whole loop, done from a claude.ai conversation with a real run — build on the node, owner-enable, reconnect, set permissions, call it: [`examples/build-your-own-mcp-plugin`](../examples/build-your-own-mcp-plugin/). Contract: [`mcp-plugin-contract.md`](./mcp-plugin-contract.md).
+Any standard MCP stdio server dropped into a node's plugin directory becomes `ext__<plugin>__<tool>` on this same connector — governed by the loader (disabled until enabled on the node over loopback, checksum-pinned, audited). The whole loop from a single claude.ai prompt with no manual step — an agent on the node builds and enables it, Claude reconnects the connector, sets permissions, and calls it: [`examples/build-your-own-mcp-plugin`](../examples/build-your-own-mcp-plugin/). Contract: [`mcp-plugin-contract.md`](./mcp-plugin-contract.md).
 
 ## Troubleshooting
 

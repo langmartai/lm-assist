@@ -13,7 +13,7 @@ lm-assist MCP surfaces (the stdio plugin and the hub `/mcp` connector), and spaw
 stdio server. You do **not** write any lm-assist-specific code, link any lm-assist library, or know
 anything about lm-assist internals. If your server speaks MCP over stdio, it works.
 
-**Worked example (real run):** [`examples/build-your-own-mcp-plugin`](../examples/build-your-own-mcp-plugin/) — a plugin built by an agent from a claude.ai conversation, enabled by the owner, and called end to end.
+**Worked example (real run):** [`examples/build-your-own-mcp-plugin`](../examples/build-your-own-mcp-plugin/) — a plugin built *and enabled* by an agent on the node from a single claude.ai prompt, then refreshed, permissioned, and called end to end — no manual step.
 
 **Reference schema:** `docs/mcp-plugin.schema.json` in the lm-assist repo (reproduced verbatim in
 §3.2 so this document stands alone).
@@ -66,10 +66,15 @@ perturb the payload hash.
 **Discovery ≠ execution** is the load-bearing property: everything lm-assist needs in order to
 *list* your tools comes from the manifest, so a plugin that is merely present never runs.
 
-**Enabling is a loopback-only owner action.** It cannot be performed over the LAN, through the hub
-relay, or autonomously by an agent — the same restriction lm-assist already applies to
-machine-access and cluster writes. Enabling records the approved payload checksum, the approved
-manifest digest, and the granted capabilities.
+**Enabling is a loopback-only owner action.** It cannot be performed over the LAN or through the hub
+relay — the same restriction lm-assist already applies to machine-access and cluster writes.
+Enabling records the approved payload checksum, the approved manifest digest, and the granted
+capabilities. Note what loopback does and doesn't guard: an agent that runs *on* the node with the
+node's own API token (for example one you dispatched with `agent_execute`) is indistinguishable
+from you and can enable over loopback — the
+[full-auto example](../examples/build-your-own-mcp-plugin/) relies on exactly that. Whether to
+allow it is your policy: fine for a payload your own agent just wrote and verified; keep enabling
+manual for payloads you did not author.
 
 **Kill switch:** `LM_MCP_PLUGINS=0` in the lm-assist Core environment disables the entire plugin
 subsystem regardless of per-plugin state. Per-plugin disable is immediate and kills any running
