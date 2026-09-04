@@ -6,32 +6,41 @@ drives a real logged-in browser (CDP, debug port **9223**, its own persistent pr
 
 ## One-time setup
 
-```
-linkedin_status        # signed in on this node?
-linkedin_login         # if not: opens a headed browser at linkedin.com — log in with
-                       # email / password / 2FA once; the profile keeps the session
-```
+> **You:** connect LinkedIn on this node
+>
+> **Claude:** *(lm-assist → linkedin_login)* A browser window just opened at linkedin.com — log in once with your email, password, and 2FA; the profile keeps the session.
+>
+> **You:** done, I'm logged in
+>
+> **Claude:** *(lm-assist → linkedin_status)* Confirmed — the driver browser reports `loggedIn: true`. Ready to read and post as your account.
 
-Poll `linkedin_status` until `loggedIn: true`.
+Tools involved: linkedin_status, linkedin_login
 
 ## Everyday use
 
-```
-linkedin_read_feed / linkedin_read_notifications
-linkedin_list_conversations / linkedin_read_messages
-linkedin_search("site reliability") / linkedin_search_people("platform engineer")
-linkedin_post("…") / linkedin_comment / linkedin_publish_article
-linkedin_connect / linkedin_follow / linkedin_send_message / linkedin_message_profile
-```
+> **You:** anything new on LinkedIn?
+>
+> **Claude:** *(lm-assist → linkedin_read_notifications)* Five new — two reactions on your latest post, one comment ("Congrats on the release!"), and two connection invitations.
+>
+> **You:** who's been messaging me?
+>
+> **Claude:** *(lm-assist → linkedin_list_conversations)* Three recent conversations: "J. Recruiter" (1 unread, "Would you be open to…"), "Old Teammate" (caught up), and a meetup group chat. Want me to open one?
 
-Illustrative session:
+Writes publish to the operator's real account and network, so Claude confirms the content first:
 
-```
-> linkedin_read_notifications
-  5 new — 2 reactions on your post, 1 comment, 2 invitations
-> linkedin_post("We just shipped v0.2.0 — the control-plane release…")
-  Posted as the signed-in account.
-```
+> **You:** post that we shipped v0.2.0, the control-plane release
+>
+> **Claude:** Draft post: "We just shipped v0.2.0 — the control-plane release: session observability, fleet connectivity, and a full MCP surface, self-hosted." This publishes publicly to your network — post it?
+>
+> **You:** post it
+>
+> **Claude:** *(lm-assist → linkedin_post)* Posted as the signed-in account — it's live on your feed.
+
+> **You:** find platform engineers I could reach out to
+>
+> **Claude:** *(lm-assist → linkedin_search_people)* Top matches for "platform engineer": three profiles, each with name, handle, and profile URL. I can send a connection request with a short note — that's a real invitation from your account, so tell me who and what it should say.
+
+Tools involved: linkedin_read_feed, linkedin_read_notifications, linkedin_list_conversations, linkedin_read_messages, linkedin_search, linkedin_search_people, linkedin_post, linkedin_comment, linkedin_publish_article, linkedin_connect, linkedin_follow, linkedin_send_message, linkedin_message_profile
 
 The connector's actual feed (content blurred):
 

@@ -12,23 +12,31 @@ session persists in the dedicated profile.
 
 ## Everyday use
 
-```
-whatsapp_status                  → provider, linked state, ingest counters
-whatsapp_list_chats              → chats seen so far (list accumulates across reads)
-whatsapp_read_messages(chat)     → mirrored messages for one chat
-whatsapp_search("delivery")      → search the mirrored store
-whatsapp_send(chat, text)        → send as the linked account
-whatsapp_get_media(id)           → fetch a received attachment
-```
+> **You:** is WhatsApp set up on this node?
+>
+> **Claude:** *(lm-assist → whatsapp_status)* Linked and ingesting — 340 messages across 12 chats mirrored so far, 3 unread.
+>
+> **You:** did anyone say the meeting moved?
+>
+> **Claude:** *(lm-assist → whatsapp_search)* Two hits in the mirrored store: "Ops group" on Aug 29 ("meeting moved to 3pm, same room") and "A. Vendor" on Aug 30 ("let me know if the meeting moved again"). Want the full Ops group chat?
 
-Illustrative session:
+Sends go out as the operator's real linked account, so Claude confirms first:
 
-```
-> whatsapp_status
-  Provider: cdp · linked: yes · ingested: 340 messages across 12 chats
-> whatsapp_search("meeting moved")
-  2 hits — chat "Ops group" (2026-08-29), chat "A. Vendor" (2026-08-30)
-```
+> **You:** yes — and tell the group I'll be there at 3
+>
+> **Claude:** *(lm-assist → whatsapp_read_messages)* Latest in "Ops group": the 3pm move is confirmed, and someone asked who's presenting. Ready to send "I'll be there at 3" — it goes out as your linked account. Send?
+>
+> **You:** send it
+>
+> **Claude:** *(lm-assist → whatsapp_send)* Sent to "Ops group".
+
+Received attachments carry a media id, so they can be pulled onto the node:
+
+> **You:** the vendor sent a voice note earlier — what does it say?
+>
+> **Claude:** *(lm-assist → whatsapp_get_media)* Fetched the voice note to the node. Short version: they confirm Thursday's delivery slot and ask you to reply with the gate code.
+
+Tools involved: whatsapp_status, whatsapp_list_chats, whatsapp_read_messages, whatsapp_search, whatsapp_send, whatsapp_get_media
 
 The connector's actual tab (content blurred):
 

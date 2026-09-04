@@ -10,12 +10,24 @@ of the whole account.
 
 From any connected Claude session:
 
-```
-list_claudeai_conversations            → newest conversations, names + uuids
-read_conversation(uuid)                → full message history of one conversation
-conversation_tokens(uuid)              → how big it really is (context measurement)
-conversation_fork(uuid)                → branch it into a new conversation
-```
+> **You:** find that chat where we debugged the file watcher crash
+>
+> **Claude:** *(lm-assist → list_claudeai_conversations)* It's near the top of your recent
+> conversations — "Debugging the watcher crash," last active yesterday. Want the full history?
+
+> **You:** yes — and how big has that conversation actually gotten?
+>
+> **Claude:** *(lm-assist → read_conversation, conversation_tokens)* I read the whole thing — 62
+> messages, mostly tool results from the log digging. It measures roughly 84k live tokens, so the
+> context window is getting heavy. I can fork it if you want to continue with a clean slate.
+>
+> **You:** do that
+>
+> **Claude:** *(lm-assist → conversation_fork)* Forked — the new conversation is seeded with a
+> structured handoff (pointers and instructions, not the bulky tool results). Here's its
+> claude.ai URL.
+
+Tools involved: list_claudeai_conversations, read_conversation, conversation_tokens, conversation_fork
 
 The same data is on the REST surface: `GET /claude-ai/conversations`, `…/conversations/named`,
 `…/conversations/:uuid/messages`, `…/tokens`, `…/fork`.
@@ -25,20 +37,21 @@ The same data is on the REST surface: `GET /claude-ai/conversations`, `…/conve
 The backup system captures **every claude.ai conversation as JSON** (plus the account memory) into
 the fleet's backup store, and `backup_search` answers from an index — no archive is unpacked:
 
-```
-backup_run(target="claudeai")               # capture/refresh the account into the store
-backup_search("that pricing discussion")    # full-text across everything captured
-backup_read(id)                             # pull one hit — the full conversation JSON
-```
+> **You:** refresh the claude.ai capture, then find where we discussed the pricing tiers — it was
+> months ago
+>
+> **Claude:** *(lm-assist → backup_run, backup_search)* Capture kicked off on the collector node —
+> it runs async, and re-running only refreshes what changed. The index already has your answer,
+> though: two hits — "Pricing model brainstorm" (March 14) and "Launch checklist" (April 2), both
+> matching "pricing tiers."
+>
+> **You:** open the first one
+>
+> **Claude:** *(lm-assist → backup_read)* Pulled the full conversation JSON by its hit id. It
+> opens with your question about per-seat vs. usage-based pricing, and the recommendation you
+> settled on is about halfway down. Want me to quote that part?
 
-A search hit looks like (illustrative output):
-
-```
-backup_search("chokidar pin")
-  1. conversation · claudeai · "Debugging the watcher crash" · 2026-05-12 · id=cv-9f2…
-  2. conversation · claudeai · "Release checklist"           · 2026-08-30 · id=cv-1a7…
-Each hit carries an `id` for backup_read / backup_remove.
-```
+Tools involved: backup_run, backup_status, backup_search, backup_read
 
 `backup_search` covers claude.ai conversations alongside backed-up sessions, memory and rules —
 the tool's own description spells it out:
@@ -47,6 +60,7 @@ the tool's own description spells it out:
 
 Notes:
 - Backup tools run on the fleet's **collector node** (the one holding the backup store root) —
-  calls from elsewhere return a pointer telling you which `node:` to pass.
-- Run `backup_run` with `dryRun: true` first on a fresh setup to see what would be captured.
+  calls from elsewhere return a pointer telling you which node to ask for.
+- On a fresh setup, ask for a dry run first to see what would be captured before anything is
+  written.
 - Re-running the capture refreshes changed conversations; search stays index-fast.

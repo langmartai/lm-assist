@@ -10,29 +10,39 @@ importable from any Claude session, without changing how Claude Code writes them
 
 ## Ask anything, anywhere
 
-```
-you:    do I have notes on the chokidar pin?
-claude: → search_memory("chokidar pin")
-        2 hits — [project A] deployment-build-gotchas: "…pin must stay ^3.6.0…"
-                 [project B] release-checklist: "…verify the pin before packing…"
-```
+> **You:** do I have any notes about the chokidar pin?
+>
+> **Claude:** *(lm-assist → search_memory)* Two hits across your projects — in *deploy-notes*
+> (project A): "the pin must stay ^3.6.0…", and in *release-checklist* (project B): "verify the
+> pin before packing". Want me to open either one?
 
 `search_memory` sweeps **every project's memory by default** and tags each hit with its project.
 Real full-text search (bm25, CJK-aware) — not substring noise.
 
+Tools involved: search_memory
+
 ## One project, every machine
 
-```
-memory_projects                          → project slugs + which hosts hold mirrors
-memory_cross_host(project_id, query)     → hits across the live dir AND every host mirror,
-                                           each flagged presentLocally / stale
-memory_import_candidates(project_id)     → files another machine has that this one lacks
-                                           (or has newer) — suggested, never auto-imported
-memory_file(project_id, name)            → read one memory in full
-memory_record / memory_write             → save a new fact from any session
-memory_map(stats=true)                   → the whole estate at record level — here: 400+
-                                           records across a dozen projects and 3 nodes
-```
+> **You:** does any of my machines remember why we pinned the database driver?
+>
+> **Claude:** *(lm-assist → memory_projects, memory_cross_host)* One hit, and only in the
+> laptop's mirror — *db-driver-pin*: "v2.4 breaks streaming; stay on 2.3 until the upstream fix
+> lands." It's not present locally, and the mirror is fresh. Want to see what else the laptop
+> has that this machine lacks?
+>
+> **You:** sure
+>
+> **Claude:** *(lm-assist → memory_import_candidates)* Two candidates: *db-driver-pin* (missing
+> here) and *load-test-notes* (the laptop's copy is three weeks newer). These are suggestions
+> only — nothing is imported unless you say so.
+
+> **You:** how big is my memory estate overall?
+>
+> **Claude:** *(lm-assist → memory_map)* At record level: 400+ records across a dozen projects
+> and 3 nodes, most of them current, a handful flagged stale. I can drill into any project,
+> read one file in full, or save a new fact from right here.
+
+Tools involved: memory_projects, memory_cross_host, memory_import_candidates, memory_file, memory_record, memory_write, memory_map
 
 Under the hood the memory dirs are mirrored between hosts by the convergent memory sync, so
 "what does any of my machines remember about X" is one call, and staleness is measured rather

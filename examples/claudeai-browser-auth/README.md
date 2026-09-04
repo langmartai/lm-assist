@@ -8,23 +8,42 @@ node can maintain your claude.ai connector for you.
 
 From any connected Claude session:
 
-```
-claudeai_login(which="cookie")
-```
+> **You:** my claude.ai cookie on this machine expired — can you fix it?
+>
+> **Claude:** *(lm-assist → claudeai_login)* This node has a desktop browser, so I've opened a
+> controlled Chrome window at claude.ai — sign in there normally and the session cookie is
+> captured into the node's credential store. Done? I just re-checked: the claude.ai session is
+> healthy, cookie valid for about 29 more days.
 
-- On a node with a desktop browser, this launches a controlled browser at claude.ai
+> **You:** and the headless linux box?
+>
+> **Claude:** *(lm-assist → claudeai_login)* No desktop browser there, so here are the exact
+> manual steps instead: copy the `Cookie:` header from DevTools in a logged-in browser into
+> `~/.claude/claudeai-session.json` on that node. One caveat — the cookie is IP-pinned to the
+> host that captured it, so capture it on the node that will use it.
+
+- On a node with a desktop browser, the login launches a controlled browser at claude.ai
   (`POST /claude-ai/browser/launch-and-capture`) — sign in normally, and the session cookie is
-  captured into the node's credential store.
-- On a headless node, the tool prints the exact manual steps instead (copy the `Cookie:` header
-  from DevTools into `~/.claude/claudeai-session.json`). The cookie is IP-pinned to the host that
-  captured it, so capture it on the node that will use it.
+  captured into the node's credential store. It never types your credentials.
+- On a headless node, you get the exact manual steps instead, as above.
 - The tool re-checks `/claude-ai/healthz` at the end so you see the result immediately.
+
+Tools involved: claudeai_login
 
 ## Kept fresh automatically
 
 The **auth monitor** runs browser-free in the background: it proactively renews the Claude Code
 OAuth token before expiry and tracks claude.ai cookie health (including when the session expires)
-into a per-node snapshot. `auth_status(allNodes: true)` sweeps the whole fleet in one call.
+into a per-node snapshot. One question sweeps the whole fleet:
+
+> **You:** are all my machines still logged in?
+>
+> **Claude:** *(lm-assist → auth_status)* Swept all three connected nodes — laptop: OAuth valid
+> (renews in 6h), claude.ai cookie healthy. linux-box: OAuth valid, cookie expires in 4 days.
+> windows-desk: OAuth valid, but no claude.ai cookie captured yet — want me to run the login
+> flow there?
+
+Tools involved: auth_status
 
 The Settings → Connection page shows the node's hub link and key state at a glance:
 

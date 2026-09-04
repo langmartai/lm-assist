@@ -31,6 +31,16 @@
 
 Every door lands on the same Core service — the web dashboard, the MCP connector, the Claude Code plugin, and the REST API itself are four views of one Core, so nothing you can see in one is invisible from another. Pick your angle:
 
+### The MCP interface — the key entry
+
+The connector is **installed for you**: once a node connects to the hub, *lm-assist langmart* appears under Connectors in the Claude app and at claude.ai, and Claude Code on that machine gets the same server locally. Claude runs in the cloud and your machines have no inbound ports, so the **hub relays** every MCP call over the node's own outbound WebSocket — that relay is what makes a claude.ai chat reach a session on any of your machines.
+
+| | |
+|---|---|
+| <a href="./examples/mcp-connector-install/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/mcp-connector-install/claude-app-connectors.png" alt="Claude desktop app — Settings → Connectors showing lm-assist langmart connected"></a><br><sub>**Claude desktop app** — Settings → Connectors: *lm-assist langmart*, provisioned after the hub connect</sub> | <a href="./examples/mcp-connector-install/"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/examples/mcp-connector-install/claudeai-connector-menu-masked.png" alt="claude.ai conversation — the Connectors submenu with lm-assist langmart enabled"></a><br><sub>**In a claude.ai conversation** — the composer's Connectors submenu, per-tool access one click away</sub> |
+
+How it works, what gets relayed, first call, governance, troubleshooting: [`docs/mcp-connector.md`](./docs/mcp-connector.md) · walkthrough with a real conversation: [`examples/mcp-connector-install`](./examples/mcp-connector-install/).
+
 ### If you're the human
 
 You watch and drive from the **web dashboard**: a cross-node sessions browser with per-session insight views (chat, thinking, agents, git, files, and more), a live grid of every running session, real web terminals in the browser, and dedicated workspaces for missions, memory & rules, CCR remote sessions, Cowork chat, the scheduler, and MCP tool governance. From the terminal, the **Claude Code plugin** gives you the same platform as skills and slash commands — `/sessions`, `/summary`, `/run`, `/assist-status` — plus the statusline (context %, rate limits, cost) and hooks, all talking to the same Core API the dashboard uses. **UI panes** close the loop between the two: every dashboard is also a standalone page with its own URL, so a Claude session can hand you a live mission graph or session view mid-conversation instead of describing it. A machine switcher in the dashboard reaches every enrolled node through the hub relay, so one browser tab covers the whole fleet. The flagship automation — mission autopilot, auto-resume, model-limit fallback, the backlog graph — is all operated from these same pages. Feature-by-feature detail lives in [Functional documentation](#functional-documentation), the doc map in [docs/README.md](./docs/README.md), and the component-by-component breakdown in [docs/components.md](./docs/components.md).

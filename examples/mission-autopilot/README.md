@@ -7,15 +7,21 @@ stop. Workflows describe the repeatable shapes.
 
 ## Driving work
 
-```
-mission_create(title, objective, …)      → a mission (linked to backlog ids if it serves them)
-mission_place / mission_spawn            → pick the right node, start the worker session
-mission_sessions / mission_session_read  → what the workers are doing right now
-mission_session_drive / _answer          → steer a worker or answer its question
-mission_workflow_set / _get / _list      → the repeatable playbooks workers follow
-mission_onboard                          → teach a fresh session its mission context
-mission_graph / mission_history          → the whole picture, and how it got here
-```
+All of it is plain conversation — from claude.ai, Cowork, or any Claude Code session:
+
+> **You:** create a mission to get the flaky e2e suite green, and put it on whichever machine is free
+>
+> **Claude:** *(lm-assist → mission_create, mission_place, mission_spawn)* Created **msn_7c31** "Stabilize the e2e suite". Placement came back go on **linux-box** — no dependency gate, no resource conflict — so I spawned the native executor there: a Claude Code session named after the mission, worktree ensured, binding persisted. The controller picks it up on its next tick.
+
+> **You:** how's the worker doing — has it asked for anything?
+>
+> **Claude:** *(lm-assist → mission_sessions, mission_session_read)* One active worker on **msn_7c31**. Its last message says it traced the flake to a shared test fixture, and it's now blocked on a question: "Delete the retry wrapper, or keep it behind a flag?" with two suggested answers.
+
+> **You:** keep it behind a flag
+>
+> **Claude:** *(lm-assist → mission_session_answer)* Answered the pending question with "Keep it behind a flag." The worker unblocked and is continuing; the controller re-engages if it stops.
+
+Tools involved: `mission_create`, `mission_place`, `mission_spawn`, `mission_sessions`, `mission_session_read`, `mission_session_drive`, `mission_session_answer`, `mission_workflow_set`, `mission_workflow_get`, `mission_workflow_list`, `mission_onboard`, `mission_graph`, `mission_history`
 
 The controller is itself a Claude session — elected across the fleet, failing over if its node
 goes down — so the "auto" in autopilot is a real agent reading executor feedback, not a cron
