@@ -95,6 +95,10 @@ Governed tools softly refuse once until it has been called; `guide(topic)` answe
 - **Identity** — the hub binds the connector to your user; per-call session identity is
   resolved on the node, and every tool dispatches into the same Core REST API the web UI uses.
 
+## Advanced: extend the connector with your own plugin
+
+Any standard MCP stdio server dropped into a node's plugin directory becomes `ext__<plugin>__<tool>` on this same connector — governed by the loader (disabled until the owner enables it, checksum-pinned, audited). The whole loop, done from a claude.ai conversation with a real run — build on the node, owner-enable, reconnect, set permissions, call it: [`examples/build-your-own-mcp-plugin`](../examples/build-your-own-mcp-plugin/). Contract: [`mcp-plugin-contract.md`](./mcp-plugin-contract.md).
+
 ## Troubleshooting
 
 | Symptom | Meaning | Do |

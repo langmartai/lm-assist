@@ -13,6 +13,8 @@ lm-assist MCP surfaces (the stdio plugin and the hub `/mcp` connector), and spaw
 stdio server. You do **not** write any lm-assist-specific code, link any lm-assist library, or know
 anything about lm-assist internals. If your server speaks MCP over stdio, it works.
 
+**Worked example (real run):** [`examples/build-your-own-mcp-plugin`](../examples/build-your-own-mcp-plugin/) — a plugin built by an agent from a claude.ai conversation, enabled by the owner, and called end to end.
+
 **Reference schema:** `docs/mcp-plugin.schema.json` in the lm-assist repo (reproduced verbatim in
 §3.2 so this document stands alone).
 
