@@ -849,7 +849,14 @@ export interface SupervisorDeps {
    *  supervisor passes CONTROLLER_ROSTER_CHANGED_DIRECTIVE when a cluster-roster change
    *  triggered the engagement. */
   drive: (cs: ControllerSession, directive?: string) => Promise<void>;
-  teardown: (cs: ControllerSession) => Promise<void>;
+  /** `reason` is recorded in controller-history — the launch path and the not-monitor path
+   *  must not share one hard-coded string (the journal said "not monitor" for a controller
+   *  that merely read as not-live, 2026-09-05). */
+  teardown: (cs: ControllerSession, reason?: string) => Promise<void>;
+  /** Optional: hand the recorded terminal handle back to the terminal backend when a live
+   *  controller is ADOPTED (Core restart) — on Windows that is the tab RuntimeId the previous
+   *  Core learned at launch; without it a drive to a busy controller cannot find the tab. */
+  rememberTerminal?: (cs: ControllerSession) => void;
   /** Read the controller session's context-usage percent (0-100), or null if unknown.
    *  Absent → the context-health compact guard is skipped (behaviour unchanged). */
   controllerContextPct?: (cs: ControllerSession) => Promise<number | null>;
@@ -1380,6 +1387,7 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   // material engagement or safety interval.
   if (isMonitor && live && cs && deps.bootAdopt && !deps.bootAdopt.done()) {
     deps.bootAdopt.mark();
+    deps.rememberTerminal?.(cs);
     await deps.drive(cs, CONTROLLER_ADOPT_RESUME_DIRECTIVE);
     const adopted: ControllerSession = { ...cs, lastDriveAt: deps.now };
     await deps.putControllerSession(adopted);
@@ -1575,7 +1583,7 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
 
   if (action === 'teardown') {
     if (cs) {
-      await deps.teardown(cs);
+      await deps.teardown(cs, 'not monitor (confident, debounced)');
       await deps.putControllerSession(null);
     }
     return { action: 'teardown', controllerSession: null };
@@ -1590,12 +1598,13 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     // (recoveryReason set) targets a controller whose tmux IS alive but wedged — adopting it
     // back would perpetuate the wedge; fall through to teardown + resume-first relaunch.
     if (cs && !recoveryReason && deps.isLive(cs)) {
+      deps.rememberTerminal?.(cs);
       return { action: 'adopt', controllerSession: cs };
     }
     // Defensive dedupe: if a prior controller record exists but we're (re)launching (it was deemed
     // !live, or its bridge failed), tear down its tmux FIRST so a relaunch never stacks a second
     // controller on top of a still-running one (belt-and-suspenders with the isLive fix).
-    if (cs) { try { await deps.teardown(cs); } catch { /* best-effort */ } }
+    if (cs) { try { await deps.teardown(cs, recoveryReason ?? 'relaunch: recorded controller read as not live'); } catch { /* best-effort */ } }
     // Launch with lastDriveAt unset so the next tick triggers a drive immediately.
     const newCs = await deps.launch();
     await deps.putControllerSession(newCs);
@@ -2384,7 +2393,7 @@ export function registerMissionController(
         }
         return null;
       },
-      teardown: async (cs) => {
+      teardown: async (cs, reason) => {
         try {
           if (cs.tmux && getCcController().backend === 'tmux') {
             const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
@@ -2401,13 +2410,20 @@ export function registerMissionController(
         }
         try {
           const { recordControllerEvent } = require('./controller-history') as typeof import('./controller-history');
-          recordControllerEvent(controllerCwd(), { at: Date.now(), event: 'teardown', sessionId: cs.sessionId, tmux: cs.tmux, cse: cs.cse ?? null, node: cs.node, reason: 'not monitor (confident, debounced)' });
+          recordControllerEvent(controllerCwd(), { at: Date.now(), event: 'teardown', sessionId: cs.sessionId, tmux: cs.tmux, cse: cs.cse ?? null, node: cs.node, reason: reason ?? 'teardown' });
           const { recordControl } = require('./control-journal') as typeof import('./control-journal');
           recordControl(controllerCwd(), { at: Date.now(), kind: 'lifecycle', event: 'teardown', sessionId: cs.sessionId, tmux: cs.tmux });
         } catch { /* advisory */ }
       },
       // Restart-adopt (once per Core-process boot) + stray-controller sweep wiring.
       bootAdopt: { done: () => missionBootAdoptDone, mark: () => { missionBootAdoptDone = true; } },
+      // Adopting a controller hands its recorded terminal handle back to the backend: on
+      // Windows that is the tab RuntimeId the previous Core learned at launch. Measured
+      // 2026-09-05 on 107: without it, the first drive to a BUSY controller after the upgrade
+      // restart failed with "could not locate window/tab" (marker locate loses to animation).
+      rememberTerminal: (cs) => {
+        try { if (cs.tmux) getCcController().rememberTerminal?.(cs.sessionId, cs.tmux); } catch { /* advisory */ }
+      },
       listTmuxSessions: async () => {
         const { execFile } = require('child_process') as typeof import('child_process');
         return new Promise<string[]>((resolve) => {

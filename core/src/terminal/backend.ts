@@ -203,6 +203,12 @@ export interface CcController {
    * does not implement it reports NOT_SUPPORTED rather than pretending.
    */
   restart?(sessionId: string, opts?: { force?: boolean }): Promise<Record<string, unknown>>;
+  /**
+   * Optional: accept a terminal handle another component already holds for this
+   * session (e.g. the mission supervisor's controller record after a Core restart).
+   * Windows keeps the tab RuntimeId it needs to drive a busy session; tmux needs nothing.
+   */
+  rememberTerminal?(sessionId: string, handle: string): void;
 }
 
 // ---------------------------------------------------------------------------

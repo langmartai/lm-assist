@@ -21,6 +21,8 @@ import {
   closeWindow,
   getTabRid,
   forgetTabRid,
+  rememberTabRid,
+  resolveTabRidFor,
 } from './windows-terminal';
 import {
   listWindowsSessions,
@@ -191,9 +193,18 @@ export const wtCcController: CcController = {
     };
   },
 
+  // A handle another component holds for this session (the mission supervisor's
+  // controller record, across Core restarts) — accepted only when it is a tab rid.
+  rememberTerminal(sessionId: string, handle: string): void {
+    rememberTabRid(sessionId, handle);
+  },
+
   async prompt(sessionId: string, text: string, opts?: { submit?: boolean; keys?: string[] }): Promise<Record<string, unknown>> {
     const pid = pidForSession(sessionId);
     if (!pid) throw new Error(`no live session ${sessionId} on this host`);
+    // Title-independent tab handle: cached, else relearned from the live tab set. Without
+    // it a BUSY session (title animating every frame) defeats the engine's marker locate.
+    const rid = await resolveTabRidFor(sessionId, pid);
 
     // Keys path (Escape / arrows / Tab — the dialog+menu gap). Additive: the
     // text-only path below is unchanged. Order: text (pasted, unsubmitted) →
@@ -202,10 +213,10 @@ export const wtCcController: CcController = {
     const wtKeys = (opts?.keys ?? []).map((k) => CC_NAV_KEYS[k].wt);
     if (wtKeys.length > 0) {
       if (text) {
-        const rt = await focusAndSend({ pid, rid: getTabRid(sessionId), text, submit: false });
+        const rt = await focusAndSend({ pid, rid, text, submit: false });
         if (!rt.ok) throw new Error(rt.error || 'text paste failed');
       }
-      const rk = await focusAndSend({ pid, rid: getTabRid(sessionId), keys: wtKeys.join(' ') });
+      const rk = await focusAndSend({ pid, rid, keys: wtKeys.join(' ') });
       if (!rk.ok) throw new Error(rk.error || 'key send failed');
       if (opts?.submit) {
         const re = await focusAndSend({ pid, keys: 'ENTER' });
@@ -219,7 +230,7 @@ export const wtCcController: CcController = {
     // `SendKeys("{ENTER}")` fired 150ms after a clipboard paste, and it did not
     // land — measured on DESKTOP-GDKLATG: text in the composer, session idle,
     // and `submitted: true` reported anyway.
-    const r = await focusAndSend({ pid, rid: getTabRid(sessionId), text, submit: false });
+    const r = await focusAndSend({ pid, rid, text, submit: false });
     if (!r.ok) throw new Error(r.error || 'prompt failed');
     if (!wantSubmit) return { ...r, submitted: false } as unknown as Record<string, unknown>;
 

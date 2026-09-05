@@ -37,6 +37,8 @@
 import { execFile, spawn } from '../utils/exec';
 import { IS_WINDOWS } from '../utils/process-utils';
 import { describeWindowsLaunch } from './windows-launch-verdict';
+import { getDataDir } from '../utils/path-utils';
+import { parseTabRidFile, renderTabRidFile, looksLikeTabRid, resolveTabRid } from './windows-tab-rid';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -684,17 +686,60 @@ export async function captureScreen(pid: number): Promise<CaptureResult> {
 // Tab RuntimeId cache — stable, title-independent tab handle. Populated when we
 // CREATE a session (diff the tab set before/after launch). Lets us drive a
 // freshly-created session whose title is still animating (marker can't win then).
+//
+// PERSISTED to `<data dir>/wt-tab-rids.json` so it survives a Core restart: until
+// 2026-09-05 it was process memory only, and the first busy-controller drive after
+// an upgrade restart failed with "could not locate window/tab" (see windows-tab-rid.ts).
+// A stale rid (tab element rebuilt) is harmless — the engine falls back to its marker.
 // ---------------------------------------------------------------------------
-const tabRidBySession = new Map<string, string>();
+const TAB_RID_FILE = path.join(getDataDir(), 'wt-tab-rids.json');
+let tabRidBySession: Map<string, string> | null = null;
+
+function tabRids(): Map<string, string> {
+  if (!tabRidBySession) {
+    tabRidBySession = new Map<string, string>();
+    try { tabRidBySession = parseTabRidFile(fs.readFileSync(TAB_RID_FILE, 'utf8')); } catch { /* first run */ }
+  }
+  return tabRidBySession;
+}
+function persistTabRids(): void {
+  try {
+    fs.mkdirSync(path.dirname(TAB_RID_FILE), { recursive: true });
+    fs.writeFileSync(TAB_RID_FILE, renderTabRidFile(tabRids()), { mode: 0o600 });
+  } catch { /* best-effort — the in-memory map still serves this process */ }
+}
 
 export function getTabRid(key: string): string | undefined {
-  return tabRidBySession.get(key);
+  return tabRids().get(key);
 }
 export function setTabRid(key: string, rid: string): void {
-  tabRidBySession.set(key, rid);
+  tabRids().set(key, rid);
+  persistTabRids();
 }
 export function forgetTabRid(key: string): void {
-  tabRidBySession.delete(key);
+  if (tabRids().delete(key)) persistTabRids();
+}
+
+/**
+ * Accept a handle another component already holds for this session (the mission
+ * supervisor's controller record carries the rid across Core restarts). Only a
+ * dotted UIA RuntimeId is accepted — a bare pid or a tmux name is ignored.
+ */
+export function rememberTabRid(sessionId: string, handle: string | null | undefined): boolean {
+  if (!looksLikeTabRid(handle)) return false;
+  const rid = (handle as string).trim();
+  if (getTabRid(sessionId) !== rid) setTabRid(sessionId, rid);
+  return true;
+}
+
+/**
+ * The rid to send with: cached, else relearned from the live tab set (the ONE tab whose
+ * name matches the pid's console title) and cached. `undefined` = send by pid only and
+ * let the engine's marker path try.
+ */
+export async function resolveTabRidFor(sessionId: string, pid: number | null): Promise<string | undefined> {
+  if (!IS_WINDOWS) return getTabRid(sessionId);
+  return resolveTabRid(sessionId, pid, { get: getTabRid, set: setTabRid }, { listTabs: listTabIds, listProcs: listTerminalProcs });
 }
 
 interface TabId { rid: string; hwnd: number; tabIndex: number; name: string }
