@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.2.3] - 2026-09-06
+
+Follow-up to 0.2.2 for Windows nodes, plus session-cache work that had sat uncommitted since August.
+
+### Fixed
+- **A drive to a busy Mission Control controller survives a Core restart on Windows.** The Windows
+  Terminal tab id learned at launch lived only in the launching Core's memory, so after a restart every
+  send fell back to the engine's marker locate, which a busy session defeats (it rewrites its console
+  title every frame): the first drive after the 0.2.2 upgrade worked, the next one failed with
+  "could not locate window/tab", and three of those in a row relaunch the controller. The tab-id map
+  is now persisted to `wt-tab-rids.json`, relearned from the live tab set when missing (only an
+  unambiguous title match, never a guess), and handed back to the backend from the controller record
+  when the supervisor adopts a controller after a restart.
+- **Controller-history teardown reasons are honest.** The launch path's defensive teardown recorded
+  "not monitor (confident, debounced)" like the real not-monitor teardown; each path now records why.
+- **Hub session-cache sync delivered nothing**: it read a bare `sessions` key and old field names
+  from the enveloped `GET /sessions` reply. Both shapes are accepted and the fields map to the hub
+  contract.
+
+### Added
+- **Session-cache capacity**: LMDB map utilisation, entry count and a map-full flag on `GET /health`
+  (`sessionCache`), `MDB_MAP_FULL` detection instead of silent write loss, and a 30-day eviction
+  sweep (60 s after boot, then daily). Evicted sessions re-parse from their transcripts on next access.
+
 ## [0.2.2] - 2026-09-05
 
 Hotfix for Windows nodes running Mission Control.
