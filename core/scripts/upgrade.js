@@ -364,6 +364,38 @@ function getNpmCmd() {
 }
 
 /**
+ * The robocopy argument list for the in-place overlay of an extracted tarball
+ * (`srcDir` = the extracted `package/` dir) onto the installed package (`pkgDir`).
+ * Kept pure so it can be unit-tested — this list has bitten twice.
+ */
+function robocopyArgs(srcDir, pkgDir) {
+  return [
+    srcDir, pkgDir,
+    '/E',         // Copy subdirectories including empty ones
+    // npm normalizes EVERY file's mtime inside a tarball to one fixed 1985 timestamp, so
+    // a file whose change kept its size (package.json "0.2.2"→"0.2.3", the plugin
+    // manifests, Next's BUILD_ID / build manifests — 29 files in the 0.2.3 release) is
+    // "Same" to robocopy and would be SKIPPED: the node then runs new code while
+    // reporting the old version, with a web build id that does not match its chunks
+    // (measured on DESKTOP-GDKLATG 2026-09-06). Include Same and Tweaked files.
+    '/IS',        // Include Same files
+    '/IT',        // Include Tweaked files
+    '/R:3',       // Retry 3 times on failed copies
+    '/W:2',       // Wait 2 seconds between retries
+    '/NFL',       // No file listing (less noise)
+    '/NDL',       // No directory listing
+    '/NJH',       // No job header
+    '/NJS',       // No job summary
+    // No `/XD node_modules`: a bare name excludes EVERY directory so named, and the only
+    // node_modules a tarball ships is the web standalone's bundled runtime
+    // (web/.next/standalone/node_modules, ~1250 files). Excluding it left the web
+    // without `next` once the failed npm attempt had pruned the old copy. The package
+    // root never ships a node_modules, so nothing else needs excluding; robocopy without
+    // /PURGE never deletes destination-only files, so the installed deps are untouched.
+  ];
+}
+
+/**
  * Windows EBUSY fallback: download tarball and overwrite files in place using robocopy.
  *
  * This avoids npm's rename-based update entirely. Instead:
@@ -453,17 +485,7 @@ function upgradeViaTarball(pkgDir, source) {
     try {
       // robocopy exit codes: 0=no files copied, 1=files copied, 2=extra files in dest,
       // 4=mismatches, 8+=errors. Codes 0-7 are success.
-      const result = execFileSync('robocopy', [
-        srcDir, pkgDir,
-        '/E',         // Copy subdirectories including empty ones
-        '/R:3',       // Retry 3 times on failed copies
-        '/W:2',       // Wait 2 seconds between retries
-        '/NFL',       // No file listing (less noise)
-        '/NDL',       // No directory listing
-        '/NJH',       // No job header
-        '/NJS',       // No job summary
-        '/XD', 'node_modules',  // Exclude node_modules (managed by npm separately)
-      ], {
+      const result = execFileSync('robocopy', robocopyArgs(srcDir, pkgDir), {
         encoding: 'utf-8', timeout: 120_000, windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -649,7 +671,14 @@ async function main() {
   log('=== upgrade finished ===');
 }
 
-main().catch(err => {
-  try { log(`FATAL: ${err.message}`); } catch {}
-  process.exitCode = 1;
-});
+// Every caller spawns this file as the main module (`node upgrade.js …` from the CLI
+// and from POST /dev-mode/upgrade). The guard lets tests require the pure helpers
+// without starting an upgrade — an unguarded require would kill every service here.
+if (require.main === module) {
+  main().catch(err => {
+    try { log(`FATAL: ${err.message}`); } catch {}
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { resolveSource, robocopyArgs };
