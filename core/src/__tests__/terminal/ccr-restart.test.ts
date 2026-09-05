@@ -52,6 +52,21 @@ test('BUSY session without force and waiting disabled → needs-force and NOTHIN
   assert.deepEqual(calls, ['verdict'], 'no stop/kill/resume on a busy session without force');
 });
 
+test('BUSY is refused IMMEDIATELY by default — no wait, nothing destructive (the 120s default outlived the connector timeout)', async () => {
+  let slept = 0;
+  const { deps, calls } = mkDeps({
+    verdicts: [{ live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: 't', updatedAt: new Date(NOW - 10_000).toISOString() }],
+  });
+  deps.phase = () => 'busy';
+  deps.sleep = async () => { slept++; };
+  const r = await restartLocal('sid-1', {}, deps); // NO waitMs → default
+  assert.equal(r.ok, false);
+  assert.equal(r.state, 'needs-force');
+  assert.equal(r.busy, true, 'the refusal says WHY: it read as busy');
+  assert.equal(slept, 0, 'the default must not wait for an in-flight turn');
+  assert.ok(!calls.includes('kill') && !calls.includes('resume'));
+});
+
 test('BUSY session WITH force → killed and resumed', async () => {
   const { deps, calls } = mkDeps({
     verdicts: [
@@ -151,7 +166,7 @@ test('busy phase + wait TIMEOUT: needs-force, nothing destructive, waitedMs repo
   assert.equal(r.ok, false);
   assert.equal(r.state, 'needs-force');
   assert.ok((r.waitedMs ?? 0) >= 10_000);
-  assert.match(r.reason, /stayed busy/);
+  assert.match(r.reason, /still read as busy after the full wait window/);
   assert.ok(!calls.includes('kill') && !calls.includes('resume'), 'timeout must be non-destructive');
 });
 
@@ -195,6 +210,164 @@ test('phase unknown + waitMs:0 falls back to the transcript-age gate (old behavi
   assert.equal(r.ok, false);
   assert.equal(r.state, 'needs-force');
   assert.ok(!calls.includes('kill'));
+});
+
+// ── return the SCREEN, don't classify it (prod incident 117, 2026-08-15) ─────
+//
+// The tool used to report state:'restarted', ok:true for a session that came back
+// parked on a blocking modal, and to classify a FROZEN modal as actively-busy —
+// then sit in a 120s wait until the MCP connector timed out first. Both are fixed
+// by handing the caller the pane and letting it judge.
+
+const MODAL = [
+  'Resume from summary (recommended)',
+  '❯ 1. Yes, switch to opus',
+  '  2. No, go back',
+  'Enter to confirm · Esc to cancel',
+].join('\n');
+
+test('a busy refusal carries the SCREEN, the pane name, and busy:true — one round trip, nothing killed', async () => {
+  const { deps, calls } = mkDeps({
+    verdicts: [{ live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: 'claude-abc', updatedAt: new Date(NOW - 10_000).toISOString() }],
+  });
+  deps.phase = () => 'busy';
+  deps.sleep = async () => { /* screen poll */ };
+  deps.captureScreen = (_sid, hint) => ({ tmuxSession: hint || 'claude-abc', screen: MODAL });
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.state, 'needs-force');
+  assert.equal(r.busy, true);
+  assert.equal(r.screen, MODAL, 'the caller gets the bytes terminal_capture would give');
+  assert.equal(r.screenSource, 'pre-restart');
+  assert.equal(r.screenStable, true, 'two identical captures ⇒ frozen, not working');
+  assert.equal(r.tmuxSession, 'claude-abc', 'so terminal_send can act on it with no extra lookup');
+  assert.ok(!calls.includes('kill') && !calls.includes('resume'), 'a refusal stays non-destructive');
+});
+
+/** A deps set with a clock that real sleeps advance — the post-restart settle is a
+ *  TIMING behaviour, so a frozen clock cannot exercise it. */
+function withClock(deps: RestartDeps) {
+  let clock = NOW;
+  deps.now = () => clock;
+  deps.sleep = async (ms) => { clock += ms; };
+  return { elapsed: () => clock - NOW };
+}
+
+test('a successful restart WAITS for the fresh session to settle, then carries its screen from the FRESH pane', async () => {
+  const seen: Array<string | null | undefined> = [];
+  const { deps } = mkDeps({
+    resume: async () => ({ webUrl: 'https://claude.ai/code/x', tmuxSession: 'ccr-sid-1' }),
+  });
+  const clock = withClock(deps);
+  deps.captureScreen = (_sid, hint) => { seen.push(hint); return { tmuxSession: hint || 'stale-tmux', screen: MODAL }; };
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.state, 'restarted');
+  assert.equal(r.screen, MODAL, '"restarted" is not "usable" — the pane says which');
+  assert.equal(r.screenSource, 'post-restart');
+  assert.equal(r.tmuxSession, 'ccr-sid-1');
+  assert.ok(seen.every((h) => h === 'ccr-sid-1'), 'the fresh resume record\'s pane is the hint, not the dead one');
+  assert.equal(r.screenStable, true);
+  // the wait is REAL: settle before the first capture, then hold still for a minimum
+  assert.ok(clock.elapsed() >= 1_500 + 3_000, `waited for the TUI to settle, got ${clock.elapsed()}ms`);
+  assert.ok((r.screenWatchedMs ?? 0) >= 1_500 + 3_000, 'and reports how long it watched');
+  assert.match(r.reason, /RE-OPENS modals/i, 'the reason tells the caller to expect a dialog chain');
+});
+
+test('post-restart: a pane still painting is NOT called stable just because two captures match', async () => {
+  // Paints for a while, then holds. A naive two-identical-captures rule would have
+  // locked in the half-painted frame at poll 2 and reported it as the settled state.
+  const frames = ['', 'Loading…', 'Loading…', MODAL];
+  let i = 0;
+  const { deps } = mkDeps({ resume: async () => ({ tmuxSession: 'ccr-sid-1' }) });
+  withClock(deps);
+  deps.captureScreen = () => ({ tmuxSession: 'ccr-sid-1', screen: frames[Math.min(i++, frames.length - 1)] });
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.screenStable, true);
+  assert.equal(r.screen, MODAL, 'the SETTLED screen, not the "Loading…" frame that repeated once');
+});
+
+test('post-restart: a pane that never settles reports screenStable:false and SAYS so', async () => {
+  let n = 0;
+  const { deps } = mkDeps({ resume: async () => ({ tmuxSession: 'ccr-sid-1' }) });
+  withClock(deps);
+  deps.captureScreen = () => ({ tmuxSession: 'ccr-sid-1', screen: `✽ Infusing… (${n++}s · ↓ 650 tokens)` });
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.ok, true, 'a never-settling pane is reported, not an error');
+  assert.equal(r.screenStable, false);
+  assert.match(r.reason, /STILL CHANGING/i, 'the caller is told the snapshot is mid-paint, not a settled state');
+  assert.match(r.reason, /terminal_capture/, 'and what to do instead');
+});
+
+test('an unstable pane reports screenStable:false — still repainting is itself evidence', async () => {
+  let n = 0;
+  const { deps } = mkDeps();
+  deps.phase = () => 'busy';
+  deps.sleep = async () => { /* screen poll */ };
+  deps.captureScreen = () => ({ tmuxSession: 't', screen: `✽ Infusing… (${n++}s · ↓ 650 tokens)` });
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.state, 'needs-force');
+  assert.equal(r.screenStable, false, 'never matched twice — the TUI is actually painting');
+  assert.match(r.screen ?? '', /Infusing/);
+});
+
+test('no readable pane → NO screen field and the restart still completes (an unreadable screen never fails a restart)', async () => {
+  const { deps } = mkDeps();
+  deps.sleep = async () => { /* screen poll */ };
+  deps.captureScreen = () => null;
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.state, 'restarted');
+  assert.equal(r.screen, undefined, 'absent, not empty-string — we never guess a screen');
+  assert.equal(r.screenSource, undefined);
+});
+
+test('a throwing capture never fails the restart', async () => {
+  const { deps } = mkDeps();
+  deps.sleep = async () => { /* screen poll */ };
+  deps.captureScreen = () => { throw new Error('tmux session not found'); };
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.screen, undefined);
+});
+
+test('an oversized pane is TAIL-bounded and says so (modals render at the bottom)', async () => {
+  const { deps } = mkDeps();
+  const big = Array.from({ length: 4000 }, (_, i) => `line ${i} ${'x'.repeat(40)}`).join('\n') + '\n❯ 1. Yes';
+  deps.sleep = async () => { /* screen poll */ };
+  deps.captureScreen = () => ({ tmuxSession: 't', screen: big });
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.screenTruncated, true);
+  assert.ok(Buffer.byteLength(r.screen ?? '', 'utf8') <= 8192, 'bounded to the 8KB budget');
+  assert.match(r.screen ?? '', /❯ 1\. Yes$/, 'the TAIL is kept — that is where the modal is');
+});
+
+test('kill-failed carries the screen of the process that would not die', async () => {
+  const { deps } = mkDeps({
+    killOwner: async () => ({ killed: false, wasAlive: true, method: 'sigkill' }),
+  });
+  deps.sleep = async () => { /* screen poll */ };
+  deps.captureScreen = () => ({ tmuxSession: 'claude-abc', screen: MODAL });
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.state, 'kill-failed');
+  assert.equal(r.screen, MODAL);
+  assert.equal(r.screenSource, 'pre-restart');
+});
+
+test('a wait TIMEOUT carries the screen too — before you retry with a longer wait, look at the pane', async () => {
+  let clock = NOW;
+  const { deps, calls } = mkDeps({
+    verdicts: [{ live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: 't', updatedAt: new Date(NOW - 5_000).toISOString() }],
+  });
+  deps.now = () => clock;
+  deps.phase = () => 'busy';
+  deps.sleep = async (ms) => { clock += ms; };
+  deps.captureScreen = () => ({ tmuxSession: 't', screen: MODAL });
+  const r = await restartLocal('sid-1', { waitMs: 10_000 }, deps);
+  assert.equal(r.state, 'needs-force');
+  assert.equal(r.busy, true);
+  assert.equal(r.screen, MODAL);
+  assert.equal(r.screenStable, true, 'frozen for the whole wait window');
+  assert.ok(!calls.includes('kill') && !calls.includes('resume'));
 });
 
 // ── resume-fidelity: permission-mode restoration (found live 2026-07-22) ──────

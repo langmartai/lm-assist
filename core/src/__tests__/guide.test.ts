@@ -259,6 +259,39 @@ test('ccr guide: resume is lossless (own name + same bridge id) and the modal is
   assert.match(t, /Send ESCAPE, never ENTER/);
 });
 
+test('ccr guide: a modal-wedged session reads as busy, restart returns the SCREEN, and a restart re-opens modals', async () => {
+  const t = await text({ topic: 'ccr' });
+  // 1. the false-busy — the fact that cost ~11 steps and two blind 4-minute timeouts
+  assert.match(t, /FROZEN ON A MODAL READS AS "ACTIVELY BUSY"/i);
+  assert.match(t, /REFUSES IMMEDIATELY/);
+  assert.match(t, /screenStable/);
+  assert.match(t, /force:true/);
+  // 2. "restarted" is not "usable"
+  assert.match(t, /RE-OPENS MODALS/i);
+  assert.match(t, /CHAIN of dialogs/i);
+  // the connector timeout is NOT a dead node
+  assert.match(t, /isn't responding/);
+  assert.match(t, /IS NOT ONE/);
+});
+
+test('ccr guide: a stale CLI falls back to FABLE, so version drift presents as a quota wedge', async () => {
+  const t = await text({ topic: 'ccr' });
+  assert.match(t, /could not be restored/);
+  assert.match(t, /FABLE/);
+  assert.match(t, /which claude/);            // --version hides a second install
+  assert.match(t, /claude update/);
+  assert.match(t, /UPGRADE BEFORE RESTARTING/i); // a running session keeps its old binary
+  assert.match(t, /PIN the model/i);
+});
+
+test('terminals guide: drive a TUI menu ONE key per call, verifying the ❯ moved between', async () => {
+  const t = await text({ topic: 'terminals' });
+  assert.match(t, /ONE KEY PER CALL/i);
+  assert.match(t, /❯/);
+  assert.match(t, /permission mode/);   // what skipping it cost on a live prod session
+  assert.match(t, /FROZEN, not working/i);
+});
+
 test('recovery is findable in the words of the SYMPTOM, not of the answer', async () => {
   for (const syn of ['reboot', 'offline', 'node-down', 'recover', 'rejoin']) {
     assert.match(await text({ topic: syn }), /Guide: machines \(nodes\)/, `${syn} → nodes`);
@@ -267,6 +300,10 @@ test('recovery is findable in the words of the SYMPTOM, not of the answer', asyn
     assert.match(await text({ topic: syn }), /Guide: machine-access/, `${syn} → machine-access`);
   }
   assert.match(await text({ topic: 'resume' }), /Guide: CCR/, 'resume → ccr');
+  // a wedged session is looked up by its symptom, not by "ccr"
+  for (const syn of ['stuck', 'wedged', 'frozen', 'modal', 'restart', 'fable', 'model-limit']) {
+    assert.match(await text({ topic: syn }), /Guide: CCR/, `${syn} → ccr`);
+  }
 });
 
 test('bootstrap carries the node-recovery playbook (it must not be guide-only)', async () => {
