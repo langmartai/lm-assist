@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.2] - 2026-09-05
+
+Hotfix for Windows nodes running Mission Control.
+
+### Fixed
+- **Mission Control no longer closes and reopens its own controller session on Windows.** The
+  supervisor's liveness check asked tmux whether the recorded controller handle exists, but on
+  Windows that handle is a Windows Terminal tab id: `tmux.exists()` throws off-POSIX and the
+  `sessionVerdict(...).inTmux` fallback is false by construction, so a healthy controller read as
+  dead on every tick and was torn down and resumed — 175 teardown/resume pairs in one day on one
+  node, the operator's terminal closing and reopening every ~3 minutes. Liveness is now
+  backend-neutral (`controllerIsLive`): tmux answers by session name on POSIX; on Windows the
+  session's registered owner process answers — the same fact `windows_terminal_list` reports.
+
 ## [0.2.1] - 2026-09-01
 
 First patch on the 0.2.0 line — two fixes plus the documentation & examples wave.

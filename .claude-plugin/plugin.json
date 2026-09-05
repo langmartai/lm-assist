@@ -1,6 +1,6 @@
 {
   "name": "lm-assist",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Full observability & control for the Claude product line \u2014 sessions, conversations, Cowork, agents, memory, connectors, usage",
   "author": {
     "name": "langmartai"

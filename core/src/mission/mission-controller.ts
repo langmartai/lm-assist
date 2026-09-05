@@ -701,6 +701,40 @@ export function decideSupervisor(input: { isMonitor: boolean; live: boolean; dri
   return { action: 'idle' };
 }
 
+// ── Controller liveness: backend-neutral ─────────────────────────────────────
+// The recorded controller handle (`cs.tmux`) is a tmux session NAME on POSIX but a Windows
+// Terminal tab RuntimeId (or pid) on Windows — see normalizeLaunchResult. Asking tmux about it
+// on Windows can never succeed: `tmux.exists()` throws (assertPosix) and the
+// `sessionVerdict(...).inTmux` fallback is false by construction, so the supervisor read its own
+// healthy controller as dead on EVERY tick and tore it down + resumed it (observed 2026-09-05 on
+// 107: 175 teardown/resume pairs in one day — the operator's terminal closing and reopening
+// every ~3 minutes). On a non-tmux backend liveness is the session's OWNER PROCESS: registered
+// in the live registry and alive — the same fact `windows_terminal_list` reports.
+export interface ControllerLivenessProbes {
+  backend: 'tmux' | 'wt';
+  /** tmux `has-session` for a session NAME — may throw off-POSIX (assertPosix). */
+  tmuxExists: (name: string) => boolean;
+  /** sessionVerdict(sessionId): `live` = owner pid registered + alive; `inTmux` = a pane found. */
+  verdict: (sessionId: string) => { live: boolean; inTmux: boolean };
+}
+
+/** Pure. Is the recorded controller session alive on this host's terminal backend? */
+export function controllerIsLive(cs: Pick<ControllerSession, 'sessionId' | 'tmux'>, probes: ControllerLivenessProbes): boolean {
+  if (probes.backend !== 'tmux') {
+    // Windows Terminal: the handle cannot be asked; the session's owner process can.
+    if (!cs.sessionId) return false;
+    return !!probes.verdict(cs.sessionId).live;
+  }
+  // cs.sessionId may be a cse_ (cloud handle) once the bridge registers — sessionVerdict
+  // CANNOT resolve a cse_ to a tmux, so it would report !inTmux and the supervisor would
+  // relaunch a NEW controller EVERY tick (runaway duplicate proliferation — observed: 9
+  // controllers in 18 min). The record carries the tmux name; check that session directly.
+  if (cs.tmux) {
+    try { return probes.tmuxExists(cs.tmux); } catch { /* fall through to the verdict path */ }
+  }
+  return !!probes.verdict(cs.sessionId).inTmux;
+}
+
 // ── Controller context-health: compact a near-full controller ────────────────
 // A controller near its context limit wedges (observed live 2026-07-21 at ctx:94%
 // — idle, not surfacing finished executor work; its next drive risks failing).
@@ -2008,20 +2042,13 @@ export function registerMissionController(
         })),
       getControllerSession: () => getControllerSession(),
       putControllerSession: (cs) => putControllerSession(cs),
-      isLive: (cs) => {
-        // cs.sessionId may be a cse_ (cloud handle) once the bridge registers — sessionVerdict
-        // CANNOT resolve a cse_ to a tmux, so it would report !inTmux and the supervisor would
-        // relaunch a NEW controller EVERY tick (runaway duplicate proliferation — observed: 9
-        // controllers in 18 min). The record carries the tmux name; check that session directly.
-        if (cs.tmux) {
-          try {
-            const tmuxMod = require('../terminal/tmux') as typeof import('../terminal/tmux');
-            return tmuxMod.exists(cs.tmux);
-          } catch { /* fall through to the verdict path */ }
-        }
-        const v = sessionVerdict(cs.sessionId);
-        return !!v.inTmux;
-      },
+      // Backend-neutral (see controllerIsLive): on Windows the handle is a WT tab RuntimeId,
+      // not a tmux name — asking tmux read every healthy controller as dead (2026-09-05, 107).
+      isLive: (cs) => controllerIsLive(cs, {
+        backend: getCcController().backend,
+        tmuxExists: (name) => (require('../terminal/tmux') as typeof import('../terminal/tmux')).exists(name),
+        verdict: (sid) => sessionVerdict(sid),
+      }),
       driveIntervalMin: getProjectSettings().missionControllerIntervalMin,
       idleDriveIntervalMin: getProjectSettings().missionControllerIdleIntervalMin,
       activeMissionCount: async () => {

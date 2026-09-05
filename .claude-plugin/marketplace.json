@@ -36,7 +36,7 @@
     },
     {
       "name": "lm-assist",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "source": "./",
       "description": "Full observability & control for the Claude product line. 860+ API endpoints, 280+ MCP tools, 15 insight views, web terminal, fleet, missions, service connectors.",
       "category": "productivity",
