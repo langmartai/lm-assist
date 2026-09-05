@@ -30,6 +30,10 @@ test('robocopyArgs: copies Same and Tweaked files — npm-normalized mtimes make
   assert.ok(args.includes('/E'), 'recurse');
   assert.ok(args.includes('/IS'), '/IS: include Same files (same size + same timestamp)');
   assert.ok(args.includes('/IT'), '/IT: include Tweaked files (same size + same timestamp, different attributes)');
+  // Measured on DESKTOP-GDKLATG 2026-09-06 with a list-only run: package.json (same size, same
+  // 1985 mtime, rewritten by the failed npm attempt so a different CHANGE time) is classified
+  // "Modified", which /IS and /IT do NOT cover — only /IM does.
+  assert.ok(args.includes('/IM'), '/IM: include Modified files (same size + same timestamp, different change time)');
 });
 
 test('robocopyArgs: never excludes a directory by the bare name node_modules', () => {

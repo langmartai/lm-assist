@@ -377,9 +377,13 @@ function robocopyArgs(srcDir, pkgDir) {
     // manifests, Next's BUILD_ID / build manifests — 29 files in the 0.2.3 release) is
     // "Same" to robocopy and would be SKIPPED: the node then runs new code while
     // reporting the old version, with a web build id that does not match its chunks
-    // (measured on DESKTOP-GDKLATG 2026-09-06). Include Same and Tweaked files.
+    // (measured on DESKTOP-GDKLATG 2026-09-06). Include Same, Tweaked AND Modified files:
+    // a list-only run showed package.json classified "Modified" (same size, same mtime,
+    // different CHANGE time — the failed npm attempt had rewritten it), and /IS /IT alone
+    // still skipped it while BUILD_ID ("Same") went through.
     '/IS',        // Include Same files
     '/IT',        // Include Tweaked files
+    '/IM',        // Include Modified files (differing change times)
     '/R:3',       // Retry 3 times on failed copies
     '/W:2',       // Wait 2 seconds between retries
     '/NFL',       // No file listing (less noise)
