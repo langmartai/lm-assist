@@ -319,7 +319,7 @@ export interface StatusReport {
   missing: string[];
   run: { runId: string; startedAt: string; current?: string; done: string[]; failed: string[] } | null;
   index: { available: boolean; reason?: string; indexedAt: number | null; rows: number; byKind: Record<string, number> };
-  legacySecrets: { path: string; reason: string; bytes: number }[];
+  legacySecrets: { path: string; reason: string; bytes: number; isDir: boolean }[];
   recentRemovals: { at: string; path: string; reason: string }[];
   history: string[];
   diskFreeGB: number | null;
@@ -351,13 +351,17 @@ export function renderStatus(s: StatusReport, full: boolean): string {
 
   if (s.legacySecrets.length) {
     const bytes = s.legacySecrets.reduce((a, b) => a + b.bytes, 0);
-    out.push('', `⚠️  ${s.legacySecrets.length} credential file(s) still in the store from before ` +
-      `capture-time filtering (${mb(bytes)}). NOT on GitHub — the payload is gitignored — but ` +
-      'plaintext on the backup volume:');
+    const dirs = s.legacySecrets.filter((l) => l.isDir).length;
+    out.push('', `⚠️  ${s.legacySecrets.length} credential path(s) still in the store from before ` +
+      `capture-time filtering (${mb(bytes)} in files` +
+      (dirs ? `, plus ${dirs} unsized director${dirs === 1 ? 'y' : 'ies'}` : '') +
+      '). NOT on GitHub — the payload is gitignored — but plaintext on the backup volume:');
     // Bounded even in `full`: this walks the mirror, so its length is data, and
     // an unbounded list here is the same mistake as an unpaged search.
     const show = full ? SECRET_LINES * 3 : SECRET_LINES;
-    for (const l of s.legacySecrets.slice(0, show)) out.push(`  ${clampPath(l.path)} — ${l.reason}`);
+    for (const l of s.legacySecrets.slice(0, show)) {
+      out.push(`  ${clampPath(l.path)}${l.isDir ? '/ (directory)' : ''} — ${l.reason}`);
+    }
     if (s.legacySecrets.length > show) {
       out.push(`  … and ${s.legacySecrets.length - show} more` + (full ? '' : ' (detail:"full" shows more)'));
     }

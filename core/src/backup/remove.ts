@@ -228,10 +228,12 @@ export async function removeItem(
  * because silently destroying user data during a backup is exactly the
  * behaviour a backup exists to prevent.
  */
-export function findLegacySecrets(cfg: BackupConfig): { path: string; reason: string; bytes: number }[] {
+export function findLegacySecrets(
+  cfg: BackupConfig,
+): { path: string; reason: string; bytes: number; isDir: boolean }[] {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { excludeReason } = require('./secrets') as typeof import('./secrets');
-  const found: { path: string; reason: string; bytes: number }[] = [];
+  const found: { path: string; reason: string; bytes: number; isDir: boolean }[] = [];
   const mirror = path.join(targetDir(cfg, 'windows-desk'), '.claude');
 
   const walk = (rel: string): void => {
@@ -241,10 +243,18 @@ export function findLegacySecrets(cfg: BackupConfig): { path: string; reason: st
       const r = rel ? `${rel}/${e.name}` : e.name;
       const reason = excludeReason(r, path.join(mirror, r));
       if (reason) {
+        // 🔴 DO NOT size a directory here. Measured on 107, 2026-07-29: summing
+        // `claudeai-browser-profile` alone took 11.55 s (1,519 files, 4.73 GB),
+        // which pushed backup_status — the tool you call to CHECK HEALTH — past
+        // the MCP gateway deadline, so it failed instead of answering. The byte
+        // total was only ever used to print "(N MB)". A directory is reported as
+        // one entry and sized by whoever actually removes it.
+        const isDir = e.isDirectory();
         let bytes = 0;
-        try { bytes = e.isDirectory() ? dirSize(path.join(mirror, r)) : fs.statSync(path.join(mirror, r)).size; }
-        catch { /* ignore */ }
-        found.push({ path: `windows-desk/.claude/${r}`, reason, bytes });
+        if (!isDir) {
+          try { bytes = fs.statSync(path.join(mirror, r)).size; } catch { /* ignore */ }
+        }
+        found.push({ path: `windows-desk/.claude/${r}`, reason, bytes, isDir });
         continue;
       }
       if (e.isDirectory()) walk(r);
@@ -252,13 +262,4 @@ export function findLegacySecrets(cfg: BackupConfig): { path: string; reason: st
   };
   walk('');
   return found;
-}
-
-function dirSize(dir: string): number {
-  let total = 0;
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, e.name);
-    try { total += e.isDirectory() ? dirSize(p) : fs.statSync(p).size; } catch { /* ignore */ }
-  }
-  return total;
 }

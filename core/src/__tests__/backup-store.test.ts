@@ -20,7 +20,7 @@ import * as zlib from 'zlib';
 import type { BackupConfig } from '../backup/config';
 import { captureLocal, indexSnapshot } from '../backup/capture';
 import { BackupIndex } from '../backup/search-index';
-import { removeItem } from '../backup/remove';
+import { removeItem, findLegacySecrets } from '../backup/remove';
 import { readExcludes, readRemovals } from '../backup/store';
 import { safeMemberPath, containedPath } from '../backup/tar-reader';
 
@@ -363,6 +363,35 @@ test('overview aggregates the store without listing it', needsDriver, () => {
     // point of an overview that stays a fixed size as the backup grows.
     assert.ok(o.bySource.length <= 25, `overview returned ${o.bySource.length} rows — it is listing, not aggregating`);
     index.close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('findLegacySecrets reports a secret DIRECTORY without walking into it', needsDriver, () => {
+  // Regression guard for a real production failure: sizing the excluded
+  // directories meant backup_status summed 4.73 GB across 1,519 files of Chrome
+  // profile on node 107 and took 11.55 s — past the MCP gateway deadline, so the
+  // health tool failed instead of answering. One entry per excluded path, and no
+  // descent into it.
+  const { cfg, dir } = makeStore();
+  try {
+    const mirror = path.join(cfg.root, 'windows-desk', '.claude');
+    const profile = path.join(mirror, 'claudeai-browser-profile', 'Default', 'deep', 'deeper');
+    fs.mkdirSync(profile, { recursive: true });
+    for (let i = 0; i < 40; i++) fs.writeFileSync(path.join(profile, `f${i}.bin`), 'x'.repeat(64));
+    fs.writeFileSync(path.join(mirror, '.credentials.json'), '{"accessToken":"STALE"}');
+
+    const found = findLegacySecrets(cfg);
+    const prof = found.filter((f) => f.path.includes('claudeai-browser-profile'));
+    assert.strictEqual(prof.length, 1, `the profile must be ONE entry, got ${prof.length} — it recursed`);
+    assert.strictEqual(prof[0].isDir, true);
+    assert.strictEqual(prof[0].bytes, 0, 'a directory must not be sized');
+
+    const cred = found.find((f) => f.path.endsWith('.credentials.json'))!;
+    assert.ok(cred, 'the credential file itself must still be found');
+    assert.strictEqual(cred.isDir, false);
+    assert.ok(cred.bytes > 0, 'a FILE is still sized — that stat is cheap');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
