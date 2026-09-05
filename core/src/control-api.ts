@@ -307,6 +307,20 @@ export class TierControlApiImpl {
         // blocked loop makes every endpoint slow while each handler still reports a
         // near-zero durationMs. Without this, that failure mode is invisible here.
         const loop = getEventLoopMonitor().snapshot();
+        // Same argument as eventLoop above: the session cache has a hard 2 GB LMDB map
+        // with no eviction, and every write to it is a background watcher update nobody
+        // awaits. When it fills, summaries and cache updates stop while reads keep
+        // serving stale rows — invisible unless utilisation is reported before the cliff.
+        let sessionCache: { utilisationPct: number; dataSizeMb: number; sessions: number; mapFull: boolean } | undefined;
+        try {
+          const cap = require('./session-cache').getSessionCache().getCapacityStatus();
+          sessionCache = {
+            utilisationPct: Math.round(cap.utilisation * 1000) / 10,
+            dataSizeMb: Math.round(cap.dataSizeBytes / (1024 * 1024)),
+            sessions: cap.entryCount,
+            mapFull: cap.mapFull,
+          };
+        } catch { /* cache not initialised — omit rather than fail the health check */ }
         return wrapResponse({
           status: 'healthy',
           uptime: Date.now() - this.startTime.getTime(),
@@ -324,6 +338,7 @@ export class TierControlApiImpl {
             longBlocks: loop.longBlocks.count,
             topBlocker: loop.topBlockers[0]?.label ?? null,
           },
+          ...(sessionCache ? { sessionCache } : {}),
         }, start);
       },
     };

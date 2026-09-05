@@ -1803,6 +1803,25 @@ export class SessionCache {
   }
 
   /**
+   * Capacity of the backing LMDB store — utilisation against the hard map limit, and
+   * whether a write has already failed with MDB_MAP_FULL. There is no eviction and no
+   * automatic reclamation, so this is the only advance warning that cache writes are
+   * about to stop (silently — every write on the hot path is a background watcher update).
+   */
+  getCapacityStatus() {
+    return this.store.getCapacityStatus();
+  }
+
+  /**
+   * Evict cache entries whose transcript has not been touched inside the retention
+   * window. Returns the number of sessions removed. Safe: evicted sessions re-parse
+   * from their JSONL on next access.
+   */
+  async sweepStale(evictAfterDays?: number): Promise<number> {
+    return this.store.sweepStale(evictAfterDays);
+  }
+
+  /**
    * Compact the LMDB database to reclaim disk space.
    * Stops file watcher, deletes the data file, reopens, restarts watcher.
    * All cached data is lost and will be lazily reparsed on next access.
@@ -2230,6 +2249,21 @@ export function getSessionCache(): SessionCache {
     profiler.end('sessionCacheWatcher');
     // No background warming needed — LMDB provides instant reads via mmap.
     // Cache entries are created on-demand as sessions are accessed.
+
+    // Daily eviction sweep, so the store cannot grow into its hard LMDB map limit.
+    // Pattern from claude-ai.routes.ts:45, with one deliberate difference: an initial
+    // sweep shortly after boot as well as the 24h interval. A pure 24h interval never
+    // fires on a host whose Core restarts more often than daily — which is exactly the
+    // host that accumulates without ever reclaiming. Both timers are unref'd so neither
+    // holds the process alive, and the first is delayed to stay off the boot path.
+    const initialSweep = setTimeout(() => {
+      void sessionCacheInstance?.sweepStale().catch(() => {});
+    }, 60_000);
+    initialSweep.unref();
+    setInterval(() => {
+      void sessionCacheInstance?.sweepStale().catch(() => {});
+    }, 24 * 60 * 60 * 1000).unref();
+
     profiler.end('sessionCache');
     const lmdbMs = profiler.get('lmdbOpen')?.toFixed(1) ?? '?';
     const watchMs = profiler.get('sessionCacheWatcher')?.toFixed(1) ?? '?';
