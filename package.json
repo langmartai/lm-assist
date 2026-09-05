@@ -1,6 +1,6 @@
 {
   "name": "lm-assist",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Full observability & control for the Claude product line — Claude Code (local/remote/cloud), claude.ai conversations, Cowork, agents, memory, connectors, usage — via web dashboard, REST API, and MCP tools",
   "license": "AGPL-3.0-or-later",
   "author": {

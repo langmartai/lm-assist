@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.4] - 2026-09-06
+
+Three finished branches that had been waiting since July and August, plus the Windows upgrade-engine
+fix from the 0.2.3 rollout.
+
+### Changed
+- **`ccr_restart` returns the tmux screen and refuses a busy session immediately.** Every outcome that
+  has a pane now carries `screen` (tail-bounded 8 KB), `tmuxSession`, `screenSource`, `screenStable`
+  and `screenWatchedMs`. A session that reads busy — including one frozen on a TUI modal — refuses at
+  once with `busy:true` plus its screen instead of waiting; waiting for a real in-flight turn is opt-in
+  via `wait_ms` (default was 120 s, now 0). After a restart the tool settles 1.5 s and requires the
+  pane to hold still for 3 s before calling it stable (10 s ceiling), and says so honestly when it
+  never settles. No modal classifier, no auto-dismiss: the caller reads the screen and decides.
+  `guide("ccr")` / `guide("terminals")` document the modal-wedge trap, the one-key-per-call rule and
+  the stale-CLI Fable fallback.
+
+### Fixed
+- **`backup_status` no longer walks excluded directories.** Sizing the excluded Chrome profile on the
+  collector took 11.5 s for 1,519 files / 4.7 GB and pushed the health tool past the gateway deadline.
+  Directories are reported as one unsized entry; files are still sized.
+- **LinkedIn Enter is sent as `keyDown` with `text`**, matching the CDP contract, the repo's other CDP
+  key path, and what Puppeteer and Playwright emit, instead of the old `rawKeyDown` + `char` pair.
+- **Windows upgrade overlay copies everything.** The tarball fallback's robocopy now runs with
+  `/IS /IT /IM` and no `node_modules` exclusion: npm-normalized tarball mtimes made same-size changes
+  (version files, Next's `BUILD_ID`) read as unchanged and skip, and the exclusion dropped the web
+  standalone runtime, leaving the web without `next` after the 0.2.3 upgrade. The engine's `main()` is
+  guarded so its helpers can be unit-tested.
+
 ## [0.2.3] - 2026-09-06
 
 Follow-up to 0.2.2 for Windows nodes, plus session-cache work that had sat uncommitted since August.
