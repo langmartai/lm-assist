@@ -149,26 +149,39 @@ export class SessionCacheSync extends EventEmitter {
         throw new Error(`API returned ${response.status}`);
       }
 
-      const data = await response.json() as { sessions?: Array<Record<string, unknown>> };
+      // `GET /sessions` is wrapResponse-enveloped ({success,data:{sessions},meta}); older
+      // shapes returned the array bare. Accept both — reading only the bare key is what
+      // kept this sync at zero deliveries from its first release until 2026-08-19.
+      const body = await response.json() as {
+        sessions?: Array<Record<string, unknown>>;
+        data?: { sessions?: Array<Record<string, unknown>> };
+      };
+      const rows = body.data?.sessions ?? body.sessions;
 
-      if (!data.sessions || !Array.isArray(data.sessions)) {
+      if (!rows || !Array.isArray(rows)) {
         return [];
       }
 
-      // Transform to SessionSummary format
-      return data.sessions.map(s => ({
-        sessionId: s.sessionId as string,
-        projectPath: s.projectPath as string | undefined,
-        summary: s.summary as string | undefined,
-        model: s.model as string | undefined,
-        messageCount: s.messageCount as number | undefined,
-        costUsd: s.costUsd as number | undefined,
-        inputTokens: s.inputTokens as number | undefined,
-        outputTokens: s.outputTokens as number | undefined,
-        createdAt: s.createdAt as string | undefined,
-        updatedAt: s.updatedAt as string | undefined,
-        lastActivityAt: s.lastActivityAt as string | undefined,
-      }));
+      // Transform to SessionSummary format. The OUTGOING names are the hub's contract —
+      // assist-api upserts them straight into tier_agent_session_cache columns — so the
+      // source keys are what bend to the /sessions row shape, never the other way.
+      return rows.map(s => {
+        const usage = (s.usage ?? {}) as Record<string, unknown>;
+        const lastActivity = s.lastModified as string | undefined;
+        return {
+          sessionId: s.sessionId as string,
+          projectPath: s.projectPath as string | undefined,
+          summary: s.sessionSummary as string | undefined,
+          model: s.model as string | undefined,
+          messageCount: s.numTurns as number | undefined,
+          costUsd: s.totalCostUsd as number | undefined,
+          inputTokens: usage.inputTokens as number | undefined,
+          outputTokens: usage.outputTokens as number | undefined,
+          createdAt: s.createdAt as string | undefined,
+          updatedAt: lastActivity,
+          lastActivityAt: lastActivity,
+        };
+      });
     } catch (error) {
       clearTimeout(timeoutId);
       const errorMessage = error instanceof Error
