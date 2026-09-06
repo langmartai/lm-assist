@@ -261,15 +261,25 @@ export const windowsTerminalCreateToolDef = {
   name: 'windows_terminal_create',
   description:
     'Launch a NEW Claude Code session in a Windows Terminal window (or tab). Auto-accepts the ' +
-    'folder-trust prompt by default. Returns the new sessionId once it registers. WRITE — spawns a ' +
-    'real process.',
+    'folder-trust prompt by default. Returns the new sessionId once it registers, plus `command` — the ' +
+    'exact `claude …` line launched, so you can see which flags were really applied. Launch flags: ' +
+    '`model`, `permissionMode` (bypassPermissions = --dangerously-skip-permissions; acceptEdits | plan | ' +
+    'dontAsk | default) or the `dangerouslySkipPermissions` shorthand, `remoteControl` (--remote-control, ' +
+    'so a resume comes up connected to claude.ai/code without a manual /remote-control), `name` (-n), ' +
+    '`effort`. cwd is NOT allowlist-gated here (unlike terminal_open_tab). WRITE — spawns a real process.',
   annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
     properties: {
-      cwd: { type: 'string', description: 'Working directory for the new session.' },
+      cwd: { type: 'string', description: 'Working directory for the new session (any path; no allowlist gate on this surface).' },
       mode: { type: 'string', description: "'window' (default) or 'tab'." },
       resume: { type: 'string', description: 'Resume a non-live sessionId (continues its transcript).' },
+      model: { type: 'string', description: 'Model for the session (--model), e.g. opus, sonnet, claude-opus-4-8[1m].' },
+      permissionMode: { type: 'string', enum: ['bypassPermissions', 'acceptEdits', 'plan', 'dontAsk', 'default'], description: 'Permission mode to launch with. bypassPermissions ⇒ --dangerously-skip-permissions; others ⇒ --permission-mode <mode>.' },
+      dangerouslySkipPermissions: { type: 'boolean', description: 'Shorthand for permissionMode:"bypassPermissions".' },
+      remoteControl: { type: 'boolean', description: 'Launch with --remote-control so the session is claude.ai/code-connected from the start.' },
+      name: { type: 'string', description: 'Display name (-n) — titles the session in the picker / terminal / account list.' },
+      effort: { type: 'string', description: 'Reasoning effort (--effort): low | medium | high | xhigh | max. Invalid ⇒ dropped.' },
       autoTrust: { type: 'boolean', description: 'Auto-accept folder-trust prompt (default true).' },
     },
   },
@@ -1624,6 +1634,14 @@ async function handleWindowsTerminalCreate(a: Record<string, unknown>): Promise<
   if (a.mode) body.mode = String(a.mode);
   if (a.resume) body.resume = String(a.resume);
   if (typeof a.autoTrust === 'boolean') body.autoTrust = a.autoTrust;
+  // Launch flags (2026-09): connector bools can arrive as strings — coerce.
+  const flag = (v: unknown): boolean => v === true || v === 'true';
+  if (a.model) body.model = String(a.model);
+  if (a.permissionMode) body.permissionMode = String(a.permissionMode);
+  if (flag(a.dangerouslySkipPermissions) && !body.permissionMode) body.permissionMode = 'bypassPermissions';
+  if (flag(a.remoteControl)) body.remoteControl = true;
+  if (a.name) body.name = String(a.name);
+  if (a.effort) body.effort = String(a.effort);
   try {
     return renderRaw(await workerPostRaw('/terminal/cc-sessions', body));
   } catch (e) {

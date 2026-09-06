@@ -29,6 +29,62 @@ import {
 } from './windows-terminal';
 import { describeWindowsLaunch } from './windows-launch-verdict';
 import { classifyScreen, type ScreenState } from './cc-classify';
+import { quoteCmdArg } from '../elevated/common';
+import { CC_EFFORT_LEVELS } from './types';
+
+/** Permission modes `claude` accepts, and the flag each maps to. `bypassPermissions`
+ *  is `--dangerously-skip-permissions` (there is no --permission-mode spelling of it). */
+export const WINDOWS_PERMISSION_MODE_FLAGS: Record<string, string[]> = {
+  bypassPermissions: ['--dangerously-skip-permissions'],
+  acceptEdits: ['--permission-mode', 'acceptEdits'],
+  plan: ['--permission-mode', 'plan'],
+  dontAsk: ['--permission-mode', 'dontAsk'],
+  default: [],
+};
+
+export interface WindowsClaudeLaunchFlags {
+  resume?: string;
+  skipPermissions?: boolean;
+  /** bypassPermissions | acceptEdits | plan | dontAsk | default. Unknown ⇒ dropped (no claim). */
+  permissionMode?: string;
+  remoteControl?: boolean | string;
+  /** --model; unknown charset ⇒ dropped */
+  model?: string;
+  /** --effort; only a level the CLI accepts */
+  effort?: string;
+  /** -n display name (quoted for cmd.exe) */
+  name?: string;
+}
+
+/**
+ * The `claude …` command line for a Windows Terminal launch (runs under
+ * `cmd /k`, so args are quoted cmd.exe-style). Pure; exported for tests.
+ *
+ * 2026-09: windows_terminal_create could not pass ANY launch flag, so a resume
+ * that had to come up on a given model with bypass + remote-control needed a
+ * manual relaunch from a cmd window. Every option here is validated against
+ * the charset the CLI accepts and DROPPED (never forwarded) when it is not —
+ * the returned command never claims a flag it did not set.
+ */
+export function buildWindowsClaudeCommand(o: WindowsClaudeLaunchFlags): string {
+  const parts: string[] = ['claude'];
+  if (o.resume) {
+    if (!/^[A-Za-z0-9-]+$/.test(o.resume)) throw new Error(`refusing to launch: resume id ${JSON.stringify(o.resume)} is not a session id`);
+    parts.push('--resume', o.resume);
+  }
+  if (o.remoteControl) {
+    parts.push('--remote-control');
+    if (typeof o.remoteControl === 'string' && /^[A-Za-z0-9_.:-]+$/.test(o.remoteControl)) parts.push(o.remoteControl);
+  }
+  const mode = o.permissionMode && WINDOWS_PERMISSION_MODE_FLAGS[o.permissionMode]
+    ? o.permissionMode
+    : (o.skipPermissions ? 'bypassPermissions' : undefined);
+  if (mode) parts.push(...WINDOWS_PERMISSION_MODE_FLAGS[mode]);
+  if (o.model && /^[A-Za-z0-9._[\]-]+$/.test(o.model)) parts.push('--model', o.model);
+  if (o.effort && (CC_EFFORT_LEVELS as readonly string[]).includes(o.effort)) parts.push('--effort', o.effort);
+  if (o.name && o.name.trim()) parts.push('-n', quoteCmdArg(o.name.trim()));
+  return parts.join(' ');
+}
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -159,6 +215,8 @@ export interface LaunchResult {
   trustHandled?: boolean;
   mode: string;
   cwd: string;
+  /** the exact `claude …` line that was launched — what flags were REALLY applied */
+  command?: string;
   note?: string;
 }
 
@@ -174,7 +232,13 @@ export async function launchSession(opts: {
   resume?: string;
   waitMs?: number;
   skipPermissions?: boolean;
+  /** bypassPermissions | acceptEdits | plan | dontAsk | default */
+  permissionMode?: string;
   remoteControl?: boolean | string;
+  model?: string;
+  effort?: string;
+  /** -n display name */
+  name?: string;
   /** auto-accept the folder-trust prompt if it blocks registration (default true) */
   autoTrust?: boolean;
 } = {}): Promise<LaunchResult> {
@@ -185,9 +249,10 @@ export async function launchSession(opts: {
   const before = new Set(listLiveSessions().map((s) => s.sessionId));
   const beforeRids = new Set((await listTabIds()).map((t) => t.rid));
   const beforeClaude = new Set(await listClaudePids());
-  const skipFlag = opts.skipPermissions ? ' --dangerously-skip-permissions' : '';
-  const rcFlag = opts.remoteControl ? ' --remote-control' + (typeof opts.remoteControl === 'string' ? ` ${opts.remoteControl}` : '') : '';
-  const claudeCmd = (opts.resume ? `claude --resume ${opts.resume}` : 'claude') + rcFlag + skipFlag;
+  const claudeCmd = buildWindowsClaudeCommand({
+    resume: opts.resume, skipPermissions: opts.skipPermissions, permissionMode: opts.permissionMode,
+    remoteControl: opts.remoteControl, model: opts.model, effort: opts.effort, name: opts.name,
+  });
 
   // Generic launcher does the wt spawn (windowsHide:false, mode handling).
   spawnTerminal({ cwd, command: claudeCmd, mode });
@@ -278,6 +343,7 @@ export async function launchSession(opts: {
     trustHandled,
     mode,
     cwd,
+    command: claudeCmd,
     note: sid && trustHandled
       ? 'folder-trust prompt was auto-accepted during launch'
       : verdict.note,
