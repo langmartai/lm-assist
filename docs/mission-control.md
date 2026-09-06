@@ -52,3 +52,16 @@ Settings: `autoModelFallbackEnabled` (default true), `autoModelFallbackModel` (d
 MCP `stall_status` under `modelFallback`. Modules: `core/src/monitor/model-limit.ts`
 (pure detector + policy), `model-fallback.ts` (tick + actions), `model-fallback-store.ts`.
 Design: [`docs/superpowers/specs/2026-07-22-auto-model-limit-mitigation-design.md`](./superpowers/specs/2026-07-22-auto-model-limit-mitigation-design.md).
+
+### Controller session exists only while there is DEMAND (`missionControllerColdMin`)
+
+The supervisor computes a controller **demand** every tick (`computeControllerDemand`):
+`none` (no non-terminal mission), `active` (an `active` mission), `warm` (open missions, one touched
+within `missionControllerColdMin`, default 60 min) or `cold` (open missions, none touched for that long).
+
+- `none` / `cold` → a live controller is **torn down** (history reason names the cause) and a dead one is
+  **not launched**. A default install therefore runs no controller session until a mission exists.
+- `warm` / `active` → the normal launch / drive table applies; demand returning (a mission created,
+  touched or activated) relaunches the controller on that tick — resume-first, so it keeps its identity.
+- `missionControllerColdMin: 0` disables the cold verdict (open missions ⇒ warm).
+- Election still outranks demand: a non-leader never tears down for demand; an indeterminate election idles.

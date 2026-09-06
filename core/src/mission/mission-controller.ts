@@ -691,11 +691,51 @@ export function buildControllerLaunchExtras(args: {
  * restart). Real leadership loss persists across ticks, so a 2-tick streak
  * still tears down — just ~1 min later, which is fine for loser cleanup.
  */
-export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean; notMonitorStreak?: number; indeterminate?: boolean }): { action: 'teardown' | 'launch' | 'drive' | 'idle' } {
+/**
+ * Controller DEMAND — is there any work for a controller session to exist for?
+ *
+ *   none   — no non-terminal mission at all (fresh install, or everything done/failed)
+ *   active — at least one mission is `active` (an executor is running / being driven)
+ *   warm   — non-terminal missions exist (waiting/draft/paused/blocked) and one was
+ *            touched within `coldMs` — the controller may still need to place / answer
+ *   cold   — non-terminal missions exist but NOTHING has been touched for `coldMs`
+ *
+ * Requested 2026-09: a default install must not keep a controller session alive
+ * with nothing to control (it costs a live claude process + a claude.ai/code
+ * session for a `⟦HEARTBEAT⟧ idle — 0 active missions` loop), and a controller
+ * whose missions have gone cold should be torn down and come back on demand.
+ * `coldMs <= 0` disables the cold verdict (missions present ⇒ warm).
+ */
+export type ControllerDemand = 'none' | 'active' | 'warm' | 'cold';
+const TERMINAL_MISSION_STATUSES: ReadonlySet<string> = new Set(['done', 'failed']);
+
+export function computeControllerDemand(
+  missions: ReadonlyArray<{ status: string; updatedAt?: number; createdAt?: number }>,
+  now: number,
+  coldMs: number,
+): ControllerDemand {
+  const open = missions.filter((m) => !TERMINAL_MISSION_STATUSES.has(m.status));
+  if (!open.length) return 'none';
+  if (open.some((m) => m.status === 'active')) return 'active';
+  if (coldMs <= 0) return 'warm';
+  const lastTouch = Math.max(...open.map((m) => Math.max(m.updatedAt ?? 0, m.createdAt ?? 0)));
+  return now - lastTouch < coldMs ? 'warm' : 'cold';
+}
+
+export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean; notMonitorStreak?: number; indeterminate?: boolean; demand?: ControllerDemand }): { action: 'teardown' | 'launch' | 'drive' | 'idle'; reason?: string } {
   // Election inputs unavailable and no recent confident answer → do NOTHING
   // destructive (no teardown, no launch). The next confident tick decides.
   if (input.indeterminate) return { action: 'idle' };
   if (!input.isMonitor) return (input.notMonitorStreak ?? 0) >= 2 ? { action: 'teardown' } : { action: 'idle' };
+  // Demand gate (leader only): no work ⇒ no controller. A live controller with no
+  // demand is torn down; a dead one is NOT launched. Demand returning (a mission
+  // created / touched / activated) launches it on that tick. Absent ⇒ 'active'
+  // (callers that do not compute demand keep the always-on behaviour).
+  const demand = input.demand ?? 'active';
+  if (demand === 'none' || demand === 'cold') {
+    const reason = demand === 'none' ? 'no missions — nothing to control' : 'missions cold — no activity within missionControllerColdMin';
+    return input.live ? { action: 'teardown', reason } : { action: 'idle', reason };
+  }
   if (!input.live) return { action: 'launch' };
   if (input.driveDue) return { action: 'drive' };
   return { action: 'idle' };
@@ -874,6 +914,8 @@ export interface SupervisorDeps {
   idleDriveIntervalMin?: number;
   /** Count of active missions — picks active vs idle cadence. Default = () => 1 (always active). */
   activeMissionCount?: () => Promise<number>;
+  /** Controller DEMAND (see computeControllerDemand). Absent ⇒ 'active' (always-on). */
+  controllerDemand?: () => Promise<ControllerDemand>;
   /** Current time in ms. Injected for deterministic tests. */
   now: number;
   // ── Wave 4 — change-detection engagement (all optional; when present, the drive
@@ -1501,7 +1543,20 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   } else {
     _notMonitorStreak = isMonitor ? 0 : _notMonitorStreak + 1;
   }
-  let { action } = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak, indeterminate: verdict.indeterminate });
+  // Demand: no missions / cold missions ⇒ no controller. Read best-effort — a failed
+  // read means "unknown", which keeps the always-on behaviour rather than tearing down.
+  let demand: ControllerDemand = 'active';
+  if (deps.controllerDemand) {
+    try { demand = await deps.controllerDemand(); } catch { demand = 'active'; }
+  }
+  const decided = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak, indeterminate: verdict.indeterminate, demand });
+  let { action } = decided;
+  if (decided.reason && (action === 'teardown' || (action === 'idle' && !live))) {
+    recoveryReason = recoveryReason ?? decided.reason;
+    if (action === 'teardown') {
+      deps.journal?.({ at: Date.now(), kind: 'tick', action: 'demand-teardown', demand, isMonitor, live, driveDue, record: cs?.sessionId ?? null } as never);
+    }
+  }
 
   // Launch-churn back-off: 3+ launches/resumes inside 10 min means the loop is
   // feeding a crash cycle (launch → die → launch …). Idle this tick instead —
@@ -1583,7 +1638,7 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
 
   if (action === 'teardown') {
     if (cs) {
-      await deps.teardown(cs, 'not monitor (confident, debounced)');
+      await deps.teardown(cs, decided.reason ?? 'not monitor (confident, debounced)');
       await deps.putControllerSession(null);
     }
     return { action: 'teardown', controllerSession: null };
@@ -2063,6 +2118,12 @@ export function registerMissionController(
       activeMissionCount: async () => {
         const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
         return (await listActiveMissions()).length;
+      },
+      // Demand gate: no missions ⇒ no controller session; cold missions ⇒ tear it down.
+      controllerDemand: async () => {
+        const { listMissions: lm } = require('./mission-store') as typeof import('./mission-store');
+        const coldMin = getProjectSettings().missionControllerColdMin;
+        return computeControllerDemand(await lm(), Date.now(), coldMin * 60_000);
       },
       // Wave 4 — change-detection engagement deps (replaces the time-based gate above).
       safetyIntervalMin: getProjectSettings().missionControllerSafetyIntervalMin,
