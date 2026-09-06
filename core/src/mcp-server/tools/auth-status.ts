@@ -73,6 +73,13 @@ interface Healthz {
 
 interface OAuthStatus {
   present?: boolean;
+  /** ok | absent | unreadable | malformed | unsupported (older Cores omit it) */
+  state?: string;
+  detail?: string;
+  home?: string;
+  credsPath?: string | null;
+  fileMtime?: number;
+  refreshable?: boolean;
   expired?: boolean;
   msUntilExpiry?: number;
   subscriptionType?: string;
@@ -80,6 +87,54 @@ interface OAuthStatus {
   scopes?: string[];
   storage?: string;
   platform?: string;
+}
+
+/**
+ * Render the Claude Code OAuth line(s). Pure; exported for tests.
+ *
+ * ABSENT / UNREADABLE / MALFORMED / EXPIRED are four different problems with
+ * four different fixes, and each names the path it looked at — an older Core
+ * that reports only `present:false` is rendered as "not present (reason not
+ * reported by this Core build)" rather than asserting the file is missing.
+ */
+export function renderClaudeCodeOAuth(o: OAuthStatus, now: number = Date.now()): string[] {
+  const out: string[] = [];
+  const where = o.credsPath ? ` at ${o.credsPath}` : '';
+  const home = o.home ? ` (home: ${o.home})` : '';
+  const state = o.state ?? (o.present ? 'ok' : undefined);
+  if (state === 'unsupported') {
+    out.push(`Claude Code OAuth: UNSUPPORTED on ${o.platform || 'this platform'} — ${o.detail || 'credentials are in the OS keychain'}`);
+    return out;
+  }
+  if (!o.present) {
+    if (state === 'absent') {
+      out.push(`Claude Code OAuth: ABSENT — no credentials file${where}${home}. Run \`claude /login\` on this node as the user the Core runs under.`);
+    } else if (state === 'unreadable') {
+      out.push(`Claude Code OAuth: UNREADABLE — the file${where} exists but could not be read${home}: ${o.detail || 'unknown error'}. Check owner/permissions and which user the Core runs as.`);
+    } else if (state === 'malformed') {
+      out.push(`Claude Code OAuth: MALFORMED — the file${where} exists but has no usable claudeAiOauth token: ${o.detail || 'unexpected shape'}. Re-login with \`claude /login\`.`);
+    } else {
+      out.push(`Claude Code OAuth: not present${where} (reason not reported by this Core build — upgrade the node to see absent vs unreadable vs malformed)`);
+    }
+    return out;
+  }
+  const ms = typeof o.msUntilExpiry === 'number' ? o.msUntilExpiry : undefined;
+  if (o.expired) {
+    const ago = typeof ms === 'number' ? ` ${humanDuration(-ms)} ago` : '';
+    const fix = o.refreshable === false
+      ? 'no refreshToken on file — re-login with `claude /login`'
+      : 'refresh by running Claude Code, POST /claude-code/oauth-renew, or re-login';
+    out.push(`Claude Code OAuth: EXPIRED (expired${ago}${where}) — ${fix}`);
+    return out;
+  }
+  const exp = typeof ms === 'number' ? `expires in ${humanDuration(ms)}` : 'valid';
+  const extra = [o.subscriptionType && `sub=${o.subscriptionType}`, o.rateLimitTier && `tier=${o.rateLimitTier}`].filter(Boolean).join(', ');
+  out.push(`Claude Code OAuth: valid (${exp}${extra ? `, ${extra}` : ''})`);
+  if (o.refreshable === false) out.push('  ⚠ no refreshToken on file — cannot be renewed here; it will need a re-login when it expires');
+  if (o.scopes?.length) out.push(`  scopes: ${o.scopes.join(' ')}`);
+  if (typeof o.fileMtime === 'number') out.push(`  credentials file written ${humanDuration(now - o.fileMtime)} ago${where}`);
+
+  return out;
 }
 
 async function claudeAiSection(): Promise<string[]> {
@@ -107,16 +162,7 @@ async function claudeCodeSection(): Promise<string[]> {
   const out: string[] = [];
   try {
     const o = await workerGet<OAuthStatus>('/claude-code/oauth-status');
-    if (!o.present) {
-      out.push('Claude Code OAuth: NOT PRESENT (no ~/.claude/.credentials.json token)');
-    } else if (o.expired) {
-      out.push('Claude Code OAuth: EXPIRED — refresh by running Claude Code, or re-login');
-    } else {
-      const exp = typeof o.msUntilExpiry === 'number' ? `expires in ${humanDuration(o.msUntilExpiry)}` : 'valid';
-      const extra = [o.subscriptionType && `sub=${o.subscriptionType}`, o.rateLimitTier && `tier=${o.rateLimitTier}`].filter(Boolean).join(', ');
-      out.push(`Claude Code OAuth: valid (${exp}${extra ? `, ${extra}` : ''})`);
-      if (o.scopes?.length) out.push(`  scopes: ${o.scopes.join(' ')}`);
-    }
+    out.push(...renderClaudeCodeOAuth(o));
   } catch (e) {
     out.push(`Claude Code OAuth: error — ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -180,7 +226,8 @@ async function sweepAllNodes(): Promise<McpToolResult> {
         healthzData = ((h as any)?.data ?? (h as any)) || {};
         oauthData = ((o as any)?.data ?? (o as any)) || {};
       }
-      const oauthStr = !oauthData.present ? 'none' : oauthData.expired ? 'EXPIRED' : 'valid';
+      const st = (oauthData as { state?: string }).state;
+      const oauthStr = !oauthData.present ? (st && st !== 'ok' ? st.toUpperCase() : 'none') : oauthData.expired ? 'EXPIRED' : 'valid';
       const cookieStr = healthzData.ok ? 'ok' : (healthzData.reason || '?');
       return { node: label, oauth: oauthStr, cookie: cookieStr };
     } catch { return { node: label, oauth: '?', cookie: '?' }; }

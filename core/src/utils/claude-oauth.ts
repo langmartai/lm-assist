@@ -110,30 +110,89 @@ export function isPlatformSupported(): boolean {
   return process.platform !== 'darwin';
 }
 
-export function readClaudeOAuth(): ClaudeOAuthCreds | null {
-  if (!isPlatformSupported()) return null;
+/**
+ * WHY the credentials file is inspected, not just read:
+ *
+ * `auth_status(which="claude_code")` on node 117 (2026-09) answered
+ * "NOT PRESENT (no ~/.claude/.credentials.json token)" while the file existed
+ * and a login minutes later was valid. Every distinct failure — the file
+ * missing, the file unreadable (wrong HOME / EACCES under a service user), a
+ * half-written or foreign JSON shape, a token without a refresh token, an
+ * expired token — collapsed into ONE `null` from readClaudeOAuth, and the tool
+ * rendered that null as "absent". The status now names WHICH it was and the
+ * exact path + home it looked at, so "expired" and "absent" can never be
+ * confused again, and a wrong-HOME Core is visible from the path it reports.
+ */
+export type OAuthCredsState = 'ok' | 'absent' | 'unreadable' | 'malformed' | 'unsupported';
+
+export interface OAuthInspection {
+  state: OAuthCredsState;
+  /** the exact file consulted (null on an unsupported platform) */
+  credsPath: string | null;
+  /** os.homedir() the path was derived from — a service running under the wrong
+   *  user / HOME shows up here */
+  home: string;
+  /** file mtime (epoch ms) when the file exists */
+  fileMtime?: number;
+  /** what went wrong, for the operator (never a secret) */
+  detail?: string;
+  /** which top-level keys the file had (when parseable) — shape drift is visible without values */
+  fileKeys?: string[];
+  creds: ClaudeOAuthCreds | null;
+  /** false when the token can be used but NOT refreshed (no refreshToken recorded) */
+  refreshable: boolean;
+}
+
+export function inspectClaudeOAuth(credsPath: string = CREDS_PATH, home: string = os.homedir()): OAuthInspection {
+  const base = { credsPath, home, creds: null, refreshable: false } as const;
+  if (!isPlatformSupported()) {
+    return { ...base, state: 'unsupported', credsPath: null, detail: 'credentials live in the macOS Keychain on darwin' };
+  }
   let raw: string;
+  let fileMtime: number | undefined;
   try {
-    raw = fs.readFileSync(CREDS_PATH, 'utf-8');
-  } catch {
-    return null;
+    fileMtime = fs.statSync(credsPath).mtimeMs;
+    raw = fs.readFileSync(credsPath, 'utf-8');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return { ...base, state: 'absent', detail: `no file at ${credsPath}` };
+    return { ...base, state: 'unreadable', fileMtime, detail: `${code || 'read failed'}: ${(e as Error).message}` };
   }
   let parsed: CredsFile;
   try {
     parsed = JSON.parse(raw);
-  } catch {
-    return null;
+  } catch (e) {
+    return { ...base, state: 'malformed', fileMtime, detail: `not valid JSON (${raw.length} bytes): ${(e as Error).message}` };
   }
-  const c = parsed.claudeAiOauth;
-  if (!c || !c.accessToken || !c.refreshToken) return null;
+  const fileKeys = parsed && typeof parsed === 'object' ? Object.keys(parsed) : [];
+  const c = parsed?.claudeAiOauth;
+  if (!c || typeof c !== 'object') {
+    return { ...base, state: 'malformed', fileMtime, fileKeys, detail: `no claudeAiOauth block (top-level keys: ${fileKeys.join(', ') || 'none'})` };
+  }
+  if (!c.accessToken || typeof c.accessToken !== 'string') {
+    return { ...base, state: 'malformed', fileMtime, fileKeys, detail: `claudeAiOauth has no accessToken (keys: ${Object.keys(c).join(', ')})` };
+  }
+  const refreshable = typeof c.refreshToken === 'string' && c.refreshToken.length > 0;
   return {
-    accessToken: c.accessToken,
-    refreshToken: c.refreshToken,
-    expiresAt: c.expiresAt ?? 0,
-    scopes: c.scopes ?? [],
-    subscriptionType: c.subscriptionType,
-    rateLimitTier: c.rateLimitTier,
+    ...base,
+    state: 'ok',
+    fileMtime,
+    fileKeys,
+    refreshable,
+    detail: refreshable ? undefined : 'no refreshToken recorded — the token is usable until it expires but cannot be renewed here',
+    creds: {
+      accessToken: c.accessToken,
+      refreshToken: refreshable ? c.refreshToken : '',
+      expiresAt: typeof c.expiresAt === 'number' ? c.expiresAt : 0,
+      scopes: Array.isArray(c.scopes) ? c.scopes : [],
+      subscriptionType: c.subscriptionType,
+      rateLimitTier: c.rateLimitTier,
+    },
   };
+}
+
+export function readClaudeOAuth(): ClaudeOAuthCreds | null {
+  return inspectClaudeOAuth().creds;
 }
 
 export function isTokenExpired(creds: ClaudeOAuthCreds, bufferMs = REFRESH_BUFFER_MS): boolean {
@@ -221,11 +280,15 @@ export async function ensureFreshAccessToken(
   if (!isPlatformSupported()) {
     throw new Error('Claude OAuth credentials are stored in Keychain on macOS; not supported.');
   }
-  const creds = readClaudeOAuth();
+  const insp = inspectClaudeOAuth();
+  const creds = insp.creds;
   if (!creds) {
-    throw new Error(`No Claude Code OAuth credentials at ${CREDS_PATH}. Run 'claude /login' first.`);
+    throw new Error(`Claude Code OAuth credentials ${insp.state} at ${CREDS_PATH}${insp.detail ? ` (${insp.detail})` : ''}. Run 'claude /login' first.`);
   }
   if (!isTokenExpired(creds, bufferMs)) return { creds, refreshed: false };
+  if (!creds.refreshToken) {
+    throw new Error(`Claude Code OAuth token at ${CREDS_PATH} needs a refresh but the file records no refreshToken — re-login with 'claude /login'.`);
+  }
 
   const data = await postTokenRefresh(creds.refreshToken);
   const refreshed: ClaudeOAuthCreds = {
@@ -253,6 +316,16 @@ export async function getValidAccessToken(): Promise<ClaudeOAuthCreds> {
 
 export interface OAuthStatus {
   present: boolean;
+  /** WHY present is what it is: ok | absent | unreadable | malformed | unsupported */
+  state: OAuthCredsState;
+  /** operator-facing detail for a non-ok state (never a secret) */
+  detail?: string;
+  /** the home dir the path was derived from — exposes a wrong-HOME service Core */
+  home: string;
+  /** credentials file mtime (epoch ms), when it exists */
+  fileMtime?: number;
+  /** false = usable but cannot be renewed here (no refreshToken) */
+  refreshable?: boolean;
   platform: NodeJS.Platform;
   storage: 'file' | 'keychain' | 'none';
   credsPath: string | null;
@@ -265,15 +338,24 @@ export interface OAuthStatus {
 }
 
 export function getOAuthStatus(): OAuthStatus {
-  if (!isPlatformSupported()) {
-    return { present: false, platform: process.platform, storage: 'keychain', credsPath: null };
+  const insp = inspectClaudeOAuth();
+  if (insp.state === 'unsupported') {
+    return { present: false, state: 'unsupported', detail: insp.detail, home: insp.home, platform: process.platform, storage: 'keychain', credsPath: null };
   }
-  const creds = readClaudeOAuth();
-  if (!creds) {
-    return { present: false, platform: process.platform, storage: 'file', credsPath: CREDS_PATH };
+  if (!insp.creds) {
+    return {
+      present: false, state: insp.state, detail: insp.detail, home: insp.home, fileMtime: insp.fileMtime,
+      platform: process.platform, storage: 'file', credsPath: CREDS_PATH,
+    };
   }
+  const creds = insp.creds;
   return {
     present: true,
+    state: 'ok',
+    detail: insp.detail,
+    home: insp.home,
+    fileMtime: insp.fileMtime,
+    refreshable: insp.refreshable,
     platform: process.platform,
     storage: 'file',
     credsPath: CREDS_PATH,
