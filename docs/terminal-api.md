@@ -319,3 +319,16 @@ All caller-supplied strings are allowlisted at the route boundary:
 
 Unknown fields in request bodies are ignored (not rejected); use the schemas
 in `core/src/terminal/validate.ts` as the source of truth.
+
+## cwd allowlist (terminal_open_tab, agent_execute, git clone/commit-push)
+
+The gate (`core/src/utils/cwd-allowlist.ts`) allows the worker's OWN home dir and below,
+**plus extra roots the node declares**:
+
+- env `LM_ASSIST_CWD_ROOTS` — `;`-separated on every platform (a Windows path contains `:`), e.g. `C:\home;D:\work`
+- file `<dataDir>/cwd-roots` (`~/.lm-assist/cwd-roots`, or `LM_ASSIST_DATA_DIR`) — one path per line, `#` comments
+
+Windows compares case-insensitively. A refusal names the effective policy and both ways to extend
+it. `windows_terminal_create` / `windows_terminal_launch` (the Claude-launch surface) are deliberately
+NOT gated — this used to be an undocumented inconsistency (2026-09: `C:\home` repos refused by
+`terminal_open_tab` on 107 while `windows_terminal_create` opened them).

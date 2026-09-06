@@ -26,7 +26,7 @@ import {
   workerPostRaw,
   workerPut,
   workerDelete,
-  isCwdAllowed,
+  isCwdAllowed, describeCwdPolicy,
   type McpToolResult,
 } from './_passthrough';
 import { CONVERSATION_OPS_TOOL_DEFS, CONVERSATION_OPS_HANDLERS } from './conversation-ops';
@@ -250,7 +250,7 @@ export const windowsTerminalLaunchToolDef = {
     type: 'object' as const,
     properties: {
       command: { type: 'string', description: 'Command to run (launched as `cmd /k <command>`).' },
-      cwd: { type: 'string', description: 'Working directory.' },
+      cwd: { type: 'string', description: 'Working directory (any path — this Claude-launch surface has no cwd allowlist gate, unlike terminal_open_tab / agent_execute).' },
       mode: { type: 'string', description: "'window' (default) or 'tab'." },
     },
     required: ['command'],
@@ -552,7 +552,7 @@ export const terminalOpenTabToolDef = {
     type: 'object' as const,
     properties: {
       title: { type: 'string', description: 'Window title (advanced kinds only).' },
-      cwd: { type: 'string', description: "Working directory (under the worker's home dir)." },
+      cwd: { type: 'string', description: "Working directory. Allowed: the worker's home dir and below, plus any extra root the node declares via LM_ASSIST_CWD_ROOTS (`;`-separated) or ~/.lm-assist/cwd-roots (one per line) — the refusal names the policy. (windows_terminal_create / windows_terminal_launch, the Claude-launch surface, are NOT gated.)" },
       command: { type: 'string', description: 'Command to run in the new terminal.' },
       kind: { type: 'string', description: 'Optional. Omit for the platform-neutral local terminal (recommended; works on Windows). Or one of gnome|wt-ssh|tmux for the advanced tab spawner — wt-ssh needs sshTarget, tmux needs tmuxSession.' },
       sshTarget: { type: 'string', description: 'For kind=wt-ssh: ssh target (user@host or host).' },
@@ -1810,7 +1810,7 @@ async function handleAgentExecute(args: Record<string, unknown>): Promise<McpToo
   // Layer-6 defense in depth: even past the gateway's admin confirm, refuse a
   // cwd outside the operator's allowlist.
   if (!isCwdAllowed(cwd)) {
-    return err(`cwd "${cwd}" is not permitted; agent_execute is restricted to ${os.homedir()} and below.`);
+    return err(`cwd "${cwd}" is not permitted; agent_execute allows: ${describeCwdPolicy()}`);
   }
   const body: Record<string, unknown> = { prompt, cwd, background: true };
   if (args.model) {
