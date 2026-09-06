@@ -10,6 +10,7 @@
  * as terminal/registry.ts.
  */
 
+import { isProcessAlive } from '../utils/process-utils';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -591,7 +592,9 @@ export async function restart({ sessionId, force, waitMs }: { sessionId: string;
       return n;
     },
     killOwner: (pid) => killOwnerPrim(pid, { isWindows: IS_WINDOWS }, {
-      isAlive: (p) => { try { process.kill(p, 0); return true; } catch { return false; } },
+      // isProcessAlive, not a bare signal-0: a Linux ZOMBIE answers signal 0 and
+      // would read as "never terminated" (→ kill-failed) forever.
+      isAlive: (p) => isProcessAlive(p),
       signal: (p, sig) => process.kill(p, sig),
       taskkill: (p) => { execFileSync('taskkill', ['/PID', String(p), '/T', '/F'], { encoding: 'utf-8', timeout: 8000 }); },
       sleep,
