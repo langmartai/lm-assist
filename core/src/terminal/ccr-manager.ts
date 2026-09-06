@@ -52,8 +52,10 @@ export interface CcrRecord {
   jsonl: string | null;
   pid: number | null;
   webUrl: string | null;
-  /** 'inject' = native /remote-control connect (no tmux owned). */
-  strategy?: ConnectStrategy | 'inject';
+  /** 'inject' = native /remote-control connect into a LIVE session (no tmux owned);
+   *  'native' = we created the tmux and ran `claude --resume … --remote-control`
+   *  (Claude Code owns the bridge; webUrl is the bridge id IT recorded). */
+  strategy?: ConnectStrategy | 'inject' | 'native';
   /** tmux session backing a `connect`; set for both attach-existing and create-tmux. */
   tmuxSession?: string;
   /** true only when WE created the tmux (create-tmux) — stop() may kill it. Never kill a user's existing tmux. */
@@ -487,6 +489,64 @@ async function recordForLiveConnection(
   return rec;
 }
 
+/**
+ * Resume a DEAD session NATIVELY remote-controlled: tmux → `claude --resume <sid>
+ * --remote-control` (+ the recorded permission mode), then OBSERVE the bridge id
+ * Claude Code records for it (`bridgeSessionId` in ~/.claude/sessions). No
+ * ccr-bridge.js, so no new claude.ai session is minted — the session keeps (or
+ * Claude Code re-binds) its own link. See ccr-native-resume.ts for why.
+ *
+ * Only for a session with NO live owner (create-tmux verdict). Never call it
+ * for a live session — the caller (restart / connect) enforces the kill-verify.
+ */
+export async function connectDeadNative(
+  sessionId: string,
+  opts: { waitMs?: number } = {},
+): Promise<CcrRecord & { bridgeSessionId: string | null; resumedPid: number | null }> {
+  const { nativeResumeCommand, bridgeWebUrl, waitForNativeBridge } = require('./ccr-native-resume') as typeof import('./ccr-native-resume');
+  const v = sessionVerdict(sessionId);
+  if (v.connectStrategy === 'none') throw new TerminalError('SESSION_NOT_FOUND', v.reason, { verdict: v });
+  if (v.live || v.connectStrategy !== 'create-tmux' || !v.safeToCreateTmux) {
+    throw new TerminalError('CONFLICT', `native resume needs an UNOWNED session (got ${v.connectStrategy}): ${v.reason}`, { verdict: v });
+  }
+  const jsonlPath = v.jsonl!;
+  const tmuxSession = `ccr-${sessionId.slice(0, 8)}`;
+  const cwd = resolveSessionCwd(jsonlPath);
+  execFileSync('tmux', ['new-session', '-d', '-s', tmuxSession, '-c', cwd, nativeResumeCommand(sessionId, resumePermissionFlags(jsonlPath))], {
+    encoding: 'utf-8',
+    timeout: 10_000,
+  });
+  await acceptTrustIfPrompted(tmuxSession);
+
+  const obs = await waitForNativeBridge(sessionId, {
+    lookup: (sid) => {
+      const w = sessionVerdict(sid);
+      return w.live && w.owner ? { pid: w.owner.pid, bridgeSessionId: w.owner.bridgeSessionId ?? null } : null;
+    },
+    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+  }, { timeoutMs: opts.waitMs ?? 45_000 });
+
+  const bridgeSessionId = obs?.bridgeSessionId ?? null;
+  const rec: CcrRecord = {
+    id: newCcrId(),
+    mode: 'connected',
+    sessionId,
+    jsonl: jsonlPath,
+    pid: null,
+    webUrl: bridgeWebUrl(bridgeSessionId),
+    strategy: 'native',
+    tmuxSession,
+    ownsTmux: true,
+    logFile: null,
+    startedAt: new Date().toISOString(),
+  };
+  const data = loadRegistry();
+  data[rec.id] = rec;
+  saveRegistry(data);
+  return { ...rec, bridgeSessionId, resumedPid: obs?.pid ?? null };
+}
+
 export async function connect({ sessionId, force }: { sessionId: string; force?: boolean }): Promise<CcrRecord> {
   const v = sessionVerdict(sessionId);
 
@@ -532,11 +592,29 @@ export async function connect({ sessionId, force }: { sessionId: string; force?:
  * of trusting `state:'restarted'` to mean "usable". The busy refusal returns
  * immediately with the screen rather than waiting — waiting is opt-in via waitMs.
  */
-export async function restart({ sessionId, force, waitMs }: { sessionId: string; force?: boolean; waitMs?: number }): Promise<import('./ccr-restart').RestartResult> {
+export interface RestartBridgeInfo {
+  /** the bridge id the session had BEFORE the restart (null = was not remote-controlled) */
+  previousBridgeSessionId: string | null;
+  /** the bridge id Claude Code recorded AFTER the native resume (null = did not connect in time) */
+  bridgeSessionId: string | null;
+  verdict: import('./ccr-native-resume').ReclaimVerdict;
+  /** 'native' = claude --resume --remote-control (no new session minted); 'bridge' = legacy ccr-bridge.js (mints a NEW claude.ai session) */
+  resumeMode: 'native' | 'bridge';
+}
+
+export async function restart({ sessionId, force, waitMs, native }: { sessionId: string; force?: boolean; waitMs?: number; native?: boolean }): Promise<import('./ccr-restart').RestartResult & { bridge?: RestartBridgeInfo }> {
   const { restartLocal } = require('./ccr-restart') as typeof import('./ccr-restart');
   const { killOwner: killOwnerPrim } = require('./live-rc-connect') as typeof import('./live-rc-connect');
+  const { describeReclaim } = require('./ccr-native-resume') as typeof import('./ccr-native-resume');
   const IS_WINDOWS = process.platform === 'win32';
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  // Native is the DEFAULT: the legacy bridge mints a NEW claude.ai session on every
+  // restart (three lost links on 117, 2026-09). Opt out only with native:false.
+  const useNative = native !== false;
+  // Remember the link the session had, so the result can say whether it survived.
+  let previousBridgeSessionId: string | null = null;
+  try { previousBridgeSessionId = sessionVerdict(sessionId).owner?.bridgeSessionId ?? null; } catch { /* not live — fine */ }
+  let observedBridge: string | null = null;
 
   const r = await restartLocal(sessionId, { force, waitMs }, {
     now: () => Date.now(),
@@ -616,17 +694,35 @@ export async function restart({ sessionId, force, waitMs }: { sessionId: string;
         return { tmuxSession: name, screen: tmux.capture(name, { paneQualifier: null, lines: null, start: null }) };
       } catch { return null; }
     },
-    resume: (sid) => connectDeadCreateTmux(sid),
+    resume: async (sid) => {
+      if (!useNative) return connectDeadCreateTmux(sid);
+      const rec = await connectDeadNative(sid);
+      observedBridge = rec.bridgeSessionId;
+      return rec;
+    },
   });
 
+  const current = useNative ? observedBridge : ((r.record as CcrRecord | undefined)?.webUrl ?? null);
+  const bridge: RestartBridgeInfo = {
+    previousBridgeSessionId,
+    bridgeSessionId: current,
+    verdict: describeReclaim(previousBridgeSessionId, current),
+    resumeMode: useNative ? 'native' : 'bridge',
+  };
   if (!r.ok) {
     const code: TerminalErrorCode =
       r.state === 'gone' ? 'SESSION_NOT_FOUND'
       : r.state === 'needs-force' || r.state === 'kill-failed' ? 'CONFLICT'
       : 'INTERNAL_ERROR';
-    throw new TerminalError(code, r.reason, { restart: r });
+    throw new TerminalError(code, r.reason, { restart: r, bridge });
   }
-  return r;
+  const note =
+    bridge.verdict === 'reclaimed' ? ' — the session came back on its ORIGINAL remote-control bridge (same claude.ai/code link)'
+    : bridge.verdict === 'new-bridge' ? ' — Claude Code bound a NEW bridge id; the old claude.ai/code link is dead, use the new webUrl'
+    : bridge.verdict === 'first-bridge' ? ' — now remote-controlled (it was not before)'
+    : useNative ? ' — resumed, but no remote-control bridge id was recorded within the wait window; it may still connect (re-check cc_sessions) or run ccr_connect'
+    : '';
+  return { ...r, reason: r.reason + note, bridge };
 }
 
 /**
