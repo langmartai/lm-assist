@@ -309,10 +309,13 @@ export const windowsTerminalSendToolDef = {
   name: 'windows_terminal_send',
   description:
     'Type text and/or press SPECIAL KEYS in a Windows Claude Code session — the Windows counterpart of ' +
-    'terminal_send. Order per call: `text` is pasted, then `keys` are pressed, then `submit` presses ' +
-    'Enter. `keys` (e.g. ["Escape"] to dismiss a dialog, ["Down","Down","Enter"] to pick a menu item) ' +
-    'go through the focus-free console-input path, so they drive a background window without stealing ' +
-    'foreground — this is the only way to reach a menu/dialog here (before, only text+Enter was possible). ' +
+    'terminal_send. Order per call: `text` is typed, then `keys` are pressed, then `submit` presses ' +
+    'Enter. BOTH text and keys go through the focus-free, pid-keyed console-input path (WriteConsoleInput): ' +
+    'no window/tab locate by title, no foreground, no clipboard — so a session in a background pane or a ' +
+    'window with the default "Claude Code" title is driven the same as any other (the old title-marker ' +
+    'locate could not see non-active panes → "could not locate window/tab"). Multi-line text is sent as ' +
+    'ONE bracketed paste (newlines stay in the composer). `keys` (e.g. ["Escape"] to dismiss a dialog, ' +
+    '["Down","Down","Enter"] to pick a menu item) reach a menu/dialog the same way. ' +
     'Allowed keys: Enter, Escape, Up, Down, Left, Right, Tab, Space (Ctrl-C is windows_terminal_state\'s ' +
     'interrupt sibling, not here). Pass `sessionId` from windows_terminal_list. Either text or keys is ' +
     'required. WRITE — drives the session.',
