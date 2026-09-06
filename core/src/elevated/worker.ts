@@ -37,6 +37,7 @@ import {
   pidFilePath,
   DEFAULT_EXEC_TIMEOUT_MS,
   MAX_EXEC_TIMEOUT_MS,
+  buildShellCommandLine,
 } from './common';
 
 const SINCE = new Date().toISOString();
@@ -196,8 +197,10 @@ function runExec(body: ExecReq): Promise<ExecResult> {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) timeoutMs = DEFAULT_EXEC_TIMEOUT_MS;
     timeoutMs = Math.min(timeoutMs, MAX_EXEC_TIMEOUT_MS);
 
-    // Build the full command line for the chosen shell. args are appended to cmd.
-    const fullCmd = args.length ? `${cmd} ${args.join(' ')}` : cmd;
+    // cmd verbatim (it IS the shell line: pipes/redirects/pre-quoted `bash -c`
+    // work), args quoted PER-ARG for the shell (spaces and | > & inside an arg
+    // are data). See buildShellCommandLine.
+    const fullCmd = buildShellCommandLine(cmd, args, shell);
 
     let child: ChildProcess;
     if (shell === 'powershell') {
