@@ -19,7 +19,9 @@ export const schedulerJobsToolDef = {
     "Manage lm-assist's INTERNAL scheduled jobs — the cron+at replacement that runs inside the worker (NOT OS " +
     'crontab). Trigger words: "schedule a job", "run it every N minutes/daily", "run once at/in", "cron", ' +
     '"one-time task", "auto-run", "background job", "test the job", "trigger it now", "show job logs/output". ' +
-    '`action`: list (default) | get | create | test | run | update | delete | logs.\n' +
+    '`action`: list (default) | get | create | test | run | update | pause | resume | delete | logs.\n' +
+    'PAUSE A RUNAWAY: action="pause" (= enabled:false) works on BUILT-IN jobs too (mission-controller, ' +
+    'executor-reaper, auth-monitor, …) — the way to stop a misbehaving loop without a deploy; action="resume" re-arms it.\n' +
     'THREE WAYS TO SCHEDULE (all via action="create"):\n' +
     '• ONE-TIME at a time: run_at="2026-06-22T03:00Z" (ISO) OR in_minutes=30 → runs ONCE then completes. ' +
     '(Auto-enabled; no need to set auto_run.)\n' +
@@ -38,7 +40,7 @@ export const schedulerJobsToolDef = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      action: { type: 'string', enum: ['list', 'get', 'create', 'test', 'run', 'update', 'delete', 'logs'], description: 'What to do (default "list").' },
+      action: { type: 'string', enum: ['list', 'get', 'create', 'test', 'run', 'update', 'pause', 'resume', 'delete', 'logs'], description: 'What to do (default "list"). pause/resume flip `enabled` on any job, built-in included.' },
       id: { type: 'string', description: 'Job id (required for everything except list).' },
       name: { type: 'string', description: 'Human-readable name (create/update).' },
       description: { type: 'string', description: 'What the job does (create/update).' },
@@ -155,6 +157,11 @@ function unwrap(res: any): any {
   return res;
 }
 
+/** Pure: does a GET /scheduler/jobs/:id result describe a job? (exported for tests) */
+export function jobExists(r: unknown): boolean {
+  return !!(r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string' && (r as { id: string }).id.length > 0);
+}
+
 async function handleSchedulerJobs(args: Record<string, unknown>): Promise<McpToolResult> {
   const action = String(args.action || 'list').toLowerCase();
   const id = typeof args.id === 'string' ? args.id.trim() : '';
@@ -182,7 +189,10 @@ async function handleSchedulerJobs(args: Record<string, unknown>): Promise<McpTo
     }
     if (action === 'create' || action === 'update') {
       if (!id) return err('id is required.');
-      const exists = !!(await workerGet(`/scheduler/jobs/${enc(id)}`).then((r) => (r as any)?.success).catch(() => false));
+      // workerGet returns the UNWRAPPED job (or throws on a NOT_FOUND envelope) — reading
+      // `.success` off it was always undefined, so every update (built-in or custom) failed
+      // with "No job to update" (2026-09-07: no way to pause a runaway mission-controller).
+      const exists = await workerGet(`/scheduler/jobs/${enc(id)}`).then((r) => jobExists(r)).catch(() => false);
       const body: Record<string, unknown> = { id };
       if (typeof args.name === 'string') body.name = args.name;
       if (typeof args.description === 'string') body.description = args.description;
@@ -202,6 +212,13 @@ async function handleSchedulerJobs(args: Record<string, unknown>): Promise<McpTo
         : data.enabled ? `\n(scheduled — next run ${data.nextRunAt}. action="test" to verify now.)`
         : '\n(disabled — pass auto_run=true to schedule, run_at/in_minutes for a one-time run, or action="run"/"test" to trigger now.)';
       return ok(`${action === 'create' ? 'Created' : 'Updated'} "${id}":\n${fmtJob(data)}${hint}`);
+    }
+    if (action === 'pause' || action === 'resume') {
+      if (!id) return err('id is required.');
+      const data = unwrap(await workerPut(`/scheduler/jobs/${enc(id)}`, { enabled: action === 'resume' })) as JobView & { builtin?: boolean };
+      const verb = action === 'pause' ? 'Paused' : 'Resumed';
+      const state = data.enabled ? `enabled — next run ${data.nextRunAt ?? 'when due'}` : 'disabled — will not fire until resumed (action="run"/"test" still trigger it by hand)';
+      return ok(`${verb} "${id}"${data.builtin ? ' (built-in)' : ''}: ${state}\n${fmtJob(data)}`);
     }
     if (action === 'test' || action === 'run') {
       if (!id) return err('id is required.');
