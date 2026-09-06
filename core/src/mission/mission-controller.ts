@@ -692,6 +692,26 @@ export function buildControllerLaunchExtras(args: {
  * still tears down — just ~1 min later, which is fine for loser cleanup.
  */
 /**
+ * Is this controller record OURS to act on? The record lives in the fleet-synced
+ * missions dataset, so every node sees the leader's record. A NON-leader must never
+ * tear it down or clear it: on 2026-09-07 node 107 (non-leader, not-monitor streak
+ * 51+) read leader 123's record every minute, "tore it down" (a no-op locally — the
+ * session lives on 123) and wrote the record back as null; 123 then saw no controller
+ * and launched another one every tick — 25 controllers stacked up in tmux and each
+ * registered a remote-control session on the account. A record with no `node`
+ * (legacy) or a caller without `selfNodeId` is treated as ours.
+ */
+export function controllerRecordOwnedHere(
+  cs: { node?: string | null } | null | undefined,
+  deps: { selfNodeId?: () => string },
+): boolean {
+  if (!cs || !cs.node || !deps.selfNodeId) return true;
+  let self = '';
+  try { self = deps.selfNodeId() || ''; } catch { self = ''; }
+  return !self || cs.node === self;
+}
+
+/**
  * Controller DEMAND — is there any work for a controller session to exist for?
  *
  *   none   — no non-terminal mission at all (fresh install, or everything done/failed)
@@ -893,6 +913,10 @@ export interface SupervisorDeps {
    *  must not share one hard-coded string (the journal said "not monitor" for a controller
    *  that merely read as not-live, 2026-09-05). */
   teardown: (cs: ControllerSession, reason?: string) => Promise<void>;
+  /** THIS node's gateway id. A controller record whose `node` is ANOTHER node is not ours to
+   *  tear down or clear — see controllerRecordOwnedHere. Absent ⇒ every record is treated as
+   *  ours (the pre-2026-09-07 behaviour; only tests omit it). */
+  selfNodeId?: () => string;
   /** Optional: hand the recorded terminal handle back to the terminal backend when a live
    *  controller is ADOPTED (Core restart) — on Windows that is the tab RuntimeId the previous
    *  Core learned at launch; without it a drive to a busy controller cannot find the tab. */
@@ -1637,6 +1661,13 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   }
 
   if (action === 'teardown') {
+    // OWNERSHIP GUARD: another node's record is the LEADER's controller — a non-leader
+    // clearing it is the split-brain that stacked 25 controllers on 123 (2026-09-07).
+    // Leave it exactly as it is; the owner runs its own lifecycle.
+    if (cs && !controllerRecordOwnedHere(cs, deps)) {
+      deps.journal?.({ at: Date.now(), kind: 'tick', action: 'teardown-skipped-foreign', isMonitor, live, driveDue, record: cs.sessionId, ownerNode: cs.node } as never);
+      return { action: 'idle', controllerSession: cs };
+    }
     if (cs) {
       await deps.teardown(cs, decided.reason ?? 'not monitor (confident, debounced)');
       await deps.putControllerSession(null);
@@ -1660,9 +1691,29 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     // !live, or its bridge failed), tear down its tmux FIRST so a relaunch never stacks a second
     // controller on top of a still-running one (belt-and-suspenders with the isLive fix).
     if (cs) { try { await deps.teardown(cs, recoveryReason ?? 'relaunch: recorded controller read as not live'); } catch { /* best-effort */ } }
+    // LAUNCH GUARD: never stack a controller on top of an UNRECORDED one. Any local
+    // lmcc-* tmux that is not the record's is a stray — a previous launch whose record
+    // was lost or overwritten — and is torn down BEFORE launching, so one leader can
+    // only ever hold one controller. (The sweep above needs a record; this covers the
+    // cs === null case that stacked 25 controllers on 123, 2026-09-07.)
+    if (deps.listTmuxSessions && deps.killStrayTmux) {
+      try {
+        const strays = pickStrayControllers(await deps.listTmuxSessions(), cs?.tmux ?? null);
+        for (const s of strays) { try { await deps.killStrayTmux(s); } catch { /* per-stray best-effort */ } }
+        if (strays.length) deps.journal?.({ at: Date.now(), kind: 'tick', action: 'prelaunch-sweep', isMonitor, live, driveDue, strays } as never);
+      } catch { /* sweep is best-effort */ }
+    }
     // Launch with lastDriveAt unset so the next tick triggers a drive immediately.
     const newCs = await deps.launch();
-    await deps.putControllerSession(newCs);
+    try {
+      await deps.putControllerSession(newCs);
+    } catch (e) {
+      // An unrecorded controller is exactly what the next tick would stack another one
+      // on top of — never leave one behind. Tear it down and surface the failure.
+      try { await deps.teardown(newCs, 'launch: controller record write failed'); } catch { /* best-effort */ }
+      deps.journal?.({ at: Date.now(), kind: 'tick', action: 'launch-unrecorded', isMonitor, live, driveDue, record: newCs.sessionId, error: String((e as Error)?.message ?? e) } as never);
+      throw e;
+    }
     // A controller launched BY this process needs no restart-adopt drive later.
     deps.bootAdopt?.mark();
     return { action: 'launch', controllerSession: newCs };
@@ -2106,6 +2157,7 @@ export function registerMissionController(
         })),
       getControllerSession: () => getControllerSession(),
       putControllerSession: (cs) => putControllerSession(cs),
+      selfNodeId: () => { const c = getHubConfig(); return c.gatewayId || c.machineId || ''; },
       // Backend-neutral (see controllerIsLive): on Windows the handle is a WT tab RuntimeId,
       // not a tmux name — asking tmux read every healthy controller as dead (2026-09-05, 107).
       isLive: (cs) => controllerIsLive(cs, {

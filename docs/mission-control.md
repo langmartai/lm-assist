@@ -65,3 +65,16 @@ within `missionControllerColdMin`, default 60 min) or `cold` (open missions, non
   touched or activated) relaunches the controller on that tick — resume-first, so it keeps its identity.
 - `missionControllerColdMin: 0` disables the cold verdict (open missions ⇒ warm).
 - Election still outranks demand: a non-leader never tears down for demand; an indeterminate election idles.
+
+### Controller record ownership + one-controller-per-leader guards (2026-09-07)
+
+The controller record (`__controller__` in the fleet-synced missions dataset) carries `node`.
+A **non-leader never tears down or clears a record owned by another node** — that was the
+split-brain of 2026-09-07: non-leader 107 "tore down" leader 123's record every minute (a local
+no-op) and wrote it back as null, so 123 launched a new controller every tick (25 piled up, each
+registering a remote-control session). Journal action: `teardown-skipped-foreign`.
+Before any launch the supervisor **sweeps every unrecorded local `lmcc-*` tmux**
+(`prelaunch-sweep`), and a launch whose record write fails **tears the new controller down again**
+(`launch-unrecorded`) — one leader can only ever hold one controller.
+To stop a runaway job without a deploy: `scheduler_jobs(action="pause", id="mission-controller")`
+(works on built-in jobs) or set `missionControllerEnabled:false` in `~/.lm-assist/project-settings.json`.
