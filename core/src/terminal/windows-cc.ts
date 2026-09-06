@@ -28,7 +28,7 @@ import {
   getCoreWindowsSessionId,
 } from './windows-terminal';
 import { describeWindowsLaunch } from './windows-launch-verdict';
-import { classifyScreen, type ScreenState } from './cc-classify';
+import { classifyScreen, trustPromptKeys, type ScreenState } from './cc-classify';
 import { quoteCmdArg } from '../elevated/common';
 import { CC_EFFORT_LEVELS } from './types';
 
@@ -190,8 +190,10 @@ export async function autoHandle(
   const base: AutoHandleResult = { ok: true, pid, state: cls.state, detail: cls.detail, options: cls.options, retryHint: cls.retryHint, handled: false };
 
   if (cls.state === 'folder_trust' && opts.trust !== false) {
-    const r = await focusAndSend({ pid, rid: opts.rid, keys: 'ENTER' });
-    return { ...base, handled: r.ok, action: r.ok ? 'trusted-folder (Enter)' : r.error };
+    // Derived from the screen: the prompt may highlight "No, exit" first (2.1.257).
+    const keys = trustPromptKeys(cap.text || '').map((k) => k.toUpperCase()).join(' ');
+    const r = await focusAndSend({ pid, rid: opts.rid, keys });
+    return { ...base, handled: r.ok, action: r.ok ? `trusted-folder (${keys})` : r.error };
   }
   if (cls.state === 'await_question' && typeof opts.answer === 'number' && opts.answer >= 1 && opts.answer <= 9) {
     const r = await focusAndSend({ pid, rid: opts.rid, keys: `${opts.answer} ENTER` });
@@ -292,7 +294,8 @@ export async function launchSession(opts: {
           if (beforeClaude.has(cp)) continue;
           const cap = await captureScreen(cp);
           if (cap.ok && classifyScreen(cap.text || '').state === 'folder_trust') {
-            await focusAndSend({ pid: cp, keys: 'ENTER' });
+            // Keys derived from the screen — a bare Enter picks "No, exit" on 2.1.257.
+            await focusAndSend({ pid: cp, keys: trustPromptKeys(cap.text || '').map((k) => k.toUpperCase()).join(' ') });
             trustHandled = true;
             break;
           }

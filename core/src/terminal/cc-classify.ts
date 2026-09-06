@@ -151,3 +151,32 @@ export function classifyScreen(text: string): ScreenClassification {
 
   return { state: 'unknown' };
 }
+
+// ---------------------------------------------------------------------------
+// Folder-trust prompt: which keys select "Yes, I trust this folder"?
+//
+// Measured 2026-09-07 (Claude Code 2.1.257, DESKTOP-GDKLATG): the prompt now
+// highlights "No, exit" FIRST —
+//     ❯ No, exit
+//       Yes, I trust this folder
+// so the long-standing "press Enter to accept" made the session QUIT at the
+// trust screen (a launch that never registered; on tmux the ccr resume that
+// typed "1" + Enter did the same). The answer is derived from what is on the
+// screen, never assumed: move the highlight onto the Yes row, then Enter; the
+// numbered legacy layout ("1. Yes") keeps its "1" + Enter.
+// ---------------------------------------------------------------------------
+
+export type TrustKey = 'Down' | 'Up' | 'Enter' | '1';
+
+/** Pure: the key sequence that accepts the trust prompt shown in `screen`. */
+export function trustPromptKeys(screen: string): TrustKey[] {
+  if (/\b1[.)]\s*Yes/i.test(screen)) return ['1', 'Enter'];
+  const lines = screen.split(/\r?\n/);
+  const yes = lines.findIndex((l) => /Yes,\s*I trust/i.test(l));
+  const highlighted = lines.findIndex((l) => /(^|\s)[❯>]\s*(Yes|No)\b/i.test(l));
+  if (yes >= 0 && highlighted >= 0 && highlighted !== yes) {
+    const d = yes - highlighted;
+    return [...Array<TrustKey>(Math.abs(d)).fill(d > 0 ? 'Down' : 'Up'), 'Enter'];
+  }
+  return ['Enter'];
+}

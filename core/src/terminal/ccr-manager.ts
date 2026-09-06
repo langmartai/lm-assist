@@ -319,7 +319,10 @@ async function acceptTrustIfPrompted(tmuxSession: string): Promise<void> {
     let screen = '';
     try { screen = execFileSync('tmux', ['capture-pane', '-t', tmuxSession, '-p'], { encoding: 'utf-8' }); } catch { return; }
     if (TRUST.some((t) => screen.includes(t))) {
-      try { execFileSync('tmux', ['send-keys', '-t', tmuxSession, '1', 'Enter']); } catch { /* ignore */ }
+      // Keys derived from the screen (see trustPromptKeys): "1"+Enter only for the
+      // numbered layout; the 2.1.257 layout highlights "No, exit" first.
+      const { trustPromptKeys } = require('./cc-classify') as typeof import('./cc-classify');
+      try { execFileSync('tmux', ['send-keys', '-t', tmuxSession, ...trustPromptKeys(screen)]); } catch { /* ignore */ }
       return;
     }
     if (screen.includes('ctx:')) return; // already at prompt, no trust dialog
