@@ -33,6 +33,7 @@ export const TOPIC_TOOLS: Record<string, string[]> = {
   clusters: ['cluster_list', 'cluster_assign', 'cluster_unassign', 'cluster_describe'],
   'machine-access': ['machine_access'],
   backup: ['backup_run', 'backup_status', 'backup_list', 'backup_search', 'backup_read', 'backup_remove'],
+  vm: ['vm_status', 'vm_create', 'vm_power', 'vm_snapshot', 'vm_delete'],
 };
 
 /** tool name → topic, built once from TOPIC_TOOLS. A tool listed under two topics
