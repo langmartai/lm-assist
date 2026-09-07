@@ -5,8 +5,8 @@
 > **The iPad is the console. This is the machine room.**
 
 **TL;DR** — Everything in [the first story](./2026-09-developing-lm-assist-from-an-ipad.md) runs on
-one physical machine: a Windows 11 desktop with an 8-core Ryzen and about 2.8 TB across four
-volumes, running Hyper-V. Three Ubuntu VMs live on it — a dev VM where the repository, the builds,
+one physical machine: a Windows 11 desktop with an 8-core Ryzen, 64 GB of RAM, and about 2.8 TB across
+four volumes, running Hyper-V. Three Ubuntu VMs live on it — a dev VM where the repository, the builds,
 the Claude Code sessions, and both lm-assist modes run; a test VM for fresh installs and release
 checks; and a disposable desktop VM that was built by unattended autoinstall in about 25 minutes.
 lm-assist is installed on the Windows host **and** inside each VM, and every one of them is a node
@@ -34,7 +34,7 @@ flowchart TB
 
 | Machine | What it is for | lm-assist there |
 |---|---|---|
-| **Windows 11 host** (build 26200, 8-core Ryzen, ~2.8 TB over four volumes) | the physical box and the Hyper-V host; the work that needs a real GUI — the Claude desktop app with the connector, the signed-in browsers behind the WhatsApp and LinkedIn connectors; the backup collector, because the big disks are here | the prod node, started as an interactive scheduled task; a second scheduled task runs the elevated worker; cluster `stage` |
+| **Windows 11 host** (build 26200, 8-core Ryzen, 64 GB RAM, ~2.8 TB over four volumes) | the physical box and the Hyper-V host; the work that needs a real GUI — the Claude desktop app with the connector, the signed-in browsers behind the WhatsApp and LinkedIn connectors; the backup collector, because the big disks are here | the prod node, started as an interactive scheduled task; a second scheduled task runs the elevated worker; cluster `stage` |
 | **Ubuntu dev VM** (22.04, 8 vCPU, 19 GB) | the development machine: the repository and its worktrees; the dev Core and Web from the repo on their own ports beside the npm-installed prod node; Claude Code sessions in tmux; a headed Chrome for claude.ai captures and the Gmail connector's browser; nested KVM so the Linux VM backend can be tested without another machine | the prod node (npm) and the dev node (repo) side by side; cluster `prod` |
 | **Ubuntu test VM** (22.04, 8 vCPU, 4 GB) | throwaway ground: fresh installs from the packed tarball, release verification, a full GNOME desktop for the one-time interactive logins, a systemd-managed Core | a prod node |
 | **Ubuntu desktop VM** (24.04, 4 vCPU, 4 GB) | built from a chat by unattended autoinstall; kept as a saved state; snapshot, try something, roll back | created and managed through lm-assist's VM tools |
