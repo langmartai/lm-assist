@@ -90,6 +90,12 @@ The Claude products don't ship a unified dashboard: Claude Code lives in a termi
 | Sessions end when you walk away | Auto-resume, scheduling, mission control |
 | Claude can't act on your infrastructure | 280+ MCP tools inside Claude Code & claude.ai |
 
+## From the developer: built from an iPad
+
+Three months ago, developing lm-assist meant a PC or Mac with Claude Code in a terminal. Today about 99% of it happens from the Claude app on an iPad — because everything that used to need the PC (build, restart, test, drive and resume sessions, screenshots, cross-node file moves, PR review, releases) became an lm-assist MCP tool that Claude calls. In the last three months, 1,600 commits landed, most of them by Claude Code sessions steered through lm-assist itself; the 0.2.x releases and this documentation wave were run the same way. The 1% that still needs a hand at a machine is short: enrolling a new node, the first browser sign-in for a service connector, npm's login for publishing, and anything physical.
+
+**Read the story:** [From a terminal to an iPad: three months of lm-assist building itself](./docs/articles/2026-09-developing-lm-assist-from-an-ipad.md) — the dated timeline of what had to exist, a day from the iPad in plain-language prompts, and the honest remainder. More in [docs/articles](./docs/articles/README.md).
+
 ---
 
 ## Functional documentation
