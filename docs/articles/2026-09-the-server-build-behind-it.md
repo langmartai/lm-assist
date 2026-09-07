@@ -25,9 +25,9 @@ flowchart TB
     T["Ubuntu test VM node<br/>fresh installs · release checks · GNOME desktop"]
     X["Ubuntu desktop VM<br/>disposable — autoinstalled, snapshotted, rolled back"]
   end
-  HUB <-. "outbound WebSocket" .-> W
-  HUB <-. "outbound WebSocket" .-> D
-  HUB <-. "outbound WebSocket" .-> T
+  W -. "outbound WebSocket" .-> HUB
+  D -. "outbound WebSocket" .-> HUB
+  T -. "outbound WebSocket" .-> HUB
 ```
 
 ## What runs where
