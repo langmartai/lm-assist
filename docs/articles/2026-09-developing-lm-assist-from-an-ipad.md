@@ -2,6 +2,8 @@
 
 *A story from the lm-assist developer · September 2026*
 
+> **You still need a PC, a workstation, or a server. You no longer need to sit in front of it.**
+
 **TL;DR** — Three months ago, developing lm-assist meant sitting at a PC or Mac with Claude Code
 open in a terminal. Today about 99% of it happens from the Claude app on an iPad, and the last 1%
 is a short list I can name. Nothing about the iPad changed. What changed is that every action that
