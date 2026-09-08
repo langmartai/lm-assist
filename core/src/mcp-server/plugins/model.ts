@@ -99,6 +99,11 @@ export interface PluginState {
    *  every `lm-assist upgrade` would re-enable something the owner deliberately turned
    *  off. Cleared by an explicit enable. */
   bundledOptOut?: boolean;
+  /** Name of the bundled plugin that REPLACED this one (a rename or a merge). Set once,
+   *  when seeding first retires the predecessor, and never cleared. It is what makes
+   *  retiring a one-time event: without it every boot would re-disable a plugin the
+   *  owner had deliberately turned back on. */
+  supersededBy?: string;
 }
 
 export type PluginPhase = 'disabled' | 'enabled' | 'unhealthy' | 'invalid';

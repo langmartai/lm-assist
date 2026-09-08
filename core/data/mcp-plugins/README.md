@@ -29,7 +29,7 @@ match it.
 
 | plugin | notes |
 |---|---|
-| `langmart-design` | 30 read-only tools forwarding to the LangMart public gateway API. Authored by the LangMart team and mirrored here for distribution; grants are derived on the node, so no credential is ever stored in this directory. |
+| `langmart` | 33 read-only tools forwarding to the LangMart public gateway API. Authored by the LangMart team and mirrored here for distribution; grants are derived on the node, so no credential is ever stored in this directory. |
 
 `bundled.json` is generated — never hand-edit it either. It records each mirror's upstream
 **checksum and nothing else**: this repo is public and an upstream may not be, so the index

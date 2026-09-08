@@ -201,20 +201,20 @@ test('an owner disable is STICKY across upgrades', () => {
 
 test('declared env is derived from local config, and a human grant is never overwritten', () => {
   const e = env();
-  bundlePlugin(e, 'langmart-design', { env: ['LANGMART_API_BASE', 'LANGMART_API_KEY'] });
+  bundlePlugin(e, 'langmart', { env: ['LANGMART_API_BASE', 'LANGMART_API_KEY'] });
 
   const [r] = seed(e);
   assert.deepEqual(r.grantedEnv.sort(), ['LANGMART_API_BASE', 'LANGMART_API_KEY']);
   assert.equal(r.enabled, true);
-  const st = readState('langmart-design', e.stateFile);
+  const st = readState('langmart', e.stateFile);
   assert.equal(st.grants?.LANGMART_API_BASE, 'https://api.langmart.ai');
   assert.equal(st.grants?.LANGMART_API_KEY, HUB.apiKey);
 
   // A human sets their own key; a later seed must respect it.
-  writeState('langmart-design', { grants: { ...st.grants, LANGMART_API_KEY: 'sk-langmart-humanchoice' } }, e.stateFile);
-  stamp(e, 'langmart-design', '2.0.0');
+  writeState('langmart', { grants: { ...st.grants, LANGMART_API_KEY: 'sk-langmart-humanchoice' } }, e.stateFile);
+  stamp(e, 'langmart', '2.0.0');
   seed(e);
-  assert.equal(readState('langmart-design', e.stateFile).grants?.LANGMART_API_KEY, 'sk-langmart-humanchoice');
+  assert.equal(readState('langmart', e.stateFile).grants?.LANGMART_API_KEY, 'sk-langmart-humanchoice');
 });
 
 test('a plugin whose declared env cannot be derived is installed but left OFF with an actionable reason', () => {
@@ -237,7 +237,7 @@ test('an unknown hub host yields NO api base — a derived grant never guesses w
   assert.equal(deriveLangmartApiBase(undefined), null);
 
   const e = env();
-  bundlePlugin(e, 'langmart-design', { env: ['LANGMART_API_BASE', 'LANGMART_API_KEY'] });
+  bundlePlugin(e, 'langmart', { env: ['LANGMART_API_BASE', 'LANGMART_API_KEY'] });
   const [r] = seed(e, { hubConfig: { hubUrl: 'wss://someone-elses-hub.example.com', apiKey: 'sk-langassist-x' } });
   assert.deepEqual(r.grantedEnv, [], 'half a grant is worse than none');
   assert.equal(r.enabled, false);
@@ -349,3 +349,89 @@ function stamp(e: Env, name: string, version: string): string {
   writeIndex(e, [{ name, version, checksum, manifestDigest: manifestDigest(stamped) }]);
   return checksum;
 }
+
+// --- a renamed plugin must retire its predecessor ---------------------------------
+
+/**
+ * When a bundled plugin is RENAMED, the old one does not vanish from the nodes that
+ * already have it: seedBundledPlugins() only iterates the plugins in the index, and
+ * pruneExtraneous() prunes files WITHIN a plugin dir, never a plugin that left the
+ * index. So without this, `langmart-design` → `langmart` would leave every node
+ * advertising BOTH — 30 stale tools alongside 33 new ones, duplicated forever.
+ *
+ * `supersedes` closes that. The predecessor is DISABLED, not deleted: turning it off
+ * removes it from tools/list (the actual harm) while leaving its payload and grants on
+ * disk, so a rename that turns out to be wrong is recoverable by hand.
+ */
+test('seeding a plugin that supersedes another disables the predecessor', () => {
+  const e = env();
+
+  // The node already has the old plugin, installed and enabled from an earlier package.
+  bundlePlugin(e, 'old-name');
+  seed(e);
+  assert.equal(readState('old-name', e.stateFile).enabled, true, 'precondition: predecessor is enabled');
+
+  // The new package ships the renamed plugin, declaring what it replaces.
+  const checksum = bundlePlugin(e, 'new-name');
+  writeIndex(e, [{
+    name: 'new-name', version: '1.0.0', checksum,
+    manifestDigest: manifestDigest(JSON.parse(fs.readFileSync(path.join(e.src, 'new-name', 'mcp-plugin.json'), 'utf-8'))),
+    supersedes: ['old-name'],
+  } as any]);
+
+  const results = seed(e);
+
+  assert.equal(readState('new-name', e.stateFile).enabled, true, 'the renamed plugin is enabled');
+  assert.equal(readState('old-name', e.stateFile).enabled, false,
+    'the predecessor must be turned off, or the node advertises both tool sets');
+  assert.match(String(readState('old-name', e.stateFile).revertedReason), /new-name/,
+    'the reason must name the successor so an operator can see WHY it went off');
+
+  const retired = results.find((r) => r.name === 'old-name');
+  assert.ok(retired, 'retiring a predecessor must be REPORTED, not silent');
+  assert.equal(retired!.outcome, 'superseded');
+  assert.equal(retired!.enabled, false);
+
+  // Non-destructive: the payload is still on disk.
+  assert.ok(fs.existsSync(path.join(e.dst, 'old-name')), 'predecessor payload must NOT be deleted');
+});
+
+test('superseding is idempotent and does not fight a re-enable', () => {
+  const e = env();
+  bundlePlugin(e, 'old-name');
+  seed(e);
+
+  const checksum = bundlePlugin(e, 'new-name');
+  const idx = {
+    name: 'new-name', version: '1.0.0', checksum,
+    manifestDigest: manifestDigest(JSON.parse(fs.readFileSync(path.join(e.src, 'new-name', 'mcp-plugin.json'), 'utf-8'))),
+    supersedes: ['old-name'],
+  } as any;
+  writeIndex(e, [idx]);
+  seed(e);
+
+  // An operator deliberately turns the old one back on.
+  writeState('old-name', { enabled: true, revertedReason: undefined }, e.stateFile);
+
+  // A later boot must NOT silently undo that decision a second time.
+  const results = seed(e);
+  assert.equal(readState('old-name', e.stateFile).enabled, true,
+    'a deliberate re-enable must stick — retiring happens once, not on every boot');
+  assert.equal(results.find((r) => r.name === 'old-name'), undefined,
+    'an already-retired predecessor is not re-reported every boot');
+});
+
+test('superseding a plugin that was never installed is a no-op', () => {
+  const e = env();
+  const checksum = bundlePlugin(e, 'new-name');
+  writeIndex(e, [{
+    name: 'new-name', version: '1.0.0', checksum,
+    manifestDigest: manifestDigest(JSON.parse(fs.readFileSync(path.join(e.src, 'new-name', 'mcp-plugin.json'), 'utf-8'))),
+    supersedes: ['never-existed'],
+  } as any]);
+
+  const results = seed(e);
+  assert.equal(results.find((r) => r.name === 'never-existed'), undefined,
+    'a fresh node has no predecessor to retire and must not report one');
+  assert.equal(results.find((r) => r.name === 'new-name')!.enabled, true);
+});

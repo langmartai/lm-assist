@@ -1,4 +1,4 @@
-# langmart-design — LangMart platform management over MCP (read-only v0.1)
+# langmart — LangMart platform management over MCP (read-only v0.1)
 
 An lm-assist MCP plugin (Contract v1) exposing the LangMart platform's
 management surface as 30 **read-only** tools: provider connections, the model
@@ -7,7 +7,7 @@ quotas, alerts, support tickets, and automation inventory (read only — no
 execution tool exists).
 
 Once enabled in an lm-assist Core, the tools appear fleet-wide as
-`ext__langmart-design__<tool>` in every session and claude.ai conversation
+`ext__langmart__<tool>` in every session and claude.ai conversation
 carrying the lm-assist connector. Consumers configure nothing.
 
 ## How it works

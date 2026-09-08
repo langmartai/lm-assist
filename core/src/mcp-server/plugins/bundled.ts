@@ -52,6 +52,13 @@ export interface BundledEntry {
    *  surface that DECLARES the plugin's capabilities — would be the one part of the
    *  package no pin protects. */
   manifestDigest: string;
+  /** Plugins this one REPLACES (a rename, or a merge of two plugins into one).
+   *
+   *  Seeding installs what the index lists; it has never removed a plugin that LEFT the
+   *  index, and `pruneExtraneous()` only prunes files inside a plugin's own tree. So a
+   *  rename would otherwise leave every existing node advertising BOTH the old and the
+   *  new tool sets, forever. Naming the predecessor here lets seeding turn it off. */
+  supersedes?: string[];
   /** Present when this payload is a MIRROR of a plugin maintained in another repo —
    *  which is every plugin here today. `checksum` is the upstream payload hash it was
    *  vendored from, so `gen-bundled-plugins.js` can refuse an edit made to lm-assist's
@@ -75,7 +82,8 @@ export type SeedOutcome =
   | 'updated'           // the tree we previously seeded was replaced by a newer one
   | 'up-to-date'        // already exactly this payload
   | 'kept-local'        // a tree we did not seed (or one edited since) -> left alone
-  | 'skipped';          // subsystem off, or the package entry is unusable
+  | 'skipped'           // subsystem off, or the package entry is unusable
+  | 'superseded';       // a PREDECESSOR turned off because a renamed plugin replaced it
 
 export interface SeedResult {
   name: string;
@@ -154,7 +162,7 @@ function parseBundledIndex(sourceDir: string): BundledIndex {
 type GrantProvider = (opts: SeedOptions) => Record<string, string>;
 
 /**
- * `langmart-design` talks to the LangMart PUBLIC API (`/api/*` on the gateway).
+ * `langmart` talks to the LangMart PUBLIC API (`/api/*` on the gateway).
  * Both values it needs are already on the node in `~/.lm-assist/hub.json`:
  *
  *  - the hub api key is an ordinary account key for the same user and organisation, so
@@ -167,7 +175,7 @@ type GrantProvider = (opts: SeedOptions) => Record<string, string>;
  * property of the PLUGIN, which hardcodes GET — never relax that on the assumption that
  * the credential itself is narrowly scoped.
  */
-const langmartDesignGrants: GrantProvider = (opts) => {
+const langmartGrants: GrantProvider = (opts) => {
   const hub = opts.hubConfig ?? loadHubConfigSafely();
   const out: Record<string, string> = {};
   const base = deriveLangmartApiBase(hub.hubUrl);
@@ -202,7 +210,7 @@ function loadHubConfigSafely(): { hubUrl?: string; apiKey?: string } {
 }
 
 const GRANT_PROVIDERS: Record<string, GrantProvider> = {
-  'langmart-design': langmartDesignGrants,
+  'langmart': langmartGrants,
 };
 
 // --- seeding ----------------------------------------------------------------------
@@ -286,8 +294,51 @@ export function seedBundledPlugins(opts: SeedOptions = {}): SeedResult[] {
         enabled: false, grantedEnv: [], detail: (e as Error).message,
       });
     }
+    // Retire anything this entry replaced. Done AFTER the successor is in place, so a
+    // failed seed never leaves a node with neither plugin enabled.
+    for (const dead of entry.supersedes ?? []) {
+      const r = retireSuperseded(dead, entry.name, targetRoot, stateFile);
+      if (r) out.push(r);
+    }
   }
   return out;
+}
+
+/**
+ * Turn off a plugin that a renamed one replaced.
+ *
+ * DISABLE, never delete: switching it off removes its tools from `tools/list`, which is
+ * the actual harm, while leaving the payload and any granted env on disk so a rename
+ * that turns out to be wrong is recoverable by hand.
+ *
+ * Runs ONCE. `supersededBy` is the marker, and it is checked before `enabled` on
+ * purpose — an owner who deliberately turns the old plugin back on must not have that
+ * decision quietly undone on the next boot. Same principle as `bundledOptOut`.
+ */
+function retireSuperseded(
+  dead: string, successor: string, targetRoot: string, stateFile: string,
+): SeedResult | null {
+  const cur = readState(dead, stateFile);
+  if (cur.supersededBy) return null;                       // already retired once
+  const onDisk = fs.existsSync(path.join(targetRoot, dead));
+  if (!onDisk && !cur.enabled) return null;                // nothing here to retire
+
+  writeState(dead, {
+    enabled: false,
+    supersededBy: successor,
+    revertedReason: `replaced by "${successor}" — this plugin was renamed`,
+    // Sticky, so a later package that still lists the old name cannot re-enable it.
+    bundledOptOut: true,
+  }, stateFile);
+
+  return {
+    name: dead,
+    version: cur.bundledSeededChecksum ? 'installed' : 'unknown',
+    outcome: 'superseded',
+    enabled: false,
+    grantedEnv: [],
+    detail: `turned off; replaced by "${successor}". Payload left at ${path.join(targetRoot, dead)}.`,
+  };
 }
 
 function seedOne(

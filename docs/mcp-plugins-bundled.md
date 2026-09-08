@@ -8,7 +8,7 @@ still describes how *their* plugin reaches a node. Nothing here loosens it.
 
 Before this, every ext plugin reached a node by a **human `cp`** from the plugin's own repo,
 followed by two loopback `curl`s. That is right for a third-party plugin and wrong for a
-first-party one: `langmart-design` is our code, talking to our gateway, using a key the node
+first-party one: `langmart` is our code, talking to our gateway, using a key the node
 already holds, and it was still absent from every fresh node until somebody remembered the
 runbook. It is the pane-shim split all over again (see [ui-panes-deploy](ui-panes-deploy.md)):
 the server rides the build, the payload rides a person, and the mismatch surfaces late.
@@ -92,7 +92,7 @@ grant is missing.
 *grant provider* in `bundled.ts`, keyed by plugin name, which derives values from config the
 node already holds. A value a human granted always outranks a derived one.
 
-`langmart-design`'s provider reads `~/.lm-assist/hub.json`:
+`langmart`'s provider reads `~/.lm-assist/hub.json`:
 
 | grant | derived from | note |
 |---|---|---|

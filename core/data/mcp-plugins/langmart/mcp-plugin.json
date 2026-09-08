@@ -1,9 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/mcp-plugin.schema.json",
   "manifestVersion": 1,
-  "name": "langmart-design",
-  "version": "0.1.0",
-  "description": "Manage the LangMart platform, read-only: provider connections, model registry, organizations, usage/request logs, cost insights, quotas, support tickets and automation inventory — 30 GET-only tools forwarding to the LangMart gateway API.",
+  "name": "langmart",
+  "version": "0.2.0",
+  "description": "Manage the LangMart platform, read-only: provider connections, model registry, organizations, usage/request logs, cost insights, quotas, support tickets and automation inventory — 33 GET-only tools (incl. onboarding/deprecation history) forwarding to the LangMart gateway API.",
   "author": "LangMart",
   "entry": {
     "command": "node",
@@ -580,6 +580,96 @@
       "annotations": {
         "readOnlyHint": true
       }
+    },
+    {
+      "name": "model_onboarding_events",
+      "description": "Onboarding / deprecation history feed (platform admin only): when models were discovered, re-priced, quarantined, released, published, delisted by the provider, re-listed, deactivated/reactivated, manually disabled or soft-deleted. Newest first. Filter by connection_id (from connections_list), event name and since (ISO 8601). Use model_events for one model's full history.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "description": "Connection UUID from connections_list"
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "discovered",
+              "repriced",
+              "quarantined",
+              "released",
+              "price_locked",
+              "price_unlocked",
+              "scope_changed",
+              "delisted",
+              "relisted",
+              "deactivated",
+              "reactivated",
+              "recovered",
+              "manually_disabled",
+              "availability_set",
+              "soft_deleted",
+              "restored"
+            ],
+            "description": "One event kind"
+          },
+          "since": {
+            "type": "string",
+            "description": "ISO 8601 date/time, e.g. 2026-08-27 or 2026-08-27T10:00:00Z"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "model_events",
+      "description": "Full onboarding / deprecation history of ONE model (platform admin only), newest first: discovered, repriced (from/to), quarantined/released, scope_changed, delisted/relisted, deactivated/reactivated, recovered, manually_disabled, availability_set, soft_deleted/restored — each with source (discovery, onboarding_api, recovery_cron, connection_health, connection_test, seller_api, admin_api), actor and details.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model row UUID, or its display id from models_list (e.g. openrouter/openai/gpt-4o); a display id shared by several connections is refused — pass the UUID"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "model_onboarding_quarantine",
+      "description": "Models held back by onboarding because no price could be discovered (platform admin only): unavailable until an admin sets a manual price. Each row carries last_seen_at (last time the provider listed it). Optional connection_id filter.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "description": "Connection UUID from connections_list"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
     }
   ],
   "capabilities": {
@@ -594,5 +684,5 @@
   },
   "keepWarm": false,
   "timeoutMs": 30000,
-  "checksum": "sha256:a79cf06afa960ddb3cc553cb74078aa3437031deca447f934516b231a4d7bdfd"
+  "checksum": "sha256:6633715fb1bc95b50fad7e15e395b082e01ec50107a80467f0578ecb0c47e3b8"
 }

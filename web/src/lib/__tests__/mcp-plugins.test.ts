@@ -97,7 +97,7 @@ describe('summarizePluginCounts', () => {
 
 describe('bundled provenance', () => {
   const base: PluginView = {
-    name: 'langmart-design', phase: 'enabled', tools: [],
+    name: 'langmart', phase: 'enabled', tools: [],
     capabilities: { network: [], fs: [], env: [] },
     payloadChecksum: 'sha256:aa', pinMatches: true, grantedEnv: [],
     health: { failures: 0 }, manifestErrors: [],

@@ -103,6 +103,21 @@ if (FROM) {
 
 // --- verify + index ---------------------------------------------------------------
 
+/**
+ * Renames: which previously-SHIPPED plugin names each current one replaces.
+ *
+ * This is lm-assist's DISTRIBUTION history, not the upstream plugin's business —
+ * upstream has no idea what this package shipped last release. Seeding reads it to turn
+ * the predecessor off on nodes that already have it; without it a rename leaves every
+ * existing node advertising both tool sets forever, because seeding installs what the
+ * index lists and has never removed a plugin that left it.
+ *
+ * Entries are permanent: a node that upgrades from an old release must still be told.
+ */
+const SUPERSEDES = {
+  langmart: ['langmart-design'],   // renamed 2026-09-09
+};
+
 const entries = [];
 const dirs = fs.existsSync(ROOT)
   ? fs.readdirSync(ROOT, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort()
@@ -140,6 +155,7 @@ for (const name of dirs) {
   }
 
   const entry = { name, version: manifest.version, checksum, manifestDigest: manifestDigest(manifest) };
+  if (SUPERSEDES[name]) entry.supersedes = SUPERSEDES[name];
   if (upstream) entry.upstream = upstream;
   entries.push(entry);
 }

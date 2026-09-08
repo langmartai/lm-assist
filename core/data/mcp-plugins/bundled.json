@@ -1,12 +1,15 @@
 {
   "plugins": [
     {
-      "name": "langmart-design",
-      "version": "0.1.0",
-      "checksum": "sha256:a79cf06afa960ddb3cc553cb74078aa3437031deca447f934516b231a4d7bdfd",
-      "manifestDigest": "sha256:d433241cf57cbab50d333b3c1118b4331143ebade71d1f9fed97532115fe6bea",
+      "name": "langmart",
+      "version": "0.2.0",
+      "checksum": "sha256:6633715fb1bc95b50fad7e15e395b082e01ec50107a80467f0578ecb0c47e3b8",
+      "manifestDigest": "sha256:4730e42949393df1992657b0767bf9ff06761280c2d9719b3204b220c69b7b70",
+      "supersedes": [
+        "langmart-design"
+      ],
       "upstream": {
-        "checksum": "sha256:a79cf06afa960ddb3cc553cb74078aa3437031deca447f934516b231a4d7bdfd"
+        "checksum": "sha256:6633715fb1bc95b50fad7e15e395b082e01ec50107a80467f0578ecb0c47e3b8"
       }
     }
   ]

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * langmart-design — read-only MCP stdio server for managing the LangMart
+ * langmart — read-only MCP stdio server for managing the LangMart
  * platform, built against lm-assist MCP Plugin Contract v1 (FROZEN).
  *
  * A thin forwarder: every tool is exactly one GET against the LangMart
@@ -40,8 +40,8 @@ const SUPPORTED = new Set([
   '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05', '2024-10-07',
 ]);
 
-const SERVER_NAME = 'langmart-design';
-const SERVER_VERSION = '0.1.0';
+const SERVER_NAME = 'langmart';
+const SERVER_VERSION = '0.2.0';
 
 const BASE_ENV = 'LANGMART_API_BASE';
 const KEY_ENV = 'LANGMART_API_KEY';
@@ -252,6 +252,14 @@ async function callTool(name, args) {
       return apiGet(`/api/automation/sessions/${needString(a, 'session_id', name)}`);
     case 'automation_templates_list':
       return apiGet('/api/automation/templates');
+    case 'model_onboarding_events':
+      return apiGet('/api/admin/model-onboarding/events' + qs({
+        connection_id: a.connection_id, event: a.event, since: a.since, limit: a.limit,
+      }));
+    case 'model_events':
+      return apiGet(`/api/admin/model-onboarding/models/${needString(a, 'model', name)}/events` + qs({ limit: a.limit }));
+    case 'model_onboarding_quarantine':
+      return apiGet('/api/admin/model-onboarding/quarantine' + qs({ connection_id: a.connection_id }));
     default:
       throw new Error(`unknown tool: ${name}`);
   }
