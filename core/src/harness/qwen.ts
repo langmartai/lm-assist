@@ -87,6 +87,39 @@ export interface QwenStreamSummary {
   toolCalls: number;
   errored: boolean;
   errorText?: string;
+  /** Summed over the run's API calls. Zero when the stream reported none. */
+  usage: AgentTokenUsage;
+  /** False when no frame carried a usage block at all — 0 then means "unknown", not "free". */
+  usageReported: boolean;
+}
+
+/**
+ * Accumulate one frame's usage block.
+ *
+ * 🔴 Field names are snake_case and were READ OFF THE REAL CLI (qwen 0.15.10,
+ * 2026-09-09), not guessed from the Claude Code stream-json they otherwise
+ * resemble: `{input_tokens, output_tokens, cache_read_input_tokens, total_tokens}`.
+ * Two things measured there drive this code:
+ *
+ *  - Frames carrying only `thinking` content report `{input_tokens: 0,
+ *    output_tokens: 0}` with the other keys ABSENT, so every field must be
+ *    optional-with-default; a `??` on the wrong key would silently zero a run.
+ *  - Counts are PER API CALL, not cumulative, so they are summed. Input tokens
+ *    therefore grow with the conversation, exactly as they do on the SDK path.
+ *
+ * `total_tokens` is deliberately not trusted for the total: the house convention
+ * (convertResult in agent-api) is input + output, and mixing the two would make
+ * a qwen run's totals incomparable with every other runner's.
+ */
+function addUsage(into: AgentTokenUsage, raw: any): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  into.inputTokens += num(raw.input_tokens);
+  into.outputTokens += num(raw.output_tokens);
+  into.cacheCreationInputTokens += num(raw.cache_creation_input_tokens);
+  into.cacheReadInputTokens += num(raw.cache_read_input_tokens);
+  into.totalTokens = into.inputTokens + into.outputTokens;
+  return true;
 }
 
 /**
@@ -104,6 +137,8 @@ export function parseQwenStream(stdout: string): QwenStreamSummary {
     numTurns: 0,
     toolCalls: 0,
     errored: false,
+    usage: { ...EMPTY_USAGE },
+    usageReported: false,
   };
   const texts: string[] = [];
 
@@ -126,6 +161,7 @@ export function parseQwenStream(stdout: string): QwenStreamSummary {
         if (block?.type === 'text' && typeof block.text === 'string') texts.push(block.text);
         if (block?.type === 'tool_use') out.toolCalls += 1;
       }
+      if (event.message?.usage) out.usageReported = addUsage(out.usage, event.message.usage) || out.usageReported;
     } else if (event.type === 'result') {
       // The result frame is authoritative for the final answer.
       if (typeof event.result === 'string' && event.result.trim()) {
@@ -306,11 +342,27 @@ export function createQwenHarness(): AgentHarness {
         let stderr = '';
         let settled = false;
 
+        // A timed-out run is still a run that HAPPENED: it burned tokens and may
+        // have produced most of an answer. Returning the bare `base()` shape threw
+        // all of that away and reported a zero-token, empty-result failure — the
+        // same "0 means unknown" trap the cost work exists to close. Measured
+        // 2026-09-09: this gateway model regularly answers and then never emits a
+        // `result` frame, so the timeout is a COMMON path here, not a rare one.
         const timer = setTimeout(() => {
           if (settled) return;
           settled = true;
           terminateRun(child);
-          resolve({ ...base(`Timed out after ${timeoutMs}ms`), runner: QWEN_ID as any });
+          const partial = parseQwenStream(stdout);
+          resolve({
+            ...base(`Timed out after ${timeoutMs}ms`),
+            result: partial.text,
+            sessionId: partial.sessionId,
+            numTurns: partial.numTurns,
+            usage: partial.usage,
+            modelUsage: partial.usageReported ? { [model]: { ...partial.usage } } : {},
+            durationMs: Date.now() - start,
+            runner: QWEN_ID,
+          });
         }, timeoutMs);
 
         child.stdout?.on('data', (d) => (stdout += d.toString()));
@@ -344,10 +396,11 @@ export function createQwenHarness(): AgentHarness {
             durationMs: Date.now() - start,
             durationApiMs: 0,
             numTurns: summary.numTurns,
-            // 'unavailable', not free. See capabilities.cost.
+            // 'unavailable', not free. See capabilities.cost — the token counts
+            // below are real, but nothing here knows what they cost.
             totalCostUsd: 0,
-            usage: { ...EMPTY_USAGE },
-            modelUsage: {},
+            usage: summary.usage,
+            modelUsage: summary.usageReported ? { [model]: { ...summary.usage } } : {},
             runner: QWEN_ID,
             ...(ok
               ? {}

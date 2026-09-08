@@ -116,3 +116,54 @@ test('a RAW U+2028 inside a payload does not corrupt framing', () => {
   assert.equal(s.text, `one${RAW_LS}two${RAW_PS}three`);
   assert.equal(s.errored, false);
 });
+
+/**
+ * Token usage. The field names below are snake_case because that is what the
+ * REAL CLI emits (qwen 0.15.10, captured 2026-09-09) — they are not the
+ * camelCase of AgentTokenUsage, and they are not guessed from the Claude Code
+ * stream-json this format otherwise resembles.
+ */
+test('token usage is summed across the run API calls', () => {
+  // Verbatim shape from a captured run: the thinking-only frame reports zeros
+  // with the cache keys ABSENT, then the answering frame carries the real counts.
+  const stream = [
+    JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1' }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm' }], usage: { input_tokens: 0, output_tokens: 0 } } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'PONG' }], usage: { input_tokens: 15914, output_tokens: 52, cache_read_input_tokens: 0, total_tokens: 15966 } } }),
+    JSON.stringify({ type: 'result', subtype: 'success', result: 'PONG' }),
+  ].join('\n');
+
+  const s = parseQwenStream(stream);
+  assert.equal(s.usageReported, true);
+  assert.equal(s.usage.inputTokens, 15914);
+  assert.equal(s.usage.outputTokens, 52);
+  assert.equal(s.usage.cacheReadInputTokens, 0);
+  // The house convention (convertResult) is input + output. Deliberately NOT the
+  // stream's own total_tokens, so a qwen run stays comparable with every other runner.
+  assert.equal(s.usage.totalTokens, 15914 + 52);
+});
+
+test('a multi-call run accumulates rather than keeping only the last call', () => {
+  const frame = (i: number, o: number) =>
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }], usage: { input_tokens: i, output_tokens: o } } });
+  const s = parseQwenStream([frame(100, 10), frame(250, 20)].join('\n'));
+
+  assert.equal(s.usage.inputTokens, 350, 'per-call counts must be summed, as the SDK path sums them');
+  assert.equal(s.usage.outputTokens, 30);
+});
+
+test('a stream with no usage block says so instead of reporting a free run', () => {
+  const s = parseQwenStream(JSON.stringify({ type: 'result', subtype: 'success', result: 'done' }));
+  assert.equal(s.usageReported, false, '0 must be distinguishable from "the stream never said"');
+  assert.equal(s.usage.totalTokens, 0);
+});
+
+test('a garbage usage block cannot poison the totals with NaN', () => {
+  const stream = JSON.stringify({
+    type: 'assistant',
+    message: { content: [], usage: { input_tokens: 'lots', output_tokens: null, cache_read_input_tokens: undefined } },
+  });
+  const s = parseQwenStream(stream);
+  assert.equal(Number.isFinite(s.usage.inputTokens), true, 'a non-number must not become NaN');
+  assert.equal(s.usage.inputTokens, 0);
+});
