@@ -13,7 +13,7 @@
  * through the gateway's native passthrough door on a zero-priced model.
  */
 
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import type {
   AgentExecuteRequest,
   AgentExecuteResponse,
@@ -28,6 +28,8 @@ export const QWEN_ID = 'qwen';
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 /** Turn ceiling — an agent loop with no bound can spin against a flaky endpoint. */
 const DEFAULT_MAX_TURNS = 40;
+/** How long a terminated run may take to exit before it is killed outright. */
+const KILL_GRACE_MS = 5000;
 
 const EMPTY_USAGE: AgentTokenUsage = {
   inputTokens: 0,
@@ -148,6 +150,55 @@ export function parseQwenStream(stdout: string): QwenStreamSummary {
   return out;
 }
 
+/**
+ * Signal a run's whole process group, escalating to SIGKILL if it lingers.
+ *
+ * Why the GROUP and not just the child: under `--approval-mode yolo` qwen runs
+ * shell commands itself, so a SIGTERM to qwen alone can leave a build or a curl
+ * running with nobody tracking it — the abort would look clean and leak work.
+ * `spawn({detached: true})` puts the run in its own process group precisely so
+ * `kill(-pid)` can end all of it at once.
+ *
+ * Returns false when there was nothing alive to signal, which is what makes an
+ * honest "no, that did not stop anything" answer possible upstream.
+ */
+export function terminateRun(child: ChildProcess, graceMs: number = KILL_GRACE_MS): boolean {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return false;
+
+  const pid = child.pid;
+  const signalGroup = (sig: NodeJS.Signals | 0): boolean => {
+    try {
+      process.kill(-pid, sig);
+      return true;
+    } catch {
+      // No process group (already reaped, or a platform without one) — fall back
+      // to the single child so a lingering qwen is still ended.
+      try {
+        return child.kill(sig as NodeJS.Signals);
+      } catch {
+        return false;
+      }
+    }
+  };
+
+  if (!signalGroup('SIGTERM')) return false;
+
+  // 🔴 The escalation probes the GROUP and is deliberately NOT cancelled when the
+  // direct child exits. MEASURED on qwen 0.15.10: `qwen` forks a second node
+  // process that ignores SIGTERM and OUTLIVES its parent. The obvious way to
+  // write this — clear the timer on the child's `close` event — therefore cancels
+  // the escalation moments before the only process that still needs killing, and
+  // the abort looks clean while an agent keeps running. Signalling a group whose
+  // leader has exited is valid for as long as any member remains, which is
+  // exactly the window that matters here.
+  const escalate = setTimeout(() => {
+    if (signalGroup(0)) signalGroup('SIGKILL');
+  }, graceMs);
+  // A pending kill timer must not hold Core's event loop open on shutdown.
+  escalate.unref?.();
+  return true;
+}
+
 async function probeQwen(): Promise<HarnessProbe> {
   return new Promise((resolve) => {
     const child = spawn('qwen', ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -167,20 +218,44 @@ async function probeQwen(): Promise<HarnessProbe> {
 }
 
 export function createQwenHarness(): AgentHarness {
+  /**
+   * Live runs by executionId.
+   *
+   * This map is the whole reason abort can be honest. The background bookkeeping
+   * in agent-api holds a promise and a boolean — it can stop *tracking* a run but
+   * owns no process handle, so before this existed "abort" flipped a flag while
+   * the child carried on spending tokens against the gateway.
+   *
+   * Entries are removed on close/error, so a completed run cannot be "aborted".
+   */
+  const live = new Map<string, ChildProcess>();
+
   return {
     id: QWEN_ID,
     displayName: 'Qwen Code',
     capabilities: {
-      // qwen reports token counts, but this harness does not yet price them, and
-      // inventing a figure would be worse than admitting we do not have one.
+      // qwen reports token counts (and this harness now records them), but it
+      // reports no price and gateway models have no trustworthy public rate card
+      // here. Inventing a figure is worse than admitting we do not have one.
       cost: 'unavailable',
       sessionResume: false,
       mcp: false,
       permissionBroker: false,
       durableBackground: false,
       usesProviderProfile: true,
+      abortable: true,
     },
     probe: probeQwen,
+
+    abort(executionId: string): boolean {
+      const child = live.get(executionId);
+      if (!child) return false;
+      const signalled = terminateRun(child);
+      // Leave removal to the close handler: until the child is actually gone it
+      // is still live, and dropping it here would make a second abort claim
+      // there was nothing to stop.
+      return signalled;
+    },
 
     async execute(request: AgentExecuteRequest, executionId: string): Promise<AgentExecuteResponse> {
       const start = Date.now();
@@ -221,7 +296,11 @@ export function createQwenHarness(): AgentHarness {
           cwd: request.cwd || process.cwd(),
           env: buildQwenEnv(profile, model),
           stdio: ['ignore', 'pipe', 'pipe'],
+          // Own process group, so abort/timeout can end qwen AND the shell
+          // commands it spawns under yolo. See terminateRun().
+          detached: true,
         });
+        live.set(executionId, child);
 
         let stdout = '';
         let stderr = '';
@@ -230,7 +309,7 @@ export function createQwenHarness(): AgentHarness {
         const timer = setTimeout(() => {
           if (settled) return;
           settled = true;
-          child.kill('SIGTERM');
+          terminateRun(child);
           resolve({ ...base(`Timed out after ${timeoutMs}ms`), runner: QWEN_ID as any });
         }, timeoutMs);
 
@@ -238,6 +317,7 @@ export function createQwenHarness(): AgentHarness {
         child.stderr?.on('data', (d) => (stderr += d.toString()));
 
         child.on('error', (err) => {
+          live.delete(executionId);
           if (settled) return;
           settled = true;
           clearTimeout(timer);
@@ -247,7 +327,8 @@ export function createQwenHarness(): AgentHarness {
           });
         });
 
-        child.on('close', (code) => {
+        child.on('close', (code, signal) => {
+          live.delete(executionId);
           if (settled) return;
           settled = true;
           clearTimeout(timer);
@@ -274,7 +355,9 @@ export function createQwenHarness(): AgentHarness {
                   error:
                     summary.errorText ||
                     stderr.trim().slice(0, 2000) ||
-                    `qwen exited with code ${code}`,
+                    // A signal, not an exit code, is what an abort looks like from
+                    // in here — say so instead of reporting "exited with code null".
+                    (signal ? `qwen terminated by ${signal}` : `qwen exited with code ${code}`),
                 }),
           });
         });

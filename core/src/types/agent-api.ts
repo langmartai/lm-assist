@@ -729,9 +729,13 @@ export interface AgentApi {
   listSessions(options?: { tier?: TierName; status?: AgentSessionStatus[] }): Promise<AgentSessionInfo[]>;
 
   /**
-   * Abort a running session
+   * Abort a running session.
+   *
+   * `reason` explains a false `success` — "the harness cannot abort", "it had
+   * already finished" — because "could not abort" on its own leaves the caller
+   * with no idea whether the work is still running.
    */
-  abort(sessionId: string): Promise<{ success: boolean; sessionId: string }>;
+  abort(sessionId: string): Promise<{ success: boolean; sessionId: string; reason?: string }>;
 
   /**
    * Respond to a pending permission request

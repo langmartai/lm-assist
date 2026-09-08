@@ -42,6 +42,14 @@ export interface HarnessCapabilities {
   durableBackground: boolean;
   /** Talks to a model gateway rather than to Anthropic via ambient OAuth. */
   usesProviderProfile: boolean;
+  /**
+   * A run in flight can genuinely be terminated (see AgentHarness.abort).
+   *
+   * False is a real answer, not a gap to paper over: the caller then learns the
+   * work is still going instead of being told it stopped. Nothing may report a
+   * successful abort for a harness that declares false here.
+   */
+  abortable: boolean;
 }
 
 export interface AgentHarness {
@@ -58,6 +66,19 @@ export interface AgentHarness {
   execute(request: AgentExecuteRequest, executionId: string): Promise<AgentExecuteResponse>;
   /** Optional; harnesses without it must be refused rather than silently served by another runner. */
   resume?(request: AgentResumeRequest): Promise<AgentExecuteResponse>;
+  /**
+   * Terminate the run started under `executionId`.
+   *
+   * Returns true only when a live run was actually signalled. False means
+   * "nothing was killed" — the id is unknown here, or the run had already
+   * finished — and callers MUST surface that rather than reporting a stop that
+   * never happened. Only the harness can do this: it owns the child process, so
+   * the generic background bookkeeping in agent-api can at best stop *tracking*
+   * a run, which is not the same thing as ending it.
+   *
+   * Present only when `capabilities.abortable` is true.
+   */
+  abort?(executionId: string): boolean | Promise<boolean>;
   /** Preflight — is the underlying binary present and configured? */
   probe?(): Promise<HarnessProbe>;
 }

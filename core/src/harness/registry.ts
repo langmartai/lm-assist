@@ -31,6 +31,8 @@ const BUILTIN_CAPABILITIES: Record<string, HarnessCapabilities> = {
     // The detached (`background: true`) variant persists; the in-process one does not.
     durableBackground: true,
     usesProviderProfile: false,
+    // AbortController on the in-process query; sdkRunner.kill() on the detached one.
+    abortable: true,
   },
   tmux: {
     // tmux-runner hardcodes totalCostUsd: 0 — it parses a TUI and cannot know.
@@ -42,6 +44,8 @@ const BUILTIN_CAPABILITIES: Record<string, HarnessCapabilities> = {
     // Lives in an in-memory map; a Core restart orphans the CC process.
     durableBackground: false,
     usesProviderProfile: false,
+    // Cooperative: Ctrl+C into the CC TUI, which settles the runner's wait.
+    abortable: true,
   },
 };
 

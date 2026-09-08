@@ -118,7 +118,13 @@ export function createAgentRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!result.success) {
           return {
             success: false,
-            error: { code: 'ABORT_FAILED', message: `Could not abort execution ${id}` },
+            error: {
+              code: 'ABORT_FAILED',
+              // Carry the reason through: a harness that cannot abort, and a run
+              // that already finished, are different facts and the caller acts
+              // differently on each.
+              message: result.reason || `Could not abort execution ${id}`,
+            },
           };
         }
         return { success: true, data: result };

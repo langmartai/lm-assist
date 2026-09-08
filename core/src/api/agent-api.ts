@@ -27,6 +27,7 @@ import { spawnDetached, recoverExecutions, cleanupOldExecutions } from '../detac
 import { createTmuxRunner } from '../runners/tmux-runner';
 import * as cc from '../terminal/cc';
 import { getHarness } from '../harness/registry';
+import { abortHarnessRun } from '../harness/abort';
 import type { AgentHarness } from '../harness/types';
 
 export interface AgentApiDeps {
@@ -290,6 +291,9 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
    * declared honestly as `durableBackground: false` in the harness capabilities,
    * so callers are not misled. Making it durable needs a persisted record that
    * does not assume a pid, which the detached-CLI store does.
+   *
+   * abort() delegates to the harness, which owns the child. This wrapper cannot
+   * kill anything itself — it holds a promise, and a promise has no pid.
    */
   const startHarnessBackground = (
     harness: AgentHarness,
@@ -304,9 +308,20 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
       sessionId: '',
       sessionReady: execP.then(r => r.sessionId).catch(() => ''),
       result: execP.then(r => r as unknown as SdkExecuteResult),
-      // The harness owns its child; without an abort primitive the honest thing
-      // is to stop reporting it as running rather than pretend we killed it.
-      abort: () => { running = false; },
+      // Ask the harness to end its own child. `running` is flipped only if it
+      // says it actually signalled something: the previous version set the flag
+      // unconditionally, so /abort reported a stop while qwen kept running and
+      // kept spending tokens. The API-level abort() below re-checks this and is
+      // what reports the truth to the caller.
+      abort: () => {
+        if (!harness.abort) return;
+        try {
+          const signalled = harness.abort(executionId);
+          if (signalled === true) running = false;
+        } catch (err) {
+          console.error(`[agent-api] harness ${harness.id} abort threw:`, err);
+        }
+      },
       isRunning: () => running,
     };
 
@@ -985,6 +1000,20 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
       // Check background executions
       for (const [execId, entry] of backgroundExecutions) {
         if (entry.handle.sessionId === sessionId || execId === sessionId) {
+          // A registered harness owns the child process, so only it can end the
+          // run — this map holds a promise, and a promise has no pid. Dropping
+          // the entry without asking would report a stop that never happened:
+          // the caller sees "aborted" while a gateway agent keeps running and
+          // keeps spending tokens. So the harness's answer decides ours.
+          const runner = (entry.request as AgentExecuteRequest).runner;
+          const harness = runner ? getHarness(runner) : undefined;
+          if (harness) {
+            const outcome = await abortHarnessRun(harness, execId, Boolean(entry.completedAt));
+            if (!outcome.success) return { success: false, sessionId, reason: outcome.reason };
+            backgroundExecutions.delete(execId);
+            return { success: true, sessionId };
+          }
+
           entry.handle.abort();
           backgroundExecutions.delete(execId);
           return { success: true, sessionId };
