@@ -213,11 +213,13 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/ccr\/restart$/,
       handler: async (req) => {
-        const body = (req.body || {}) as { sessionId?: unknown; force?: unknown; waitMs?: unknown };
+        const body = (req.body || {}) as { sessionId?: unknown; force?: unknown; waitMs?: unknown; native?: unknown };
         try {
           const sessionId = parseSessionId(body.sessionId as string | undefined);
           const waitMs = Number(body.waitMs);
-          const data = await ccr.restart({ sessionId, force: body.force === true, waitMs: Number.isFinite(waitMs) ? waitMs : undefined });
+          // native (default true): resume with Claude Code's own --remote-control so the
+          // session keeps its bridge; native:false = legacy ccr-bridge.js (NEW session URL).
+          const data = await ccr.restart({ sessionId, force: body.force === true, waitMs: Number.isFinite(waitMs) ? waitMs : undefined, native: body.native !== false });
           return ok(data);
         } catch (e: unknown) {
           if (e instanceof TerminalError) {

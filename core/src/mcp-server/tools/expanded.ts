@@ -26,7 +26,7 @@ import {
   workerPostRaw,
   workerPut,
   workerDelete,
-  isCwdAllowed,
+  isCwdAllowed, describeCwdPolicy,
   type McpToolResult,
 } from './_passthrough';
 import { CONVERSATION_OPS_TOOL_DEFS, CONVERSATION_OPS_HANDLERS } from './conversation-ops';
@@ -250,7 +250,7 @@ export const windowsTerminalLaunchToolDef = {
     type: 'object' as const,
     properties: {
       command: { type: 'string', description: 'Command to run (launched as `cmd /k <command>`).' },
-      cwd: { type: 'string', description: 'Working directory.' },
+      cwd: { type: 'string', description: 'Working directory (any path — this Claude-launch surface has no cwd allowlist gate, unlike terminal_open_tab / agent_execute).' },
       mode: { type: 'string', description: "'window' (default) or 'tab'." },
     },
     required: ['command'],
@@ -261,15 +261,25 @@ export const windowsTerminalCreateToolDef = {
   name: 'windows_terminal_create',
   description:
     'Launch a NEW Claude Code session in a Windows Terminal window (or tab). Auto-accepts the ' +
-    'folder-trust prompt by default. Returns the new sessionId once it registers. WRITE — spawns a ' +
-    'real process.',
+    'folder-trust prompt by default. Returns the new sessionId once it registers, plus `command` — the ' +
+    'exact `claude …` line launched, so you can see which flags were really applied. Launch flags: ' +
+    '`model`, `permissionMode` (bypassPermissions = --dangerously-skip-permissions; acceptEdits | plan | ' +
+    'dontAsk | default) or the `dangerouslySkipPermissions` shorthand, `remoteControl` (--remote-control, ' +
+    'so a resume comes up connected to claude.ai/code without a manual /remote-control), `name` (-n), ' +
+    '`effort`. cwd is NOT allowlist-gated here (unlike terminal_open_tab). WRITE — spawns a real process.',
   annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
     properties: {
-      cwd: { type: 'string', description: 'Working directory for the new session.' },
+      cwd: { type: 'string', description: 'Working directory for the new session (any path; no allowlist gate on this surface).' },
       mode: { type: 'string', description: "'window' (default) or 'tab'." },
       resume: { type: 'string', description: 'Resume a non-live sessionId (continues its transcript).' },
+      model: { type: 'string', description: 'Model for the session (--model), e.g. opus, sonnet, claude-opus-4-8[1m].' },
+      permissionMode: { type: 'string', enum: ['bypassPermissions', 'acceptEdits', 'plan', 'dontAsk', 'default'], description: 'Permission mode to launch with. bypassPermissions ⇒ --dangerously-skip-permissions; others ⇒ --permission-mode <mode>.' },
+      dangerouslySkipPermissions: { type: 'boolean', description: 'Shorthand for permissionMode:"bypassPermissions".' },
+      remoteControl: { type: 'boolean', description: 'Launch with --remote-control so the session is claude.ai/code-connected from the start.' },
+      name: { type: 'string', description: 'Display name (-n) — titles the session in the picker / terminal / account list.' },
+      effort: { type: 'string', description: 'Reasoning effort (--effort): low | medium | high | xhigh | max. Invalid ⇒ dropped.' },
       autoTrust: { type: 'boolean', description: 'Auto-accept folder-trust prompt (default true).' },
     },
   },
@@ -299,10 +309,13 @@ export const windowsTerminalSendToolDef = {
   name: 'windows_terminal_send',
   description:
     'Type text and/or press SPECIAL KEYS in a Windows Claude Code session — the Windows counterpart of ' +
-    'terminal_send. Order per call: `text` is pasted, then `keys` are pressed, then `submit` presses ' +
-    'Enter. `keys` (e.g. ["Escape"] to dismiss a dialog, ["Down","Down","Enter"] to pick a menu item) ' +
-    'go through the focus-free console-input path, so they drive a background window without stealing ' +
-    'foreground — this is the only way to reach a menu/dialog here (before, only text+Enter was possible). ' +
+    'terminal_send. Order per call: `text` is typed, then `keys` are pressed, then `submit` presses ' +
+    'Enter. BOTH text and keys go through the focus-free, pid-keyed console-input path (WriteConsoleInput): ' +
+    'no window/tab locate by title, no foreground, no clipboard — so a session in a background pane or a ' +
+    'window with the default "Claude Code" title is driven the same as any other (the old title-marker ' +
+    'locate could not see non-active panes → "could not locate window/tab"). Multi-line text is sent as ' +
+    'ONE bracketed paste (newlines stay in the composer). `keys` (e.g. ["Escape"] to dismiss a dialog, ' +
+    '["Down","Down","Enter"] to pick a menu item) reach a menu/dialog the same way. ' +
     'Allowed keys: Enter, Escape, Up, Down, Left, Right, Tab, Space (Ctrl-C is windows_terminal_state\'s ' +
     'interrupt sibling, not here). Pass `sessionId` from windows_terminal_list. Either text or keys is ' +
     'required. WRITE — drives the session.',
@@ -552,7 +565,7 @@ export const terminalOpenTabToolDef = {
     type: 'object' as const,
     properties: {
       title: { type: 'string', description: 'Window title (advanced kinds only).' },
-      cwd: { type: 'string', description: "Working directory (under the worker's home dir)." },
+      cwd: { type: 'string', description: "Working directory. Allowed: the worker's home dir and below, plus any extra root the node declares via LM_ASSIST_CWD_ROOTS (`;`-separated) or ~/.lm-assist/cwd-roots (one per line) — the refusal names the policy. (windows_terminal_create / windows_terminal_launch, the Claude-launch surface, are NOT gated.)" },
       command: { type: 'string', description: 'Command to run in the new terminal.' },
       kind: { type: 'string', description: 'Optional. Omit for the platform-neutral local terminal (recommended; works on Windows). Or one of gnome|wt-ssh|tmux for the advanced tab spawner — wt-ssh needs sshTarget, tmux needs tmuxSession.' },
       sshTarget: { type: 'string', description: 'For kind=wt-ssh: ssh target (user@host or host).' },
@@ -736,13 +749,14 @@ export const ccrRemoteStopToolDef = {
 export const ccrRestartToolDef = {
   name: 'ccr_restart',
   description:
-    'RESTART a LOCAL Claude Code session\'s process so it re-fetches its MCP tool list (Claude Code loads MCP tools at process start ONLY — no in-place reload exists; run refresh_connector_tools/sync-connector FIRST so the refreshed list is what the new process fetches). Corruption-safe by construction: stops existing CCR bridges for the session → KILLS the live owner (SIGTERM→verify→SIGKILL→verify) → an independent re-check must confirm NOTHING still owns the session → only then spawns the fresh `claude --resume`. RETURNS THE SCREEN: every result carries `screen` — the session\'s visible tmux pane — plus `tmuxSession`, so you can SEE what the session is showing and act on it with terminal_send/terminal_capture. After a restart it WAITS for the fresh session to SETTLE (the TUI paints, loads the transcript, then opens its dialogs) and only returns once the pane has held still, so `screen` is the state it came up on rather than a frame mid-redraw; `screenStable:false` means it was still changing when that window expired — re-read with terminal_capture instead of acting on it. READ IT: "restarted" means a fresh process spawned, NOT that it is usable — a resume RE-OPENS modals (resume-from-summary; on a just-upgraded CLI, that version\'s first-run prompts), so expect a chain of dialogs and drive them ONE key per call, re-capturing between (a combined Down+Enter has mis-landed and silently flipped a live session\'s permission mode). A session idle at its prompt restarts immediately. A session that reads actively-BUSY is REFUSED IMMEDIATELY (CONFLICT, busy:true) with its screen attached and nothing killed — because a session FROZEN ON A MODAL reads identical to one mid-turn, and only the pane tells them apart: if `screen` shows a blocking dialog and screenStable is true, there is no work to lose, so answer it with terminal_send or call again with force:true. Pass wait_ms>0 to opt into WAITING for genuine in-flight work instead (restart proceeds the moment the turn ends). A kill that does not verify dead ABORTS (CONFLICT kill-failed, screen attached) — it never resumes over a live process. Same session id, same history, fresh process + fresh tools.',
+    'RESTART a LOCAL Claude Code session\'s process so it re-fetches its MCP tool list (Claude Code loads MCP tools at process start ONLY — no in-place reload exists; run refresh_connector_tools/sync-connector FIRST so the refreshed list is what the new process fetches). Corruption-safe by construction: stops existing CCR bridges for the session → KILLS the live owner (SIGTERM→verify→SIGKILL→verify) → an independent re-check must confirm NOTHING still owns the session → only then spawns the fresh `claude --resume`. RETURNS THE SCREEN: every result carries `screen` — the session\'s visible tmux pane — plus `tmuxSession`, so you can SEE what the session is showing and act on it with terminal_send/terminal_capture. After a restart it WAITS for the fresh session to SETTLE (the TUI paints, loads the transcript, then opens its dialogs) and only returns once the pane has held still, so `screen` is the state it came up on rather than a frame mid-redraw; `screenStable:false` means it was still changing when that window expired — re-read with terminal_capture instead of acting on it. READ IT: "restarted" means a fresh process spawned, NOT that it is usable — a resume RE-OPENS modals (resume-from-summary; on a just-upgraded CLI, that version\'s first-run prompts), so expect a chain of dialogs and drive them ONE key per call, re-capturing between (a combined Down+Enter has mis-landed and silently flipped a live session\'s permission mode). A session idle at its prompt restarts immediately. A session that reads actively-BUSY is REFUSED IMMEDIATELY (CONFLICT, busy:true) with its screen attached and nothing killed — because a session FROZEN ON A MODAL reads identical to one mid-turn, and only the pane tells them apart: if `screen` shows a blocking dialog and screenStable is true, there is no work to lose, so answer it with terminal_send or call again with force:true. Pass wait_ms>0 to opt into WAITING for genuine in-flight work instead (restart proceeds the moment the turn ends). A kill that does not verify dead ABORTS (CONFLICT kill-failed, screen attached) — it never resumes over a live process. Same session id, same history, fresh process + fresh tools. The resume is NATIVE by default (`claude --resume --remote-control`, so Claude Code keeps/rebinds the session\'s OWN remote-control bridge — no new claude.ai session is minted); the result\'s `bridge.verdict` says reclaimed | new-bridge | first-bridge | none, with the previous and current bridge ids. Pass native:false only to force the legacy ccr-bridge, which ALWAYS mints a NEW claude.ai/code URL (the old link dies).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       session_id: { type: 'string', description: 'Claude Code session UUID to restart.' },
       force: { type: 'boolean', description: 'Kill IMMEDIATELY even if it reads as actively mid-turn. Default false. Safe on a session frozen on a modal — confirm from `screen`/screenStable that the pane is not changing.' },
       wait_ms: { type: 'number', description: 'Opt in to WAITING for an in-flight turn: when the session reads actively-busy, wait up to this long (ms) for its current work to finish, then restart. Default 0 = do not wait — refuse immediately and return the screen so you can judge whether it is really working. Cap 600000. A session idle at its prompt restarts right away regardless.' },
+      native: { type: 'boolean', description: 'Default true: resume with Claude Code\'s own --remote-control (keeps the session\'s bridge / link). false = legacy ccr-bridge.js, which mints a NEW claude.ai session URL.' },
     },
     required: ['session_id'],
   },
@@ -1643,6 +1657,14 @@ async function handleWindowsTerminalCreate(a: Record<string, unknown>): Promise<
   if (a.mode) body.mode = String(a.mode);
   if (a.resume) body.resume = String(a.resume);
   if (typeof a.autoTrust === 'boolean') body.autoTrust = a.autoTrust;
+  // Launch flags (2026-09): connector bools can arrive as strings — coerce.
+  const flag = (v: unknown): boolean => v === true || v === 'true';
+  if (a.model) body.model = String(a.model);
+  if (a.permissionMode) body.permissionMode = String(a.permissionMode);
+  if (flag(a.dangerouslySkipPermissions) && !body.permissionMode) body.permissionMode = 'bypassPermissions';
+  if (flag(a.remoteControl)) body.remoteControl = true;
+  if (a.name) body.name = String(a.name);
+  if (a.effort) body.effort = String(a.effort);
   try {
     return renderRaw(await workerPostRaw('/terminal/cc-sessions', body));
   } catch (e) {
@@ -1829,7 +1851,7 @@ async function handleAgentExecute(args: Record<string, unknown>): Promise<McpToo
   // Layer-6 defense in depth: even past the gateway's admin confirm, refuse a
   // cwd outside the operator's allowlist.
   if (!isCwdAllowed(cwd)) {
-    return err(`cwd "${cwd}" is not permitted; agent_execute is restricted to ${os.homedir()} and below.`);
+    return err(`cwd "${cwd}" is not permitted; agent_execute allows: ${describeCwdPolicy()}`);
   }
   const body: Record<string, unknown> = { prompt, cwd, background: true };
 
@@ -2021,6 +2043,7 @@ async function handleCcrRestart(args: Record<string, unknown>): Promise<McpToolR
   const body: Record<string, unknown> = { sessionId: sid };
   // Connector bool/number args can arrive as strings — coerce.
   if (args.force === true || args.force === 'true') body.force = true;
+  if (args.native === false || args.native === 'false') body.native = false;
   const w = Number(args.wait_ms);
   if (Number.isFinite(w)) body.waitMs = w;
   try {

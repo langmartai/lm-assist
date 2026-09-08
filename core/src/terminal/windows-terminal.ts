@@ -51,12 +51,13 @@ import * as path from 'path';
 // ---------------------------------------------------------------------------
 const ENGINE_PS1 = String.raw`
 param(
-  [Parameter(Mandatory)][ValidateSet('query','locate','send','close','tabids','capture','procs')][string]$Action,
+  [Parameter(Mandatory)][ValidateSet('query','locate','send','type','close','tabids','capture','procs')][string]$Action,
   [string]$PidList = '',
   [int]$ClaudePid = 0,
   [string]$MessageB64 = '',
   [switch]$Submit,
   [switch]$CloseTab,
+  [switch]$Bracketed,
   [string]$RuntimeId = '',
   [string]$Keys = ''
 )
@@ -192,6 +193,55 @@ public class WT {
         var arr = recs.ToArray();
         uint written;
         return WriteConsoleInputW(h, arr, (uint)arr.Length, out written) && written > 0;
+      } finally { CloseHandle(h); }
+    } finally { FreeConsole(); }
+  }
+
+  // --- text injection: TYPE text straight into the console input buffer -----
+  // pid-based, focus-free, NO window/tab locate and NO clipboard. Each UTF-16
+  // unit becomes a key-down/up record carrying the char; '\n' (and "\r\n") is
+  // sent as Enter ('\r'). With 'bracketed' the text is wrapped in ESC[200~ ...
+  // ESC[201~ so the app's bracketed-paste handling takes it as ONE paste and
+  // newlines stay inside the composer instead of submitting.
+  //
+  // WHY (2026-09, DESKTOP-GDKLATG): the paste path located the target TAB by
+  // writing a marker into the console title and searching the UIA tab strip.
+  // Windows Terminal shows ONE title per tab (the active pane's), and several
+  // Claude sessions were panes/hidden windows of the same WT process, so the
+  // marker never surfaced for 5 of 6 driveable sessions -> 'could not locate
+  // window/tab'. The console itself was always reachable by pid (keys already
+  // went this way); text now does too.
+  public static int SendConsoleText(uint pid, string text, bool bracketed) {
+    FreeConsole();
+    if (!AttachConsole(pid)) return -1;
+    try {
+      IntPtr h = CreateFileW("CONIN$", 0xC0000000u, 3u, IntPtr.Zero, 3u, 0u, IntPtr.Zero);
+      if (h == IntPtr.Zero || h == (IntPtr)(-1)) return -2;
+      try {
+        string body = text.Replace("\r\n", "\n");
+        string payload = bracketed ? "\u001b[200~" + body + "\u001b[201~" : body;
+        var recs = new List<INPUT_RECORD>();
+        foreach (char raw in payload) {
+          char ch = raw == '\n' ? '\r' : raw;
+          ushort vk;
+          if (ch == '\r') vk = 0x0D;
+          else if (ch == (char)27) vk = 0x1B;
+          else if (ch == '\t') vk = 0x09;
+          else { short s = VkKeyScan(ch); vk = (ushort)(s == -1 ? 0 : (s & 0xFF)); }
+          recs.Add(MakeKey(true, vk, ch, 0));
+          recs.Add(MakeKey(false, vk, ch, 0));
+        }
+        if (recs.Count == 0) return 0;
+        int total = 0;
+        for (int i = 0; i < recs.Count; i += 512) {
+          int n = Math.Min(512, recs.Count - i);
+          var chunk = recs.GetRange(i, n).ToArray();
+          uint written;
+          if (!WriteConsoleInputW(h, chunk, (uint)chunk.Length, out written)) return -3;
+          total += (int)written;
+          if (n == 512) System.Threading.Thread.Sleep(5);
+        }
+        return total / 2;
       } finally { CloseHandle(h); }
     } finally { FreeConsole(); }
   }
@@ -403,6 +453,22 @@ if($Action -eq 'procs'){
   exit 0
 }
 
+if($Action -eq 'type'){
+  # TEXT via WriteConsoleInput: pid-keyed, focus-free, no tab locate, no clipboard.
+  if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid required' } -Compress; exit 1 }
+  if(-not $MessageB64){ ConvertTo-Json @{ ok=$false; error='MessageB64 required' } -Compress; exit 1 }
+  $msg=[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($MessageB64))
+  $n=[WT]::SendConsoleText([uint32]$ClaudePid, $msg, [bool]$Bracketed)
+  if($n -lt 0){
+    $err=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    $coreS=(Get-Process -Id $PID).SessionId; $tgtS=$null; try{ $tgtS=(Get-Process -Id $ClaudePid -ErrorAction Stop).SessionId }catch{}
+    $why = if($n -eq -1){ "AttachConsole failed (win32=$err)" } elseif($n -eq -2){ 'CONIN$ open failed' } else { "WriteConsoleInput failed (win32=$err)" }
+    ConvertTo-Json @{ ok=$false; pid=$ClaudePid; error="console text inject: $why"; via='WriteConsoleInput'; coreSessionId=$coreS; targetSessionId=$tgtS } -Compress; exit 2
+  }
+  ConvertTo-Json @{ ok=$true; pid=$ClaudePid; chars=$n; bracketed=[bool]$Bracketed; via='WriteConsoleInput' } -Compress
+  exit 0
+}
+
 if($Action -eq 'send'){
   # Keys (menu/prompt answers) go straight into the console input buffer via
   # WriteConsoleInput -- focus-free and reliable, no foreground/SendKeys needed.
@@ -543,6 +609,30 @@ export interface SendResult {
   kind?: string;
   submitted?: boolean;
   origTitle?: string | null;
+  /** how the text/keys reached the session: 'WriteConsoleInput' (pid-keyed) or 'clipboard' (locate+paste) */
+  via?: string;
+  /** UTF-16 units injected on the WriteConsoleInput path */
+  chars?: number;
+  /** set when the pid path failed and the legacy locate+clipboard path was used instead */
+  fallback?: string;
+}
+
+export type TextSendPath = 'console-input' | 'clipboard' | 'keys' | 'none';
+
+/**
+ * Pure: which path a send takes. Text goes through the console input buffer
+ * whenever a pid is known — the title-marker tab locate cannot see a session
+ * that is a non-active PANE or a window UIA does not enumerate (measured: 1 of
+ * 6 driveable sessions locatable on DESKTOP-GDKLATG), while the console is
+ * always reachable by pid. `bracketed` wraps multi-line text as one paste so
+ * embedded newlines do not submit; single-line text is typed plainly.
+ */
+export function planTextSend(o: { pid?: number; rid?: string; text?: string; keys?: string; forceClipboard?: boolean; bracketed?: boolean }): { path: TextSendPath; bracketed: boolean } {
+  if (o.keys) return { path: 'keys', bracketed: false };
+  if (!o.text) return { path: 'none', bracketed: false };
+  const bracketed = o.bracketed ?? /[\r\n]/.test(o.text);
+  if (o.pid && o.pid > 0 && !o.forceClipboard) return { path: 'console-input', bracketed };
+  return { path: 'clipboard', bracketed: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -648,15 +738,49 @@ export async function focusAndSend(opts: {
   submit?: boolean;
   /** raw SendKeys string (e.g. "{ENTER}", "1{ENTER}", "{ESC}"); ignores text */
   keys?: string;
+  /** force the legacy locate+clipboard paste (diagnostics only) */
+  forceClipboard?: boolean;
+  /** wrap text as a bracketed paste (default: only when it contains a newline) */
+  bracketed?: boolean;
 }): Promise<SendResult> {
   if (!IS_WINDOWS) return { ok: false, error: 'windows-only' };
+  const plan = planTextSend(opts);
+  if (plan.path === 'console-input') {
+    // pid-keyed text: no tab locate, no foreground, no clipboard
+    const typed = (await runEngine([
+      '-Action', 'type', '-ClaudePid', String(opts.pid),
+      '-MessageB64', Buffer.from(opts.text!, 'utf8').toString('base64'),
+      ...(plan.bracketed ? ['-Bracketed'] : []),
+    ]).catch((e: Error) => ({ ok: false, error: e.message }))) as { ok: boolean; chars?: number; error?: string };
+    if (typed.ok) {
+      let submitted = false;
+      if (opts.submit) {
+        const ent = await runEngine(['-Action', 'send', '-ClaudePid', String(opts.pid), '-Keys', 'ENTER']).catch(() => ({ ok: false }));
+        submitted = !!(ent as { ok?: boolean }).ok;
+      }
+      return { ok: true, via: 'WriteConsoleInput', chars: typed.chars, submitted };
+    }
+    // Console unreachable by pid (cross-session / no console) → the legacy
+    // locate+clipboard path is the only remaining option; say that we fell back.
+    const legacy = await legacyFocusAndSend(opts);
+    return { ...legacy, fallback: typed.error || 'console-input path failed' };
+  }
+  return legacyFocusAndSend(opts);
+}
+
+/** The original locate-by-title/RuntimeId → foreground → clipboard paste path. */
+async function legacyFocusAndSend(opts: {
+  pid?: number; rid?: string; text?: string; submit?: boolean; keys?: string;
+}): Promise<SendResult> {
   const args = ['-Action', 'send'];
   if (opts.rid) args.push('-RuntimeId', opts.rid); // title-independent, robust
   if (opts.pid) args.push('-ClaudePid', String(opts.pid)); // marker fallback
   if (opts.keys) args.push('-Keys', opts.keys);
   else if (opts.text) args.push('-MessageB64', Buffer.from(opts.text, 'utf8').toString('base64'));
   if (opts.submit) args.push('-Submit');
-  return (await runEngine(args)) as SendResult;
+  const r = (await runEngine(args)) as SendResult;
+  if (r && r.ok && !opts.keys) r.via = r.via || 'clipboard';
+  return r;
 }
 
 export interface CaptureResult {

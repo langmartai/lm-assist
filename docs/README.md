@@ -63,6 +63,10 @@ from elsewhere); this page is the navigation layer.
 - [vm-management.md](./vm-management.md) — VM tools over Hyper-V and KVM; input charset boundaries
 - [container-management.md](./container-management.md) — Docker tools; managed labels, volume roots
 
+## Articles
+
+- [articles/](./articles/README.md) — stories from the developer: [From a terminal to an iPad](./articles/2026-09-developing-lm-assist-from-an-ipad.md) — three months of lm-assist building itself, and what 99% from the Claude app looks like (September 2026) · [The server build behind it](./articles/2026-09-the-server-build-behind-it.md) — the Windows 11 Hyper-V host and the Ubuntu VMs that do all the work
+
 ## Working notes & records
 
 - [perf/](./perf/) — performance investigations

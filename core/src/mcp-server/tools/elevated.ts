@@ -39,13 +39,18 @@ export const elevatedExecToolDef = {
     'e.g. to restart the elevated prod Core. No UAC prompt (the one-time grant already registered the ' +
     'task). ADMIN / high-risk — runs real code as administrator. If not yet granted, fails with ' +
     'ELEVATED_NOT_GRANTED (run elevated_grant first). Default shell is cmd.exe /c; set shell="powershell" ' +
-    'for PowerShell. Returns exitCode/stdout/stderr/elapsedMs.',
+    'for PowerShell. Returns exitCode/stdout/stderr/elapsedMs. ARG CONTRACT: `cmd` is the shell command ' +
+    'LINE, passed verbatim — write pipes, redirects, && and a pre-quoted `bash -c "…"` in it exactly as you ' +
+    'would at that shell\'s prompt. Each `args[i]` is ONE argument, quoted per-arg for the chosen shell, so ' +
+    'a space, a quote or a | > & inside an arg is data, not syntax (an arg can never open a pipe). Multi-word ' +
+    'remote commands go in `cmd` as one pre-quoted string, e.g. cmd: \'ssh host "bash -c \\"ls -la | head\\""\'. ' +
+    'Under cmd.exe, %VAR% expands even inside quotes — use shell="powershell" for a literal %.',
   annotations: { readOnlyHint: false, destructiveHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
-      cmd: { type: 'string', description: 'Command to run elevated.' },
-      args: { type: 'array', items: { type: 'string' }, description: 'Optional argument list appended to cmd.' },
+      cmd: { type: 'string', description: 'The shell command LINE, passed verbatim (pipes/redirects/pre-quoted bash -c work as typed).' },
+      args: { type: 'array', items: { type: 'string' }, description: 'Optional arguments, each quoted PER-ARG for the shell (spaces and | > & inside an arg are data). Do not put shell syntax here — put it in cmd.' },
       cwd: { type: 'string', description: 'Working directory.' },
       timeoutMs: { type: 'number', description: 'Timeout in ms (default 120000, max 600000).' },
       shell: { type: 'string', enum: ['cmd', 'powershell'], description: 'Shell to run under (default cmd).' },
