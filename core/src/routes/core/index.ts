@@ -28,6 +28,7 @@ import { createSessionDagRoutes } from './session-dag.routes';
 import { createContextRoutes } from './context.routes';
 import { createVectorRoutes } from './vector.routes';
 import { createAgentRoutes } from './agent.routes';
+import { createHarnessRoutes } from './harness.routes';
 import { createGithubRoutes } from './github.routes';
 import { createMcpApiRoutes } from './mcp-api.routes';
 import { createMcpToolsRoutes } from './mcp-tools.routes';
@@ -90,6 +91,7 @@ import { createVoiceRoutes } from './voice.routes';
 export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
   return [
     ...createAgentRoutes(ctx),
+    ...createHarnessRoutes(ctx),
     ...createGithubRoutes(ctx),
     ...createHealthRoutes(ctx),
     ...createAuthTokensRoutes(ctx),
