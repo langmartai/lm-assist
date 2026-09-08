@@ -43,6 +43,7 @@ import type {
 import type { AgentApi } from './types/agent-api';
 import { registerHarness } from './harness/registry';
 import { createQwenHarness } from './harness/qwen';
+import { createOpencodeHarness } from './harness/opencode';
 
 // ============================================================================
 // Helper Functions
@@ -198,6 +199,7 @@ export class TierControlApiImpl {
     // binary, so a node without `qwen` installed still starts normally and
     // reports the failure per-request instead of at boot.
     registerHarness(createQwenHarness());
+    registerHarness(createOpencodeHarness());
 
     // Initialize Agent API (direct SDK access with full options)
     profiler.start('agentApi', 'AgentApi', 'ControlApi');

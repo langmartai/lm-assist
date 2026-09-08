@@ -21,6 +21,7 @@ import type {
 } from '../types/agent-api';
 import type { AgentHarness, HarnessProbe } from './types';
 import { resolveProfile, type ProviderProfile } from './provider-config';
+import { terminateRun } from './process';
 
 export const QWEN_ID = 'qwen';
 
@@ -28,8 +29,6 @@ export const QWEN_ID = 'qwen';
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 /** Turn ceiling — an agent loop with no bound can spin against a flaky endpoint. */
 const DEFAULT_MAX_TURNS = 40;
-/** How long a terminated run may take to exit before it is killed outright. */
-const KILL_GRACE_MS = 5000;
 
 const EMPTY_USAGE: AgentTokenUsage = {
   inputTokens: 0,
@@ -184,55 +183,6 @@ export function parseQwenStream(stdout: string): QwenStreamSummary {
     out.errorText = out.text;
   }
   return out;
-}
-
-/**
- * Signal a run's whole process group, escalating to SIGKILL if it lingers.
- *
- * Why the GROUP and not just the child: under `--approval-mode yolo` qwen runs
- * shell commands itself, so a SIGTERM to qwen alone can leave a build or a curl
- * running with nobody tracking it — the abort would look clean and leak work.
- * `spawn({detached: true})` puts the run in its own process group precisely so
- * `kill(-pid)` can end all of it at once.
- *
- * Returns false when there was nothing alive to signal, which is what makes an
- * honest "no, that did not stop anything" answer possible upstream.
- */
-export function terminateRun(child: ChildProcess, graceMs: number = KILL_GRACE_MS): boolean {
-  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return false;
-
-  const pid = child.pid;
-  const signalGroup = (sig: NodeJS.Signals | 0): boolean => {
-    try {
-      process.kill(-pid, sig);
-      return true;
-    } catch {
-      // No process group (already reaped, or a platform without one) — fall back
-      // to the single child so a lingering qwen is still ended.
-      try {
-        return child.kill(sig as NodeJS.Signals);
-      } catch {
-        return false;
-      }
-    }
-  };
-
-  if (!signalGroup('SIGTERM')) return false;
-
-  // 🔴 The escalation probes the GROUP and is deliberately NOT cancelled when the
-  // direct child exits. MEASURED on qwen 0.15.10: `qwen` forks a second node
-  // process that ignores SIGTERM and OUTLIVES its parent. The obvious way to
-  // write this — clear the timer on the child's `close` event — therefore cancels
-  // the escalation moments before the only process that still needs killing, and
-  // the abort looks clean while an agent keeps running. Signalling a group whose
-  // leader has exited is valid for as long as any member remains, which is
-  // exactly the window that matters here.
-  const escalate = setTimeout(() => {
-    if (signalGroup(0)) signalGroup('SIGKILL');
-  }, graceMs);
-  // A pending kill timer must not hold Core's event loop open on shutdown.
-  escalate.unref?.();
-  return true;
 }
 
 async function probeQwen(): Promise<HarnessProbe> {

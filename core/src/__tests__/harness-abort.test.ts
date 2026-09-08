@@ -18,7 +18,8 @@ import { spawn } from 'child_process';
  */
 
 import { abortHarnessRun } from '../harness/abort';
-import { createQwenHarness, terminateRun, QWEN_ID } from '../harness/qwen';
+import { createQwenHarness, QWEN_ID } from '../harness/qwen';
+import { terminateRun } from '../harness/process';
 import { getCapabilities } from '../harness/registry';
 import type { AgentHarness, HarnessCapabilities } from '../harness/types';
 

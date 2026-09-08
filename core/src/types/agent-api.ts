@@ -51,7 +51,7 @@ export type AgentModelSelection = ModelShorthand | ModelId;
  * a registered third-party id. Values are validated against the registry at the
  * route boundary — an unknown id is REFUSED, never silently defaulted to the SDK.
  */
-export type HarnessId = 'sdk' | 'tmux' | 'qwen' | (string & {});
+export type HarnessId = 'sdk' | 'tmux' | 'qwen' | 'opencode' | (string & {});
 
 // ============================================================================
 // System Prompt Configuration
