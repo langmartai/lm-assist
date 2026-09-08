@@ -13,6 +13,7 @@ import { readState, writeState } from '../../mcp-server/plugins/state-store';
 import { readPluginAudit } from '../../mcp-server/plugins/audit';
 import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
 import { syncConnectorForPluginTools } from '../../mcp-server/plugins/connector-sync';
+import { bumpToolsRev } from '../../mcp-server/registry/tools-rev';
 import { callExtToolFleetAware } from '../../mcp-server/plugins/fleet-plugins';
 import { pluginsSubsystemEnabled, SEGMENT_RE, type PluginManifest } from '../../mcp-server/plugins/model';
 import { isBundledPlugin, isBundledMirror } from '../../mcp-server/plugins/bundled';
@@ -135,6 +136,13 @@ export async function handlePluginEnable(
     health: { failures: 0 },
   }, opts.stateFile);
 
+  // Enabling adds this plugin's `ext__<name>__<tool>` entries to tools/list, so every
+  // connected client is now holding a stale list. The claude.ai connector is refreshed
+  // below; this is the OTHER half — the stdio notification path, which polls this rev
+  // and emits notifications/tools/list_changed. bumpToolsRev()'s own contract names
+  // "plugin enable/disable/sync" as a required funnel, and it was the one not wired.
+  bumpToolsRev();
+
   const after = discoverPlugins(opts).find((r) => r.name === name)!;
   const nsTools = (rec.manifest as PluginManifest).tools.map((t) => `ext__${name}__${t.name}`);
   // Propagate to the claude.ai connector WITHOUT any restart (cache clear →
@@ -154,6 +162,7 @@ export async function handlePluginEnable(
     tools: nsTools,
     connectorSync: opts.connectorSync !== false && !opts.stateFile ? 'started' : 'skipped',
   });
+
 }
 
 export async function handlePluginDisable(name: string, req: ParsedRequest, opts: PluginRouteOptions = {}): Promise<Envelope> {
@@ -167,6 +176,8 @@ export async function handlePluginDisable(name: string, req: ParsedRequest, opts
   // re-trusted on every boot, so without this flag each upgrade would quietly undo the
   // disable. Harmless for a hand-installed plugin, which nothing ever auto-enables.
   writeState(name, { enabled: false, revertedReason: 'disabled by the owner', bundledOptOut: true }, opts.stateFile);
+  // Same as enable: the plugin's tools just left tools/list.
+  bumpToolsRev();
   // Stop any running child immediately — disable is instant, not lazy.
   try { await getPluginAggregator().shutdown(); } catch { /* best effort */ }
   // Refresh claude.ai's connector tool list so the removed tools disappear
