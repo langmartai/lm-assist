@@ -26,6 +26,8 @@ import type { AgentSessionStore } from '../agent-session-store';
 import { spawnDetached, recoverExecutions, cleanupOldExecutions } from '../detached-runner';
 import { createTmuxRunner } from '../runners/tmux-runner';
 import * as cc from '../terminal/cc';
+import { getHarness } from '../harness/registry';
+import type { AgentHarness } from '../harness/types';
 
 export interface AgentApiDeps {
   sdkRunner: ClaudeSdkRunner;
@@ -276,6 +278,68 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
    * abort() is a cooperative cancel: Ctrl+C into the CC TUI. The runner's
    * stable-screen wait then settles and returns a (partial) response.
    */
+  /**
+   * Background wrapper for a registered harness.
+   *
+   * Generalises the tmux wrapper below for harnesses that own a whole child
+   * process per run: the work is already a single promise, so backgrounding is
+   * just "don't await it, and record the outcome when it lands".
+   *
+   * ⚠️ In-process, therefore NOT durable — a Core restart loses the record and
+   * orphans the child. That matches the tmux runner's existing behaviour and is
+   * declared honestly as `durableBackground: false` in the harness capabilities,
+   * so callers are not misled. Making it durable needs a persisted record that
+   * does not assume a pid, which the detached-CLI store does.
+   */
+  const startHarnessBackground = (
+    harness: AgentHarness,
+    request: AgentExecuteRequest,
+    executionId: string,
+  ): AgentBackgroundResponse => {
+    let running = true;
+    const execP = harness.execute(request, executionId);
+
+    const handle: SdkExecutionHandle = {
+      executionId,
+      sessionId: '',
+      sessionReady: execP.then(r => r.sessionId).catch(() => ''),
+      result: execP.then(r => r as unknown as SdkExecuteResult),
+      // The harness owns its child; without an abort primitive the honest thing
+      // is to stop reporting it as running rather than pretend we killed it.
+      abort: () => { running = false; },
+      isRunning: () => running,
+    };
+
+    backgroundExecutions.set(executionId, { handle, request, startedAt: new Date() });
+
+    execP.then(result => {
+      running = false;
+      const entry = backgroundExecutions.get(executionId);
+      if (entry) {
+        backgroundExecutions.set(executionId, {
+          ...entry,
+          completedAt: new Date(),
+          result,
+          handle: { ...entry.handle, sessionId: result.sessionId },
+        });
+      }
+    }).catch(err => {
+      running = false;
+      const entry = backgroundExecutions.get(executionId);
+      if (entry) {
+        backgroundExecutions.set(executionId, { ...entry, completedAt: new Date(), error: String(err) });
+      }
+    });
+
+    return {
+      executionId,
+      sessionId: undefined,
+      status: 'started',
+      statusUrl: `/agent/execution/${executionId}`,
+      resultUrl: `/agent/execution/${executionId}/result`,
+    };
+  };
+
   const startTmuxBackground = (
     request: AgentExecuteRequest,
     executionId: string,
@@ -373,6 +437,18 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
         // detached path below, which assumes an SDK CLI process.
         if (request.background && request.runner === 'tmux') {
           return startTmuxBackground(request, executionId);
+        }
+
+        // Registered non-Claude harness. Must intercept BEFORE the background
+        // path below, which spawns a detached `claude` CLI child and would
+        // therefore run Claude for a request that named another harness.
+        // Background is not yet supported for these — say so rather than
+        // silently serving a foreground run or a Claude one.
+        const harness = request.runner ? getHarness(request.runner) : undefined;
+        if (harness) {
+          return request.background
+            ? startHarnessBackground(harness, request, executionId)
+            : await harness.execute(request, executionId);
         }
 
         // Handle background execution — use detached CLI process
@@ -486,6 +562,31 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
       const executionId = request.executionId || `agent-resume-${Date.now()}`;
 
       try {
+        // A registered harness must handle its OWN resume or be refused. Falling
+        // through would run the Claude SDK against a sessionId that belongs to a
+        // different harness entirely — the silent-substitution failure again.
+        const resumeRunner = (request as AgentExecuteRequest).runner;
+        const resumeHarness = resumeRunner ? getHarness(resumeRunner) : undefined;
+        if (resumeHarness) {
+          if (!resumeHarness.resume) {
+            return {
+              success: false,
+              result: '',
+              sessionId: request.sessionId,
+              executionId,
+              durationMs: Date.now() - start,
+              durationApiMs: 0,
+              numTurns: 0,
+              totalCostUsd: 0,
+              usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, totalTokens: 0 },
+              modelUsage: {},
+              runner: resumeRunner,
+              error: `Runner '${resumeRunner}' does not support resume. Start a new execution instead.`,
+            } as AgentExecuteResponse;
+          }
+          return await resumeHarness.resume(request);
+        }
+
         // Build SDK options with resume
         const sdkOptions = convertToSdkOptions(request, executionId, projectPath);
         sdkOptions.resume = true;
@@ -646,10 +747,14 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
         return { executionId, completed: true, error: entry.error };
       }
 
-      // tmux runner, still in flight: handle.result already resolves to
-      // an AgentExecuteResponse — await it directly and skip
-      // convertResult so the tmux-only fields aren't stripped.
-      if ((entry.request as AgentExecuteRequest).runner === 'tmux') {
+      // Any non-SDK runner, still in flight: handle.result already resolves to
+      // an AgentExecuteResponse — await it directly and skip convertResult so
+      // the runner-specific fields (runner, tmuxSession, incomplete) aren't
+      // stripped. Generalised from `=== 'tmux'`: with a registry of harnesses,
+      // an id-by-id test silently flattens every runner someone forgets to add,
+      // and the caller gets a valid-looking response with the fields missing.
+      const entryRunner = (entry.request as AgentExecuteRequest).runner;
+      if (entryRunner && entryRunner !== 'sdk') {
         try {
           let rp = entry.handle.result as unknown as Promise<AgentExecuteResponse>;
           if (timeoutMs) {

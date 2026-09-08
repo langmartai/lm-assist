@@ -129,6 +129,29 @@ const LITELLM_URL =
   'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 
 /** Shared across all CostCalculator instances */
+/**
+ * Sentinel returned when a model matches no known pricing.
+ *
+ * Previously getPricing() fell through to `this.pricing[0]` — Claude Opus — so ANY
+ * unrecognised model (every third-party/gateway model, notably) was silently billed at
+ * $5/$25 per M with no error and no marker. Zero-rating it and flagging it is the only
+ * honest answer: we do not know this model's price, so we must not invent one.
+ */
+export const UNKNOWN_MODEL_PRICING: ModelPricing = {
+  modelPattern: '__unknown__',
+  displayName: 'Unknown model (unpriced)',
+  inputPricePerMillion: 0,
+  outputPricePerMillion: 0,
+  cache5mWritePricePerMillion: 0,
+  cache1hWritePricePerMillion: 0,
+  cacheReadPricePerMillion: 0,
+};
+
+/** True when pricing could not be resolved for a model (see UNKNOWN_MODEL_PRICING). */
+export function isUnknownPricing(pricing: ModelPricing): boolean {
+  return pricing.modelPattern === UNKNOWN_MODEL_PRICING.modelPattern;
+}
+
 let litellmCache: Map<string, ModelPricing> | null = null;
 let litellmFetchInProgress = false;
 let litellmFetchFailed = false;
@@ -248,7 +271,10 @@ export class CostCalculator {
       if (exact) return exact;
       for (const [key, pricing] of litellmCache) {
         const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '-');
-        if (normalizedModel.includes(normalizedKey) || normalizedKey.includes(normalizedModel)) {
+        // Forward match only. The reverse direction (`normalizedKey.includes(
+        // normalizedModel)`) let a short id such as `gpt-4` capture the price of any
+        // longer key that merely contained it.
+        if (normalizedModel.includes(normalizedKey)) {
           return pricing;
         }
       }
@@ -257,8 +283,10 @@ export class CostCalculator {
       fetchLiteLLMPricing();
     }
 
-    // 3. Default to first pricing entry
-    return this.pricing[0];
+    // 3. No match. Return an explicit unknown rather than defaulting to
+    // this.pricing[0] (Claude Opus), which silently mispriced every
+    // third-party model at $5/$25 per M.
+    return UNKNOWN_MODEL_PRICING;
   }
 
   /**
@@ -290,6 +318,7 @@ export class CostCalculator {
    */
   calculateCost(usage: TokenUsage, model?: string, options?: { cumulative?: boolean }): CostEstimate {
     const pricing = this.getPricing(model || this.defaultModel);
+    const pricingKnown = !isUnknownPricing(pricing);
     const threshold = pricing.tieredThreshold || 200_000;
     // Default to cumulative (no tiering) — callers must opt in to per-call tiering
     const isCumulative = options?.cumulative !== false;
@@ -348,6 +377,7 @@ export class CostCalculator {
       totalCost: inputCost + outputCost + cacheWriteCost + cacheReadCost,
       tokens: usage,
       model: model || this.defaultModel,
+      pricingKnown,
     };
   }
 

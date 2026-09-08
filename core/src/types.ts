@@ -321,6 +321,12 @@ export interface CostEstimate {
   tokens: TokenUsage;
   /** Model used */
   model: string;
+  /**
+   * False when the model matched no known pricing, so every cost above is 0
+   * because it is UNKNOWN — not because the run was free. Absent on estimates
+   * produced before this field existed; treat `undefined` as "not asserted".
+   */
+  pricingKnown?: boolean;
 }
 
 export interface UsageSummary {

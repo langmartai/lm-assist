@@ -41,6 +41,8 @@ import type {
   TasksApi,
 } from './types/control-api';
 import type { AgentApi } from './types/agent-api';
+import { registerHarness } from './harness/registry';
+import { createQwenHarness } from './harness/qwen';
 
 // ============================================================================
 // Helper Functions
@@ -189,6 +191,13 @@ export class TierControlApiImpl {
       sessionMonitor: this.sessionMonitor,
     });
     profiler.end('subApis');
+
+    // Register pluggable harnesses before the Agent API is built, so an
+    // /agent/execute arriving immediately after boot can already resolve them.
+    // Registration is cheap and side-effect free — it does NOT probe for the
+    // binary, so a node without `qwen` installed still starts normally and
+    // reports the failure per-request instead of at boot.
+    registerHarness(createQwenHarness());
 
     // Initialize Agent API (direct SDK access with full options)
     profiler.start('agentApi', 'AgentApi', 'ControlApi');

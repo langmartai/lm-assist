@@ -506,23 +506,23 @@ export const terminalSendToolDef = {
 export const agentExecuteToolDef = {
   name: 'agent_execute',
   description:
-    'Start a NEW autonomous Claude Code session on the host with an arbitrary prompt. ' +
-    "ADMIN / high-risk — runs real code. cwd is restricted to directories under the " +
-    "worker's own home dir. Requires out-of-band confirmation before it executes. " +
-    'Runs in the BACKGROUND — returns immediately with an executionId; poll ' +
-    '`get_execution(id=...)` for status and the result. ' +
-    '🚫 NOT for running a MISSION worker/executor: this is a one-shot SDK agent — you CANNOT ' +
-    'see or answer an AskUserQuestion it raises, so any worker that must ask a question is ' +
-    'unreachable. To run a mission executor use `ccr_cloud_start` (a monitorable session) + ' +
-    '`mission_update({binding})`, and answer its questions with `mission_session_answer`. ' +
-    'Use agent_execute only for a fire-and-forget side task with NO interaction.',
+    'Start a NEW autonomous coding session on the host with an arbitrary prompt. ' +
+    "ADMIN / high-risk — runs real code. cwd is restricted to the worker's own home dir. " +
+    'Requires out-of-band confirmation. Runs in the BACKGROUND — returns an executionId; ' +
+    'poll `get_execution(id=...)`. ' +
+    '🚫 NOT for a MISSION worker/executor: one-shot, so you CANNOT see or answer an ' +
+    'AskUserQuestion it raises. For a mission executor use `ccr_cloud_start` + ' +
+    '`mission_update({binding})`, answering with `mission_session_answer`. ' +
+    'Use only for a fire-and-forget side task with NO interaction.',
   annotations: { readOnlyHint: false, destructiveHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
-      prompt: { type: 'string', description: 'The task for the Claude Code session.' },
+      prompt: { type: 'string', description: 'The task for the session.' },
       cwd: { type: 'string', description: "Working directory — MUST be under the worker's home dir." },
-      model: { type: 'string', description: 'Optional model (opus|sonnet|haiku or full id).' },
+      model: { type: 'string', description: 'Optional model. Claude runners: opus|sonnet|haiku or claude-*.' },
+      runner: { type: 'string', description: "Harness: 'sdk' (default) | 'tmux' | 'qwen'." },
+      providerProfile: { type: 'string', description: 'Provider profile name; omit for default.' },
     },
     required: ['prompt', 'cwd'],
   },
@@ -1812,10 +1812,25 @@ async function handleAgentExecute(args: Record<string, unknown>): Promise<McpToo
     return err(`cwd "${cwd}" is not permitted; agent_execute is restricted to ${os.homedir()} and below.`);
   }
   const body: Record<string, unknown> = { prompt, cwd, background: true };
+
+  // Runner is validated by the worker against the harness registry (an unknown id
+  // is refused there, loudly). Pass it through rather than duplicating the
+  // allowlist here, where it would drift out of sync with what is registered.
+  const runner = args.runner ? String(args.runner).trim() : '';
+  if (runner) body.runner = runner;
+  if (args.providerProfile) body.providerProfile = String(args.providerProfile).trim();
+
   if (args.model) {
     const model = String(args.model);
-    if (!/^(opus|sonnet|haiku)$/i.test(model) && !/^claude-/.test(model)) {
-      return err(`model must be opus|sonnet|haiku or a full claude-* id; got "${model}".`);
+    // The Claude-only shape check applies only to the Claude runners. Enforcing it
+    // for every runner made a third-party model unreachable over MCP even though
+    // the REST API accepted it.
+    const isClaudeRunner = !runner || runner === 'sdk' || runner === 'tmux';
+    if (isClaudeRunner && !/^(opus|sonnet|haiku)$/i.test(model) && !/^claude-/.test(model)) {
+      return err(
+        `model must be opus|sonnet|haiku or a full claude-* id for runner '${runner || 'sdk'}'; got "${model}". ` +
+          'Pass a different `runner` to use a third-party model.'
+      );
     }
     body.model = model;
   }

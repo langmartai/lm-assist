@@ -574,6 +574,9 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
   // set to stop the voice browser being torn down had no effect at all).
   for (const [key, val] of Object.entries({ ...dotenv, ...process.env })) {
     if (key.startsWith('VOICE_') && val) forwardEnv[key] = String(val);
+    // Harness provider fallback (LM_HARNESS_BASE_URL / _API_KEY / _MODEL) — also by
+    // PREFIX, for the same reason as VOICE_ above.
+    if (key.startsWith('LM_HARNESS_') && val) forwardEnv[key] = String(val);
   }
   forwardEnv.API_PORT = String(apiPort);
   // The HTTPS terminator (LM_HTTPS=1) proxies to the web port — make sure the core
@@ -1006,6 +1009,10 @@ export async function startDevAll(devRepoPath: string): Promise<{ core: { succes
     for (const key of ['ANTHROPIC_API_KEY', 'TIER_AGENT_HUB_URL', 'TIER_AGENT_API_KEY']) {
       const val = process.env[key] || dotenv[key];
       if (val) forwardEnv[key] = val;
+    }
+    // Harness provider fallback, forwarded by PREFIX (see startCore).
+    for (const [key, val] of Object.entries({ ...dotenv, ...process.env })) {
+      if (key.startsWith('LM_HARNESS_') && val) forwardEnv[key] = String(val);
     }
     forwardEnv.API_PORT = String(DEV_API_PORT);
 

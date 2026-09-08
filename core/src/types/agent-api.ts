@@ -40,6 +40,20 @@ export type ModelId =
 export type AgentModelSelection = ModelShorthand | ModelId;
 
 // ============================================================================
+// Harness selection
+// ============================================================================
+
+/**
+ * Which harness runs the agent. 'sdk' (Claude Agent SDK, the default) and 'tmux'
+ * (a warm Claude Code TUI) are built in; other ids come from the harness registry.
+ *
+ * `(string & {})` keeps editor autocomplete for the known ids while still admitting
+ * a registered third-party id. Values are validated against the registry at the
+ * route boundary — an unknown id is REFUSED, never silently defaulted to the SDK.
+ */
+export type HarnessId = 'sdk' | 'tmux' | 'qwen' | (string & {});
+
+// ============================================================================
 // System Prompt Configuration
 // ============================================================================
 
@@ -339,7 +353,15 @@ export interface AgentExecuteRequest {
    *     Cost/usage fields are 0 (no telemetry from the TUI). Pairs with
    *     `tmuxSession` to share a session across calls.
    */
-  runner?: 'sdk' | 'tmux';
+  runner?: HarnessId;
+
+  /**
+   * Named provider profile from ~/.lm-assist/harness-providers.json, supplying the
+   * base URL, credential and default model for harnesses that talk to a model
+   * gateway rather than authenticating ambiently. Ignored by 'sdk' and 'tmux'.
+   * Omit to use the configured default profile.
+   */
+  providerProfile?: string;
 
   /**
    * For runner:'tmux' only — name of the tmux session to host CC in.
@@ -474,7 +496,7 @@ export interface AgentExecuteResponse {
    * Which runner produced this response. Only set when the runner was
    * 'tmux' (callers who don't pass `runner` get the SDK and can ignore).
    */
-  runner?: 'sdk' | 'tmux';
+  runner?: HarnessId;
 
   /** Execution ID */
   executionId: string;

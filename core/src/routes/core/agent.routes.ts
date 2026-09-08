@@ -14,6 +14,7 @@
 
 import type { RouteHandler, RouteContext } from '../index';
 import type { AgentExecuteRequest, AgentResumeRequest } from '../../types/agent-api';
+import { assertKnownHarness } from '../../harness/registry';
 
 export function createAgentRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -29,6 +30,14 @@ export function createAgentRoutes(_ctx: RouteContext): RouteHandler[] {
             success: false,
             error: { code: 'MISSING_PROMPT', message: 'prompt is required' },
           };
+        }
+
+        // Refuse an unknown runner LOUDLY. Without this the value fell through to
+        // the Claude Agent SDK, so a typo'd or not-yet-deployed harness id silently
+        // ran a real Claude agent with this caller's prompt and cwd.
+        const badRunner = assertKnownHarness(body.runner);
+        if (badRunner) {
+          return { success: false, error: badRunner };
         }
 
         const result = await api.agent.execute(body);
@@ -88,6 +97,11 @@ export function createAgentRoutes(_ctx: RouteContext): RouteHandler[] {
             error: { code: 'MISSING_PROMPT', message: 'prompt is required' },
           };
         }
+        const badResumeRunner = assertKnownHarness((body as AgentExecuteRequest).runner);
+        if (badResumeRunner) {
+          return { success: false, error: badResumeRunner };
+        }
+
         const sessionId = req.params.sessionId;
         const result = await api.agent.resume({ ...body, sessionId } as AgentResumeRequest);
         return { success: true, data: result };
