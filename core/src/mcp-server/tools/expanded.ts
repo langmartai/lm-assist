@@ -1144,8 +1144,28 @@ export const memoryWriteToolDef = {
   },
 };
 
+
+/** Read or set which tools this node advertises. Deliberately terse: every byte here is
+ *  paid by every conversation, and this tool exists to REDUCE that bill. */
+export const mcpProfileToolDef = {
+  name: 'mcp_profile',
+  description:
+    'Read or set which MCP tools this node advertises. A narrower profile cuts the ' +
+    'per-conversation tools/list cost (basic ~12K tokens vs admin ~75K). Advertise-only: ' +
+    'hidden tools stay callable, so no access changes. Node-global. Omit `set` to read.',
+  annotations: { readOnlyHint: false, destructiveHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      set: { type: 'string', description: 'basic | langmart | extended | admin. Omit to read.' },
+    },
+    required: [] as string[],
+  },
+};
+
 export const EXPANDED_TOOL_DEFS = [
   // read
+  mcpProfileToolDef,
   listExecutionsToolDef,
   getExecutionToolDef,
   stallStatusToolDef,
@@ -2395,11 +2415,44 @@ async function handleRuleProjects(): Promise<McpToolResult> {
  * Name → handler for every expanded tool. Both transports consult this map
  * as a fallback for tool names not in their explicit switch.
  */
+
+async function handleMcpProfile(args: Record<string, unknown>): Promise<McpToolResult> {
+  const { PROFILE_DEFINITIONS, activeProfileName, setActiveProfile, readProfileState } =
+    require('../registry/profiles') as typeof import('../registry/profiles');
+  const { bumpToolsRev } = require('../registry/tools-rev') as typeof import('../registry/tools-rev');
+
+  const want = typeof args.set === 'string' ? args.set.trim() : '';
+  if (want) {
+    try {
+      setActiveProfile(want, 'mcp_profile');
+    } catch (e) {
+      return err(e instanceof Error ? e.message : String(e));
+    }
+    // Tell connected clients their tool list is stale. Over stdio this reaches Claude
+    // Code within the watcher's poll; a claude.ai connector caches tools/list and needs
+    // `refresh_connector_tools` — say so rather than let it look instant.
+    bumpToolsRev();
+  }
+
+  const active = activeProfileName();
+  return ok(pretty({
+    active,
+    setAt: readProfileState().setAt ?? null,
+    profiles: Object.fromEntries(
+      Object.entries(PROFILE_DEFINITIONS).map(([n, d]) => [n, d.description])
+    ),
+    ...(want
+      ? { note: 'Advertised set changed. Claude Code picks this up within ~30s; a claude.ai connector caches tools/list — call refresh_connector_tools there.' }
+      : {}),
+  }));
+}
+
 export const EXPANDED_HANDLERS: Record<
   string,
   (args: Record<string, unknown>) => Promise<McpToolResult>
 > = {
   // read
+  mcp_profile: handleMcpProfile,
   list_executions: () => handleListExecutions(),
   get_execution: handleGetExecution,
   stall_status: () => handleStallStatus(),

@@ -139,6 +139,11 @@ export type ToolScope = 'read' | 'write' | 'admin';
 
 export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   bootstrap: 'read',
+  // 'write', not 'admin': profiles are ADVERTISE-ONLY, so switching one grants no new
+  // capability — hidden tools stay callable and TOOL_SCOPES still gates every one of
+  // them. It is a node-local, reversible context-budget knob, and admin-gating it would
+  // put an out-of-band confirmation in front of a setting whose whole point is cheapness.
+  mcp_profile: 'write',
   guide: 'read',
   session_status: 'read',
   search: 'read',
@@ -545,6 +550,7 @@ import { withOriginTag } from './result-origin';
 import { capToolResult, type ResultSize } from './result-cap';
 import { getHubConfig } from '../hub-client/hub-config';
 import { hubHostOf, envLabelOf } from './fleet-identity';
+import { applyProfileToToolDefs, activeProfileName } from './registry/profiles';
 
 /**
  * MCP `instructions` for THIS connector — the always-sent body prefixed with a
@@ -609,10 +615,31 @@ export function configureMcpServer(
     try { return await extTools.list(); } catch { return []; }
   };
 
+  // The active PROFILE narrows what is advertised — see registry/profiles.ts for why
+  // tools/list is a fixed per-conversation tax worth cutting.
+  //
+  // Applied AFTER the overlay, so precedence is: a tool an operator switched off stays
+  // off in every profile; a profile can only narrow further, never re-enable.
+  //
+  // 🔴 ADVERTISE-ONLY, on purpose, and NOT composed into the overlay (which would also
+  // gate CallTool via isToolDisabled and the REST disabledGuard sites). Two reasons.
+  // claude.ai CACHES tools/list at account level, so right after a profile change a
+  // connector still believes the old tools exist — under a call gate every one of those
+  // calls would hard-fail until someone manually refreshed the connector, whereas
+  // advertise-only just keeps working. And the overlay is an operator's explicit
+  // per-tool off switch; a profile is a context budget. Conflating them would make a
+  // cost knob behave like a permission, which it is not — TOOL_SCOPES and the admin
+  // gate are the security boundary and are untouched here.
+  //
+  // This is the seam BOTH transports cross (index.ts:92 stdio, mcp.routes.ts:99 HTTP),
+  // so one filter covers Claude Code and the claude.ai connector alike.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: applyOverlayToToolDefs(
-      [...LM_ASSIST_TOOL_DEFS, ...(await currentExtDefs())],
-      await currentOverlay(),
+    tools: applyProfileToToolDefs(
+      applyOverlayToToolDefs(
+        [...LM_ASSIST_TOOL_DEFS, ...(await currentExtDefs())],
+        await currentOverlay(),
+      ),
+      activeProfileName(),
     ),
   }));
 

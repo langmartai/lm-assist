@@ -107,6 +107,15 @@ export interface ToolBudget {
  * headroom for normal fleet drift — tight enough that a real regression trips it.
  */
 export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
+  mcp_profile: {
+    measuredBytes: 766, budgetBytes: 4000, bound: 'HARD_LIMIT', verdict: 'SAFE',
+    write: true,
+    note: 'Fixed shape: the active profile plus one line per SHIPPED profile (4 today). ' +
+      'Cannot grow with fleet, session or plugin count — only if someone adds a profile ' +
+      'or writes a longer description, which is what the 4 KB ceiling is here to catch. ' +
+      'Marked write because `set` mutates the advertised surface; called with no ' +
+      'arguments it is a pure read.',
+  },
   // ── the unbounded registry dumps (tracked debt) ─────────────────────────
   claudeai_list_plugins: {
     measuredBytes: 32995, budgetBytes: 46000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY',

@@ -19,11 +19,17 @@ import { getToolCatalog, handlerSourceFor, CATEGORY_ORDER, type ToolCatalogEntry
 import { overlayFromDocs } from '../../mcp-server/registry/overlay';
 import { invalidateOverlayCache } from '../../mcp-server/registry/overlay-live';
 import { currentToolsRev } from '../../mcp-server/registry/tools-rev';
+import { bumpToolsRev } from '../../mcp-server/registry/tools-rev';
+import {
+  PROFILE_DEFINITIONS, activeProfileName, setActiveProfile, readProfileState,
+  resolveProfileTools, unmatchedSelectors, knownSelectors,
+} from '../../mcp-server/registry/profiles';
 import { sharedLiveOverlay, overlayDigest } from '../../mcp-server/registry/overlay-live';
 import { createHash } from 'crypto';
 import type { ToolRegistryDoc } from '../../mcp-server/registry/model';
 import { coarseActor, type MissionActor } from '../../mission/mission-model';
 import { thisNode } from '../../mission/mission-store';
+import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
 import { anchorToOrigin, realOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string } }
@@ -205,6 +211,57 @@ function toApi(e: Envelope, start: number) {
     : wrapError(e.error?.code ?? 'ERROR', e.error?.message ?? 'error', start);
 }
 
+/** GET /mcp-tools/profile — the active profile, what else is available, and what each costs. */
+async function handleProfileGet(): Promise<Envelope> {
+  // Built-ins AND the ext plugin tools. getToolCatalog() covers only the built-ins, so
+  // counting from it alone made every `ext__*` selector match nothing — `langmart`
+  // reported the same size as `basic` and the plugin list came back empty, while the
+  // real tools/list was 33 tools larger. Fail-open, like the tools/list path itself.
+  let extNames: string[] = [];
+  try {
+    extNames = (await getPluginAggregator().listToolDefs()).map((d) => d.name);
+  } catch {
+    extNames = [];
+  }
+  const advertised = [...getToolCatalog().keys(), ...extNames];
+  const active = activeProfileName();
+  return ok({
+    active,
+    setAt: readProfileState().setAt ?? null,
+    setBy: readProfileState().setBy ?? null,
+    selectors: knownSelectors(advertised),
+    profiles: Object.entries(PROFILE_DEFINITIONS).map(([name, def]) => ({
+      name,
+      description: def.description,
+      tools: resolveProfileTools(def, advertised).size,
+      unmatchedSelectors: unmatchedSelectors(def, advertised),
+      active: name === active,
+    })),
+  });
+}
+
+/** POST /mcp-tools/profile {profile} — set it.
+ *
+ *  Deliberately NOT origin-anchored, unlike the per-tool set/rollback above. Those write
+ *  a fleet-synced dataset and must land on its origin; this is NODE-LOCAL state, and a
+ *  node must be able to change its own context budget even when every other machine is
+ *  down. Anchoring it would also be wrong on the merits: dataset scope is cluster/fleet,
+ *  so a shared doc would flip every node's tool surface at once. */
+async function handleProfileSet(body: Record<string, unknown>, actor?: string): Promise<Envelope> {
+  const name = typeof body.profile === 'string' ? body.profile.trim() : '';
+  if (!name) return fail('INVALID_PROFILE', 'body.profile is required');
+  try {
+    setActiveProfile(name, actor || 'rest');
+  } catch (e) {
+    return fail('UNKNOWN_PROFILE', e instanceof Error ? e.message : String(e));
+  }
+  // Same staleness stamp the overlay uses, so the MCP processes' watcher notices and
+  // emits notifications/tools/list_changed. A claude.ai connector caches tools/list and
+  // needs refresh_connector_tools — reported, not silently assumed.
+  bumpToolsRev();
+  return (await handleProfileGet()) as Envelope;
+}
+
 export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
   const wrapped = (run: (req: Parameters<RouteHandler['handler']>[0]) => Promise<Envelope>): RouteHandler['handler'] =>
     async (req) => { const start = Date.now(); return toApi(await run(req), start); };
@@ -216,6 +273,10 @@ export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
     // trivial — an in-memory counter, no store access — because every connected
     // MCP process hits it on an interval.
     { method: 'GET', pattern: /^\/mcp-tools\/rev$/, handler: wrapped(async () => ok({ rev: await composedToolsRev() })) },
+    // Must precede the /(?<name>)/ patterns below, which would otherwise match "profile"
+    // as a tool name — the same reason /overlay and /rev sit up here.
+    { method: 'GET', pattern: /^\/mcp-tools\/profile$/, handler: wrapped(() => handleProfileGet()) },
+    { method: 'POST', pattern: /^\/mcp-tools\/profile$/, handler: wrapped((req) => handleProfileSet((req.body || {}) as Record<string, unknown>)) },
     { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/history$/, handler: wrapped((req) => handleToolHistory(req.params.name, req.query ?? {})) },
     { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/rollback$/, handler: wrapped((req) => handleToolRollback(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor())) },
     { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: wrapped((req) => handleToolGet(req.params.name)) },

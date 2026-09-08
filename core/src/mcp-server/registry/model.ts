@@ -29,7 +29,12 @@ export const TOOL_REGISTRY_HISTORY_CAP = 20;
  *  needs to discover everything else — disabling any of them could lock a connector
  *  out of self-help. The registry's own management surface is REST/web (not an MCP
  *  tool), so nothing else needs protecting. Description overrides remain allowed. */
-export const PROTECTED_TOOLS: ReadonlySet<string> = new Set(['bootstrap', 'guide', 'session_status']);
+export const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
+  'bootstrap', 'guide', 'session_status',
+  // The way back out of a narrowed profile. Hiding or disabling this would strand a
+  // node in `basic` with no advertised tool able to widen it again.
+  'mcp_profile',
+]);
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 

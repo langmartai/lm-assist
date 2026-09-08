@@ -85,8 +85,12 @@ test('toolRegistryChanged: each field flips it', () => {
   assert.equal(toolRegistryChanged(doc({}), { descriptionOverride: null, enabled: false }), true);
 });
 
-test('protected set is exactly the documented orientation trio', () => {
-  assert.deepEqual([...PROTECTED_TOOLS].sort(), ['bootstrap', 'guide', 'session_status']);
+test('the protected set is exactly the orientation surface plus the profile switch', () => {
+  // These are the tools that must never be switched off, because each is a way BACK:
+  // bootstrap/guide/session_status let a session discover what exists, and mcp_profile
+  // is the only advertised way out of a narrowed profile — hide it while `basic` is
+  // active and the node cannot widen its own tool surface again.
+  assert.deepEqual([...PROTECTED_TOOLS].sort(), ['bootstrap', 'guide', 'mcp_profile', 'session_status']);
 });
 
 test('history cap constant is 20 (spec §4.1)', () => {
