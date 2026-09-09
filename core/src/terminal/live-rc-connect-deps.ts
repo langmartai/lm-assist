@@ -6,6 +6,7 @@ import {
   killOwner as killOwnerPrim, injectRemoteControl, clearInjectedInput, pollForCloudConnection,
 } from './live-rc-connect';
 import { sessionVerdict } from './cc-sessions';
+import { isProcessAlive } from '../utils/process-utils';
 import { cloudListAccount } from './ccr-cloud';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -67,7 +68,8 @@ export function buildEnsureDeps(args: {
       pollForCloudConnection({ title, excludeSids }, listCloud, { timeoutMs: 20000, intervalMs: 1500, sleep }),
     killOwner: async (pid) => {
       const r = await killOwnerPrim(pid, { isWindows: IS_WINDOWS }, {
-        isAlive: (p) => { try { process.kill(p, 0); return true; } catch { return false; } },
+        // zombie-aware (see isProcessAlive): a defunct owner is DEAD, not "still live"
+        isAlive: (p) => isProcessAlive(p),
         signal: (p, sig) => process.kill(p, sig),
         taskkill: (p) => { execFileSync('taskkill', ['/PID', String(p), '/T', '/F'], { encoding: 'utf-8', timeout: 8000 }); },
         sleep,

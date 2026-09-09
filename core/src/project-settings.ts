@@ -66,6 +66,10 @@ export interface ProjectSettings {
   missionControllerMaxNudges: number;
   /** Model for the adjust reasoning step. Default 'claude-opus-4-8[1m]'. */
   missionControllerModel: string;
+  /** Minutes without ANY mission activity (no active mission, no non-terminal mission
+   *  touched) before the controller session is torn down as COLD; it relaunches on the
+   *  next tick that sees demand. 0 = never tear down for coldness. Default 60. */
+  missionControllerColdMin: number;
   /** Idle minutes before an auto-resumed local (native) session is auto-closed. Default 30. */
   missionSessionIdleCloseMin: number;
   /** Minutes of no detected human input before a standby mission is paused. Default 240. */
@@ -122,6 +126,7 @@ export const DEFAULTS: ProjectSettings = {
   missionControllerSafetyIntervalMin: 45,
   missionControllerMaxNudges: 6,
   missionControllerModel: 'claude-opus-4-8[1m]',
+  missionControllerColdMin: 60,
   missionSessionIdleCloseMin: 30,
   manualIdleInactiveMin: 240,
   missionHistoryInlineCap: 50,
@@ -179,6 +184,7 @@ export function getProjectSettings(): ProjectSettings {
       missionControllerSafetyIntervalMin: typeof data.missionControllerSafetyIntervalMin === 'number' ? data.missionControllerSafetyIntervalMin : DEFAULTS.missionControllerSafetyIntervalMin,
       missionControllerMaxNudges: typeof data.missionControllerMaxNudges === 'number' ? data.missionControllerMaxNudges : DEFAULTS.missionControllerMaxNudges,
       missionControllerModel: typeof data.missionControllerModel === 'string' ? data.missionControllerModel : DEFAULTS.missionControllerModel,
+      missionControllerColdMin: typeof data.missionControllerColdMin === 'number' ? data.missionControllerColdMin : DEFAULTS.missionControllerColdMin,
       missionSessionIdleCloseMin: typeof data.missionSessionIdleCloseMin === 'number' ? data.missionSessionIdleCloseMin : DEFAULTS.missionSessionIdleCloseMin,
       manualIdleInactiveMin: typeof data.manualIdleInactiveMin === 'number' ? data.manualIdleInactiveMin : DEFAULTS.manualIdleInactiveMin,
       missionHistoryInlineCap: typeof data.missionHistoryInlineCap === 'number' ? data.missionHistoryInlineCap : DEFAULTS.missionHistoryInlineCap,
@@ -231,6 +237,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     missionControllerSafetyIntervalMin: typeof partial.missionControllerSafetyIntervalMin === 'number' ? partial.missionControllerSafetyIntervalMin : current.missionControllerSafetyIntervalMin,
     missionControllerMaxNudges: typeof partial.missionControllerMaxNudges === 'number' ? partial.missionControllerMaxNudges : current.missionControllerMaxNudges,
     missionControllerModel: typeof partial.missionControllerModel === 'string' ? partial.missionControllerModel : current.missionControllerModel,
+    missionControllerColdMin: typeof partial.missionControllerColdMin === 'number' ? partial.missionControllerColdMin : current.missionControllerColdMin,
     missionSessionIdleCloseMin: typeof partial.missionSessionIdleCloseMin === 'number' ? partial.missionSessionIdleCloseMin : current.missionSessionIdleCloseMin,
     manualIdleInactiveMin: typeof partial.manualIdleInactiveMin === 'number' ? partial.manualIdleInactiveMin : current.manualIdleInactiveMin,
     missionHistoryInlineCap: typeof partial.missionHistoryInlineCap === 'number' ? partial.missionHistoryInlineCap : current.missionHistoryInlineCap,

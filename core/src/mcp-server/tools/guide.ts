@@ -543,7 +543,7 @@ Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isol
 
 ONBOARDING AN EXISTING SESSION: from any session, call mission_onboard({}) to hand the CURRENT session to mission control (or mission_onboard({sessionId}) for another one). mode:"standby" (default) = mission control analyzes + watches, the human keeps driving; mode:"handoff" = mission control takes over and drives it to completion per the workflow playbooks (onboard.analyze → drive.<work-type>/recover.stuck/wrapup.completed). Switch anytime with mission_update({id, manageMode:"handoff"|"standby"}) — human-only. The playbooks themselves are editable: mission_workflow_list/get/set/history/rollback.
 
-Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.
+Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel, missionControllerColdMin (the controller session exists ONLY while there is demand: it is not launched with zero missions and is torn down when every open mission has been untouched for this many minutes; it relaunches on the next tick that sees a mission created/touched/activated).
 
 GOTCHAS
 • **\`tags\` values must be ARRAYS.** \`{priority:["high"]}\` is right; a bare string \`{priority:"high"}\` throws \`TypeError: (vals ?? []).map is not a function\` and fails the WHOLE create. If a create rejects on a shape you cannot place, create it minimal (title+objective) and \`mission_update\` the rest.

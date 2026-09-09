@@ -102,9 +102,9 @@ export const tmuxCcController: CcController = {
     const name = genName(opts.tmuxPrefix || 'lmcc');
     const res = await cc.launch(name, {
       cwd: opts.cwd || process.env.HOME || '.',
-      model: null,
+      model: opts.model ?? null,
       extraFlags: opts.resume ? ['--resume', opts.resume] : [],
-      skipPermissions: opts.skipPermissions ?? true,
+      skipPermissions: opts.permissionMode ? opts.permissionMode === 'bypassPermissions' : (opts.skipPermissions ?? true),
       remoteControl: opts.remoteControl === true,
       effort: opts.effort,
       cols: 200,

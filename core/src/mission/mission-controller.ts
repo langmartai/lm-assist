@@ -691,11 +691,71 @@ export function buildControllerLaunchExtras(args: {
  * restart). Real leadership loss persists across ticks, so a 2-tick streak
  * still tears down — just ~1 min later, which is fine for loser cleanup.
  */
-export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean; notMonitorStreak?: number; indeterminate?: boolean }): { action: 'teardown' | 'launch' | 'drive' | 'idle' } {
+/**
+ * Is this controller record OURS to act on? The record lives in the fleet-synced
+ * missions dataset, so every node sees the leader's record. A NON-leader must never
+ * tear it down or clear it: on 2026-09-07 node 107 (non-leader, not-monitor streak
+ * 51+) read leader 123's record every minute, "tore it down" (a no-op locally — the
+ * session lives on 123) and wrote the record back as null; 123 then saw no controller
+ * and launched another one every tick — 25 controllers stacked up in tmux and each
+ * registered a remote-control session on the account. A record with no `node`
+ * (legacy) or a caller without `selfNodeId` is treated as ours.
+ */
+export function controllerRecordOwnedHere(
+  cs: { node?: string | null } | null | undefined,
+  deps: { selfNodeId?: () => string },
+): boolean {
+  if (!cs || !cs.node || !deps.selfNodeId) return true;
+  let self = '';
+  try { self = deps.selfNodeId() || ''; } catch { self = ''; }
+  return !self || cs.node === self;
+}
+
+/**
+ * Controller DEMAND — is there any work for a controller session to exist for?
+ *
+ *   none   — no non-terminal mission at all (fresh install, or everything done/failed)
+ *   active — at least one mission is `active` (an executor is running / being driven)
+ *   warm   — non-terminal missions exist (waiting/draft/paused/blocked) and one was
+ *            touched within `coldMs` — the controller may still need to place / answer
+ *   cold   — non-terminal missions exist but NOTHING has been touched for `coldMs`
+ *
+ * Requested 2026-09: a default install must not keep a controller session alive
+ * with nothing to control (it costs a live claude process + a claude.ai/code
+ * session for a `⟦HEARTBEAT⟧ idle — 0 active missions` loop), and a controller
+ * whose missions have gone cold should be torn down and come back on demand.
+ * `coldMs <= 0` disables the cold verdict (missions present ⇒ warm).
+ */
+export type ControllerDemand = 'none' | 'active' | 'warm' | 'cold';
+const TERMINAL_MISSION_STATUSES: ReadonlySet<string> = new Set(['done', 'failed']);
+
+export function computeControllerDemand(
+  missions: ReadonlyArray<{ status: string; updatedAt?: number; createdAt?: number }>,
+  now: number,
+  coldMs: number,
+): ControllerDemand {
+  const open = missions.filter((m) => !TERMINAL_MISSION_STATUSES.has(m.status));
+  if (!open.length) return 'none';
+  if (open.some((m) => m.status === 'active')) return 'active';
+  if (coldMs <= 0) return 'warm';
+  const lastTouch = Math.max(...open.map((m) => Math.max(m.updatedAt ?? 0, m.createdAt ?? 0)));
+  return now - lastTouch < coldMs ? 'warm' : 'cold';
+}
+
+export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean; notMonitorStreak?: number; indeterminate?: boolean; demand?: ControllerDemand }): { action: 'teardown' | 'launch' | 'drive' | 'idle'; reason?: string } {
   // Election inputs unavailable and no recent confident answer → do NOTHING
   // destructive (no teardown, no launch). The next confident tick decides.
   if (input.indeterminate) return { action: 'idle' };
   if (!input.isMonitor) return (input.notMonitorStreak ?? 0) >= 2 ? { action: 'teardown' } : { action: 'idle' };
+  // Demand gate (leader only): no work ⇒ no controller. A live controller with no
+  // demand is torn down; a dead one is NOT launched. Demand returning (a mission
+  // created / touched / activated) launches it on that tick. Absent ⇒ 'active'
+  // (callers that do not compute demand keep the always-on behaviour).
+  const demand = input.demand ?? 'active';
+  if (demand === 'none' || demand === 'cold') {
+    const reason = demand === 'none' ? 'no missions — nothing to control' : 'missions cold — no activity within missionControllerColdMin';
+    return input.live ? { action: 'teardown', reason } : { action: 'idle', reason };
+  }
   if (!input.live) return { action: 'launch' };
   if (input.driveDue) return { action: 'drive' };
   return { action: 'idle' };
@@ -853,6 +913,10 @@ export interface SupervisorDeps {
    *  must not share one hard-coded string (the journal said "not monitor" for a controller
    *  that merely read as not-live, 2026-09-05). */
   teardown: (cs: ControllerSession, reason?: string) => Promise<void>;
+  /** THIS node's gateway id. A controller record whose `node` is ANOTHER node is not ours to
+   *  tear down or clear — see controllerRecordOwnedHere. Absent ⇒ every record is treated as
+   *  ours (the pre-2026-09-07 behaviour; only tests omit it). */
+  selfNodeId?: () => string;
   /** Optional: hand the recorded terminal handle back to the terminal backend when a live
    *  controller is ADOPTED (Core restart) — on Windows that is the tab RuntimeId the previous
    *  Core learned at launch; without it a drive to a busy controller cannot find the tab. */
@@ -874,6 +938,8 @@ export interface SupervisorDeps {
   idleDriveIntervalMin?: number;
   /** Count of active missions — picks active vs idle cadence. Default = () => 1 (always active). */
   activeMissionCount?: () => Promise<number>;
+  /** Controller DEMAND (see computeControllerDemand). Absent ⇒ 'active' (always-on). */
+  controllerDemand?: () => Promise<ControllerDemand>;
   /** Current time in ms. Injected for deterministic tests. */
   now: number;
   // ── Wave 4 — change-detection engagement (all optional; when present, the drive
@@ -1501,7 +1567,20 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   } else {
     _notMonitorStreak = isMonitor ? 0 : _notMonitorStreak + 1;
   }
-  let { action } = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak, indeterminate: verdict.indeterminate });
+  // Demand: no missions / cold missions ⇒ no controller. Read best-effort — a failed
+  // read means "unknown", which keeps the always-on behaviour rather than tearing down.
+  let demand: ControllerDemand = 'active';
+  if (deps.controllerDemand) {
+    try { demand = await deps.controllerDemand(); } catch { demand = 'active'; }
+  }
+  const decided = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak, indeterminate: verdict.indeterminate, demand });
+  let { action } = decided;
+  if (decided.reason && (action === 'teardown' || (action === 'idle' && !live))) {
+    recoveryReason = recoveryReason ?? decided.reason;
+    if (action === 'teardown') {
+      deps.journal?.({ at: Date.now(), kind: 'tick', action: 'demand-teardown', demand, isMonitor, live, driveDue, record: cs?.sessionId ?? null } as never);
+    }
+  }
 
   // Launch-churn back-off: 3+ launches/resumes inside 10 min means the loop is
   // feeding a crash cycle (launch → die → launch …). Idle this tick instead —
@@ -1582,8 +1661,15 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   }
 
   if (action === 'teardown') {
+    // OWNERSHIP GUARD: another node's record is the LEADER's controller — a non-leader
+    // clearing it is the split-brain that stacked 25 controllers on 123 (2026-09-07).
+    // Leave it exactly as it is; the owner runs its own lifecycle.
+    if (cs && !controllerRecordOwnedHere(cs, deps)) {
+      deps.journal?.({ at: Date.now(), kind: 'tick', action: 'teardown-skipped-foreign', isMonitor, live, driveDue, record: cs.sessionId, ownerNode: cs.node } as never);
+      return { action: 'idle', controllerSession: cs };
+    }
     if (cs) {
-      await deps.teardown(cs, 'not monitor (confident, debounced)');
+      await deps.teardown(cs, decided.reason ?? 'not monitor (confident, debounced)');
       await deps.putControllerSession(null);
     }
     return { action: 'teardown', controllerSession: null };
@@ -1605,9 +1691,29 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     // !live, or its bridge failed), tear down its tmux FIRST so a relaunch never stacks a second
     // controller on top of a still-running one (belt-and-suspenders with the isLive fix).
     if (cs) { try { await deps.teardown(cs, recoveryReason ?? 'relaunch: recorded controller read as not live'); } catch { /* best-effort */ } }
+    // LAUNCH GUARD: never stack a controller on top of an UNRECORDED one. Any local
+    // lmcc-* tmux that is not the record's is a stray — a previous launch whose record
+    // was lost or overwritten — and is torn down BEFORE launching, so one leader can
+    // only ever hold one controller. (The sweep above needs a record; this covers the
+    // cs === null case that stacked 25 controllers on 123, 2026-09-07.)
+    if (deps.listTmuxSessions && deps.killStrayTmux) {
+      try {
+        const strays = pickStrayControllers(await deps.listTmuxSessions(), cs?.tmux ?? null);
+        for (const s of strays) { try { await deps.killStrayTmux(s); } catch { /* per-stray best-effort */ } }
+        if (strays.length) deps.journal?.({ at: Date.now(), kind: 'tick', action: 'prelaunch-sweep', isMonitor, live, driveDue, strays } as never);
+      } catch { /* sweep is best-effort */ }
+    }
     // Launch with lastDriveAt unset so the next tick triggers a drive immediately.
     const newCs = await deps.launch();
-    await deps.putControllerSession(newCs);
+    try {
+      await deps.putControllerSession(newCs);
+    } catch (e) {
+      // An unrecorded controller is exactly what the next tick would stack another one
+      // on top of — never leave one behind. Tear it down and surface the failure.
+      try { await deps.teardown(newCs, 'launch: controller record write failed'); } catch { /* best-effort */ }
+      deps.journal?.({ at: Date.now(), kind: 'tick', action: 'launch-unrecorded', isMonitor, live, driveDue, record: newCs.sessionId, error: String((e as Error)?.message ?? e) } as never);
+      throw e;
+    }
     // A controller launched BY this process needs no restart-adopt drive later.
     deps.bootAdopt?.mark();
     return { action: 'launch', controllerSession: newCs };
@@ -2051,6 +2157,7 @@ export function registerMissionController(
         })),
       getControllerSession: () => getControllerSession(),
       putControllerSession: (cs) => putControllerSession(cs),
+      selfNodeId: () => { const c = getHubConfig(); return c.gatewayId || c.machineId || ''; },
       // Backend-neutral (see controllerIsLive): on Windows the handle is a WT tab RuntimeId,
       // not a tmux name — asking tmux read every healthy controller as dead (2026-09-05, 107).
       isLive: (cs) => controllerIsLive(cs, {
@@ -2063,6 +2170,12 @@ export function registerMissionController(
       activeMissionCount: async () => {
         const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
         return (await listActiveMissions()).length;
+      },
+      // Demand gate: no missions ⇒ no controller session; cold missions ⇒ tear it down.
+      controllerDemand: async () => {
+        const { listMissions: lm } = require('./mission-store') as typeof import('./mission-store');
+        const coldMin = getProjectSettings().missionControllerColdMin;
+        return computeControllerDemand(await lm(), Date.now(), coldMin * 60_000);
       },
       // Wave 4 — change-detection engagement deps (replaces the time-based gate above).
       safetyIntervalMin: getProjectSettings().missionControllerSafetyIntervalMin,
