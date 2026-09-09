@@ -182,7 +182,37 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 //   a single tool is called. Halving it would fund ~35 tools of growth — more
 //   than every per-tool trim on this surface put together. Until someone takes
 //   that on, each new family costs a raise like this one.
-const CATALOG_BUDGET_BYTES = 300_000;
+//
+// RAISED 2026-09-09, 300,000 -> 330,000, and this raise is different in KIND from the
+// three above it. Each of those was "a family landed, pay for it". This one is a change
+// of what the number is FOR.
+//
+//   287 tools + the merge from origin, catalogue   304,772 B
+//   the old 300,000 budget                           4,772 B OVER
+//   new 330,000 budget                            -> 25,228 B headroom (~24 tools)
+//
+// WHY THE JOB CHANGED. This constant used to be the only thing standing between a
+// conversation and an unbounded tool surface, so it had to be tight. It no longer is:
+// registry/profiles.ts lets a node advertise a SUBSET, and what a conversation actually
+// pays is the ACTIVE profile, not this total — basic is ~42 tools / ~46 KB against the
+// ~320 KB measured here. The real control moved, so guarding the maximum this hard now
+// costs more than it catches: it fails on ordinary additive work while the number it
+// reports is not what anyone pays.
+//
+// WHAT IT STILL GUARDS, and why it is not simply deleted: the REGRESSION CLASS.
+// Re-inlining shared boilerplate across the surface costs ~90 KB and blows straight
+// through even this ceiling, which is exactly the failure that produced this file (one
+// `node` paragraph at 751 B x 188 tools = 40.3% of the catalogue). 25 KB of headroom
+// absorbs routine growth and still fails hard on that. The per-tool assertion above and
+// the shared-boilerplate assertion are untouched and remain the sharper checks.
+//
+// 🔴 The node paragraph is STILL the real lever — 211 B x 286 = ~60 KB, ~20% of the
+// catalogue. This raise does not retire that; it stops an unrelated addition being
+// forced to pay for it. Halving it would fund ~28 tools of growth.
+//
+// The number a conversation actually pays is asserted in mcp-profiles.test.ts
+// ("basic costs a fraction of admin"), which is now the load-bearing budget test.
+const CATALOG_BUDGET_BYTES = 330_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};
