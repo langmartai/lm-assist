@@ -28,6 +28,7 @@
 
   <div class="tabs">
     <button class="tab on" data-tab="tools">Tools</button>
+    <button class="tab" data-tab="profile">Profile</button>
     <button class="tab" data-tab="plugins">Plugins</button>
     <button class="tab" data-tab="status">Status</button>
   </div>
@@ -48,6 +49,13 @@
       <div id="detail" class="detail empty">Select a tool on the left to see its description, implementation, settings and revision history.</div>
       <div id="out" class="out">ready</div>
     </section>
+  </div>
+
+  <!-- How many tools this node ADVERTISES. Its own tab rather than a strip on Tools: the
+       control is node-global and carries four caveats that have to be read, and a caveat
+       squeezed beside a filter row is a caveat nobody reads. -->
+  <div class="single" id="view-profile" hidden>
+    <div id="profile" class="profile">loading…</div>
   </div>
 
   <div class="single" id="view-plugins" hidden>

@@ -65,15 +65,27 @@ Three prefixes are deliberately *not* the obvious shorter ones:
 
 The view token's grant is the hard ceiling — anything outside these twelve rules 403s.
 
+🔴 **A leaf rule pins a SHAPE, not a route.** `/mcp-tools/*` `POST` was written to mean "one
+tool doc", but what it enforces is *one segment under `/mcp-tools`* — and `POST
+/mcp-tools/profile` (added to Core later; it sets how many tools this node advertises) has
+exactly that shape, so this pane could fire it before anything here mentioned it. That is why
+the **Profile** tab needed no config change, and it is the honest limit of the leaf
+discipline: a leaf rule constrains the shape a future sibling may take, it does not stop one
+from existing. The profile is a context-budget setting — it changes what `tools/list`
+*returns*, never who may call what — so exercising it from here is in scope. A future
+single-segment `POST` under `/mcp-tools` that is **not** in scope has to be excluded by name;
+the audit fixture in `core/src/ui-pages/local-tier/__tests__/grants.test.ts` is where that
+exclusion belongs.
+
 ### Which writes are held, and why
 
-The source page performs eight writes. Five are granted here; three are not. The line is one
+The source page performs nine writes. Six are granted here; three are not. The line is one
 rule, and it is not a matter of taste:
 
 > **Grant a write where no server-side locality control already exists. Withhold it where one
 > does — and say so ON THE PAGE.**
 
-**Held (5).** None of these has a server-side locality control, and the shipped web page
+**Held (6).** None of these has a server-side locality control, and the shipped web page
 already performs all of them over the hub relay, so granting them to the pane defeats nothing
 that exists:
 
@@ -91,6 +103,11 @@ that exists:
   unreachable: flipping a gate you cannot read is a coin toss on a security setting.
 - ✅ `POST /mcp-tools/:name` (override, enable/disable) and `/rollback` — audited, revved,
   reversible from the History tab, with an optimistic-concurrency pre-check.
+- ✅ `POST /mcp-tools/profile` — sets which tools this node **advertises**. Reachable under the
+  existing one-segment leaf rule (see the shape note above), and in scope because it is a
+  context budget rather than a permission: it changes what `tools/list` returns and nothing
+  about who may call what, one click reverses it, and the surface it can reach is bounded by
+  the four profiles Core defines. It is **node-global**, which is why it asks twice.
 
 **Withheld (3)** — `POST /mcp-plugins/sync-connector`, `/:name/enable`, `/:name/disable`.
 These are loopback-only server-side (`requireLoopback`, `core/src/routes/core/mcp-plugins.routes.ts`).
@@ -121,7 +138,7 @@ version, not the only version.
 
 - **Capability ledger** — above the tabs, on every tab: the three actions of the source page
   this pane cannot fire, each with what it does, why it is not here and where to run it, plus
-  the six it can. Collapsed to one line by default.
+  the seven it can. Collapsed to one line by default.
 - **Pending strip** — parked admin confirmations with **Confirm** and **Deny** per row, above
   the tabs so they are visible from every view. Polled every 15s (they expire in 10 minutes);
   the 286-row registry is not polled, which is what Refresh is for.
@@ -144,6 +161,25 @@ version, not the only version.
     Revert and Restore default), **Implementation** (module, tool definition incl.
     `inputSchema`, handler source — all read-only), **Settings** (enable/disable, the
     **admin-gate toggle**, scope/category/module), **History** (rev table with rollback).
+- **Profile** tab — the node's **tool loading profile**: which subset of tools it advertises
+  in `tools/list`. One card per profile (narrow → wide, so it reads as a cost ladder) with the
+  resolved tool count *on this node*, the description, the delta against the active profile,
+  and an amber warning naming any `unmatchedSelectors` — a selector matching nothing makes a
+  profile smaller than its description implies, and without that line the shrunken count looks
+  like somebody's deliberate choice. Switching arms on the first click and acts on the second:
+  the setting is **node-global**, so a stray click would narrow the tool surface of every other
+  session on the host.
+  - Four things the tab states, because each is a way to misread the control: it is
+    **advertise-only** (hidden tools stay callable — the admin gates and per-tool scopes are
+    the security boundary, and a profile moves neither); it is **node-global**, not a per-user
+    preference; the **per-tool registry wins** (a tool switched off on the Tools tab stays off
+    under every profile — a profile can only narrow further); and it is **not instant** (a
+    local Claude Code session picks it up within ~30s, a claude.ai connector caches
+    `tools/list` until it is refreshed).
+  - A Core that predates the feature has no `/mcp-tools/profile` route, so the GET falls
+    through to `GET /mcp-tools/:name` and 404s on a *tool* named `profile`. The tab says the
+    Core is too old rather than passing that through, which would send the reader hunting for
+    a missing tool.
 - **Plugins** tab — third-party plugins: phase, pin, declared capabilities, the namespaced
   tools each would advertise, manifest errors, and the audit tail. **Review-only, and the tab
   says so**: the missing Sync / Enable / Disable are named there, with the reason, where the
@@ -175,6 +211,14 @@ Run from the repo with the dev Core up on :3200.
   `search`, a read-only tool), then really denied and really confirmed through the pane's own
   delegated handlers; the gate is toggled on and off through the Settings tab; the gate is
   restored to its original state at the end.
+- **Profile** — the tab's three pure helpers (`sortedProfiles`, `activeRow`, `profileCard`)
+  are exercised against the real body of `GET /mcp-tools/profile`: narrow → wide ordering, the
+  input left unmutated, the active row resolved from `active` (and `null` — never an invented
+  count — when the node names a profile this build does not define), the saving stated on a
+  narrower card, the arm → switch → in-flight button sequence, no switch offered on the active
+  card, and the `unmatchedSelectors` warning. The write itself is exercised end to end against
+  the dev Core: `POST {profile:"basic"}` (returns the same shape, recounted), `POST` of an
+  unknown name (`UNKNOWN_PROFILE`, listing the known ones), then restored to `admin`.
 - **Escaping** — the same shim is fed hostile `tool`, `summary`, `id`, response and error
   bodies. Every `<…>` the pane emits is parsed and required to be its own markup with no
   event-handler attribute. (Test the tags, not the substring: `onerror=` legitimately appears

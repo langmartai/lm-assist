@@ -1,14 +1,20 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Wrench, RefreshCw, ShieldAlert, Puzzle, PlugZap, Activity } from 'lucide-react';
+import { Wrench, RefreshCw, ShieldAlert, Puzzle, PlugZap, Activity, Layers } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
-import { errText, timeAgo } from '@/components/memory/format';
+import { ConfirmButton, errText, timeAgo } from '@/components/memory/format';
 import {
   groupTools,
   summarizeCounts,
   toolBadges,
   truncateDescription,
+  activeProfileRow,
+  profileDeltaLabel,
+  profileUnavailableMessage,
+  sortProfiles,
+  unmatchedSelectorNote,
+  type McpProfileStatus,
   type McpToolRow,
   type ToolRegistryDocView,
   type ToolScope,
@@ -63,6 +69,132 @@ function McpStatusPanel({ status, loading, onRefresh }: { status: McpStatus | nu
   );
 }
 
+/**
+ * The tool-loading profile: how many tools this node ADVERTISES in `tools/list`.
+ *
+ * Worth a panel of its own because the cost is invisible and paid unconditionally —
+ * `tools/list` is charged to every conversation before it calls anything (admin ≈ 320
+ * tools ≈ 80K tokens here, basic ≈ 42 ≈ 12K). The four caveats at the bottom are not
+ * decoration: each one is a way an operator can read this control as something it is
+ * not (a permission, a per-user setting, an override, an instant change).
+ */
+function ProfilePanel({
+  status,
+  loading,
+  error,
+  busy,
+  onRefresh,
+  onSelect,
+}: {
+  status: McpProfileStatus | null;
+  loading: boolean;
+  error: string | null;
+  /** Name of the profile currently being switched to, if any. */
+  busy: string | null;
+  onRefresh: () => void;
+  onSelect: (name: string) => void;
+}) {
+  const active = activeProfileRow(status);
+  const rows = status ? sortProfiles(status.profiles) : [];
+  return (
+    <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--color-border-default)', background: 'var(--color-canvas-subtle)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>Tool loading profile</span>
+        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+          How many tools this node advertises in <code style={{ fontFamily: 'var(--font-mono)' }}>tools/list</code> — the fixed cost every conversation pays before it calls anything.
+        </span>
+        <button className="btn btn-xs btn-ghost" style={{ marginLeft: 'auto' }} onClick={onRefresh} disabled={loading}>
+          <RefreshCw size={11} className={loading ? 'animate-spin' : undefined} /> Refresh
+        </button>
+      </div>
+
+      {error && (
+        <div style={{ fontSize: 11, color: 'rgba(248,113,113,0.95)' }}>{error}</div>
+      )}
+
+      {!status && !error ? (
+        <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>Loading…</div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {rows.map((p) => {
+            const isActive = p.name === status?.active;
+            const delta = profileDeltaLabel(active, p);
+            const unmatched = unmatchedSelectorNote(p);
+            return (
+              <div
+                key={p.name}
+                style={{
+                  flex: '1 1 260px',
+                  minWidth: 240,
+                  padding: '8px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: isActive ? '1px solid var(--color-accent)' : '1px solid var(--color-border-default)',
+                  background: isActive ? 'var(--color-bg-elevated)' : 'transparent',
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--color-text-primary)' }}>{p.name}</span>
+                  <span className="badge badge-outline" style={{ fontSize: 9 }}>{p.tools} tools</span>
+                  {isActive ? (
+                    <span className="badge" style={{ fontSize: 9, ...SCOPE_BADGE_STYLE.read }}>active</span>
+                  ) : busy ? (
+                    <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+                      {busy === p.name ? 'Switching…' : ''}
+                    </span>
+                  ) : (
+                    // The page's own two-click confirm (same one Disable and Restore default
+                    // use). This switch is node-global, so a stray click would narrow the tool
+                    // surface of every other session on this host.
+                    <span style={{ marginLeft: 'auto' }}>
+                      <ConfirmButton
+                        label="Use"
+                        confirmLabel={`Switch this node to ${p.name}?`}
+                        onConfirm={() => onSelect(p.name)}
+                        className="btn btn-xs btn-ghost"
+                      />
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginTop: 4 }}>{p.description}</div>
+                {delta && (
+                  <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 3 }}>{delta}</div>
+                )}
+                {unmatched && (
+                  <div style={{ fontSize: 10, color: 'rgba(251,191,36,0.95)', marginTop: 3 }}>{unmatched}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {status && (
+        <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+          {status.setAt
+            ? `Active profile "${status.active}" set ${timeAgo(status.setAt)}${status.setBy ? ` by ${status.setBy}` : ''}.`
+            : `Active profile "${status.active}" — never changed on this node (admin is the default: nothing is hidden until someone chooses).`}
+        </div>
+      )}
+
+      <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>
+        <div>
+          <b>Advertise-only.</b> A narrower profile changes what is <i>listed</i>, not what may run — hidden tools stay callable.
+          It secures nothing: the admin gates on this page and the per-tool scopes are the security boundary.
+        </div>
+        <div>
+          <b>Node-global.</b> One setting for the whole node, not a per-user preference — every other session on this host sees the surface you pick here.
+        </div>
+        <div>
+          <b>The per-tool registry wins.</b> A tool switched off on this page stays off in every profile; a profile can only narrow further, never re-enable.
+        </div>
+        <div>
+          <b>Not instant.</b> A local Claude Code session picks the change up within ~30s; a claude.ai connector caches <code style={{ fontFamily: 'var(--font-mono)' }}>tools/list</code> and needs a <code style={{ fontFamily: 'var(--font-mono)' }}>refresh_connector_tools</code> (or the Sync button) to see it.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface ToolListResponse {
   tools?: McpToolRow[];
   orphanDocs?: ToolRegistryDocView[];
@@ -104,6 +236,13 @@ export function ScopeBadge({ scope }: { scope: ToolScope }) {
   );
 }
 
+/** fetchJson already unwraps the {success,data,meta} envelope; tolerate a still-wrapped
+ *  body from other transports. Same one-liner fetchAll/loadStatus inline, named once for
+ *  the profile calls below. */
+function unwrapBody<T>(body: T | { data?: T }): T {
+  return ((body as { data?: T })?.data ?? body) as T;
+}
+
 /**
  * /mcp-tools — first-class management page for the MCP tool registry: every tool
  * this Core advertises (both MCP surfaces share one list), grouped by category,
@@ -137,6 +276,12 @@ export function McpToolsPage() {
   const [showStatus, setShowStatus] = useState(false);
   const [status, setStatus] = useState<McpStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
+  // Tool loading profile: how many tools this node advertises in tools/list.
+  const [showProfile, setShowProfile] = useState(false);
+  const [profile, setProfile] = useState<McpProfileStatus | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileBusy, setProfileBusy] = useState<string | null>(null);
   const seqRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
@@ -227,6 +372,41 @@ export function McpToolsPage() {
     setStatusLoading(false);
   }, [apiFetch]);
 
+  // GET /mcp-tools/profile. Fetched once on mount rather than in the 10s poll: the header
+  // needs to name the active profile, but a profile changes when someone changes it — not
+  // on a timer — and this page already spends three requests a tick.
+  const loadProfile = useCallback(async () => {
+    setProfileLoading(true);
+    try {
+      setProfile(unwrapBody(await apiFetch<McpProfileStatus>('/mcp-tools/profile')));
+      setProfileError(null);
+    } catch (e) {
+      // Keep the last-known profile rather than blanking it: a failed read is not evidence
+      // that the node switched to anything.
+      setProfileError(profileUnavailableMessage(errText(e)));
+    } finally {
+      setProfileLoading(false);
+    }
+  }, [apiFetch]);
+
+  // POST /mcp-tools/profile returns the same body GET does, so the new active profile and
+  // the recounted sizes land without a re-read. On failure re-read anyway — the write may
+  // have landed and only the response been lost, and a stale card would claim otherwise.
+  const selectProfile = useCallback(async (name: string) => {
+    setProfileBusy(name);
+    setProfileError(null);
+    try {
+      setProfile(unwrapBody(await apiFetch<McpProfileStatus>('/mcp-tools/profile', { method: 'POST', body: { profile: name } })));
+    } catch (e) {
+      setProfileError(`Switch to "${name}" failed: ${errText(e)}`);
+      await loadProfile();
+    } finally {
+      setProfileBusy(null);
+    }
+  }, [apiFetch, loadProfile]);
+
+  useEffect(() => { void loadProfile(); }, [loadProfile]);
+
   const toggleStatus = useCallback(() => {
     setShowStatus((v) => {
       if (!v) void loadStatus();
@@ -274,6 +454,13 @@ export function McpToolsPage() {
             {counts.tools} tools · {counts.overridden} overridden · {counts.disabled} disabled
           </span>
           <button
+            className={`btn btn-sm ${showProfile ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setShowProfile((v) => !v)}
+            title="Tool loading profile: how many tools this node advertises in tools/list. Advertise-only — a narrower profile hides tools from the list, it does not disable them."
+          >
+            <Layers size={12} /> Profile{profile ? `: ${profile.active}` : ''}
+          </button>
+          <button
             className={`btn btn-sm ${showPlugins ? 'btn-primary' : 'btn-ghost'}`}
             onClick={() => setShowPlugins((v) => !v)}
             title="Third-party MCP plugins: review, enable/disable, checksum pin, health and audit"
@@ -315,6 +502,17 @@ export function McpToolsPage() {
         >
           {syncMsg}
         </div>
+      )}
+
+      {showProfile && (
+        <ProfilePanel
+          status={profile}
+          loading={profileLoading}
+          error={profileError}
+          busy={profileBusy}
+          onRefresh={() => void loadProfile()}
+          onSelect={(name) => void selectProfile(name)}
+        />
       )}
 
       {showStatus && (

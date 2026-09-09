@@ -119,3 +119,80 @@ export function truncateDescription(s: string, max: number): string {
   if (oneLine.length <= max) return oneLine;
   return `${[...oneLine].slice(0, max).join('')}…`;
 }
+
+// ── tool-loading profile (GET/POST /mcp-tools/profile) ────────────────────────
+// A profile names the subset of tools this node ADVERTISES in `tools/list`. It is a
+// context-budget control, not a security one: a hidden tool stays callable, and the
+// admin gate + TOOL_SCOPES remain the only boundary. The helpers below are the same
+// IO-free shape as the ones above — the page does the fetching.
+
+/** One entry of `profiles[]` in GET /mcp-tools/profile. */
+export interface McpProfileSummary {
+  name: string;
+  description: string;
+  /** How many tools this profile would advertise ON THIS NODE — resolved against the
+   *  live catalog, so it already accounts for plugins that are not installed. */
+  tools: number;
+  /** Selectors naming nothing here: a typo, or an uninstalled plugin. */
+  unmatchedSelectors: string[];
+  active: boolean;
+}
+
+/** GET /mcp-tools/profile (and the body POST returns). */
+export interface McpProfileStatus {
+  active: string;
+  setAt: number | null;
+  setBy: string | null;
+  selectors: { categories: string[]; plugins: string[] };
+  profiles: McpProfileSummary[];
+}
+
+/** Narrow first, so the list reads as a cost ladder rather than as declaration order;
+ *  equal sizes fall back to the name so the order is stable across refreshes. */
+export function sortProfiles(profiles: McpProfileSummary[]): McpProfileSummary[] {
+  return [...profiles].sort((a, b) => (a.tools !== b.tools ? a.tools - b.tools : a.name.localeCompare(b.name)));
+}
+
+/** The row for the profile the server says is active.
+ *
+ *  Trust `status.active` over the per-row `active` flag, and return null when no row
+ *  carries that name: a node running an older build can report an active profile this
+ *  build does not define, and inventing a row for it would state a tool count that was
+ *  never measured. */
+export function activeProfileRow(status: McpProfileStatus | null): McpProfileSummary | null {
+  if (!status) return null;
+  return status.profiles.find((p) => p.name === status.active) ?? null;
+}
+
+/** What switching would cost or save, relative to what is advertised now. Empty for the
+ *  active row itself and whenever the active row is unknown — a delta against a guess
+ *  would read as measured. */
+export function profileDeltaLabel(active: McpProfileSummary | null, candidate: McpProfileSummary): string {
+  if (!active || active.name === candidate.name) return '';
+  const d = candidate.tools - active.tools;
+  if (d === 0) return 'same size';
+  return d < 0 ? `${-d} fewer advertised` : `${d} more advertised`;
+}
+
+/** A profile whose selectors do not all match is SMALLER than its description implies —
+ *  say which ones missed, because the count alone looks like a deliberate choice. */
+export function unmatchedSelectorNote(p: McpProfileSummary): string | null {
+  if (!p.unmatchedSelectors?.length) return null;
+  return `${p.unmatchedSelectors.join(', ')} — ${p.unmatchedSelectors.length === 1 ? 'this selector matches' : 'these selectors match'} no tool on this node (a typo, or a plugin that is not installed), so this profile advertises less than its description suggests.`;
+}
+
+/** Why the profile read failed, in the reader's terms.
+ *
+ *  There is one failure that does not mean what it says: a node whose Core predates the
+ *  profile feature has no `/mcp-tools/profile` route, so the GET falls through to
+ *  `GET /mcp-tools/:name` and 404s with `no advertised tool ... named "profile"`. Passed
+ *  through verbatim that sends the reader hunting for a missing TOOL. Measured against
+ *  this box's prod Core (0.2.4, npm) on 2026-09-09 — the route is dev-only until the next
+ *  release, so this is the CURRENT answer on a prod node, not a hypothetical. */
+export function profileUnavailableMessage(raw: string): string {
+  if (/named\s+["'“]?profile/i.test(raw)) {
+    return 'This node’s Core has no /mcp-tools/profile route — it predates the profile feature. '
+      + 'The node advertises every tool (the admin default); the control appears once it is upgraded.';
+  }
+  return `Profile unavailable: ${raw}`;
+}

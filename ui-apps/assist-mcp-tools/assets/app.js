@@ -5,7 +5,8 @@
  * GRANT — twelve rules. Every WRITE is a LEAF rule naming exactly one route, never a
  * subtree, so no future sibling route can inherit this pane's authority:
  *   node:/mcp-tools                    [GET]       list + detail + history + overlay + rev
- *   node:/mcp-tools/{id}               [POST] leaf description override, enable/disable
+ *   node:/mcp-tools/{id}               [POST] leaf description override, enable/disable,
+ *                                                  AND the tool loading profile — see below
  *   node:/mcp-tools/{id}/rollback      [POST] leaf roll a tool doc back to an earlier rev
  *   node:/mcp-plugins                  [GET]       third-party plugin review + audit tail
  *   node:/mcp/access                   [GET]       admin-gate state
@@ -25,6 +26,16 @@
  * path. Both evaluators implement this identically (`core/src/ui-pages/local-tier/
  * grants.ts` and `LangMartDesign/ui-gateway/src/viewtoken/grant.ts`); a stale evaluator
  * that did not know `*` treats it as a literal segment and DENIES — fail-closed.
+ *
+ * 🔴 A LEAF RULE IS NOT A ROUTE. `/mcp-tools/{id}` was written to mean "one tool doc", but it
+ * pins a SHAPE — one segment under /mcp-tools — and `POST /mcp-tools/profile` (added to Core
+ * later; sets which tools this node advertises) has exactly that shape, so this pane could
+ * already fire it before anything here mentioned it. That is why the Profile tab needs no
+ * config change, and it is also the limit of the leaf discipline worth stating out loud: a
+ * leaf rule narrows the SHAPE a future sibling may take, it does not stop one from existing.
+ * The profile is a context-budget setting, not a security one — it changes what tools/list
+ * RETURNS and nothing about who may call what — so this pane exercising it is in scope. A
+ * future single-segment POST under /mcp-tools that is NOT in scope must be excluded by name.
  *
  * A grant prefix stops at a SEGMENT boundary, so `/mcp` would cover /mcp/access and
  * /mcp/pending but NOT /mcp-tools or /mcp-plugins (next char is '-', not '/'). Hence the
@@ -57,6 +68,9 @@
  *   GET  /mcp-tools/:name/history → data = { history:[…] }   (already newest-first)
  *   POST /mcp-tools/:name         → data = { doc, changed, knownTool }
  *   POST /mcp-tools/:name/rollback→ data = { doc }
+ *   GET  /mcp-tools/profile       → data = { active, setAt, setBy, selectors:{categories,plugins},
+ *                                                 profiles:[{ name, description, tools, unmatchedSelectors, active }] }
+ *   POST /mcp-tools/profile {profile} → data = the SAME shape (sizes recounted) — no re-read needed
  *   GET  /mcp/access              → data = { tools:[{ tool, scope, adminGate, description }] }
  *                                   ⚠ the key is `tool`, NOT `name` — joining on `name` silently yields nothing
  *   GET  /mcp/pending             → data = { pending:[{ id, tool, summary, createdAt, expiresAt }] }
@@ -75,7 +89,7 @@
 
   // ── the capability ledger, rendered IN the pane ───────────────────────────
   // The source page (web/src/components/mcp-tools/McpToolsPage.tsx + ToolDetail +
-  // PluginsPanel) performs eight writes. This list names all eight and states, on the page
+  // PluginsPanel) performs nine writes. This list names all nine and states, on the page
   // itself, which ones this pane can fire and which it cannot — because a capability gap a
   // reader has to find in a README is a gap they discover the moment they needed it.
   var HELD = [
@@ -85,6 +99,8 @@
     ['Description override', 'POST /mcp-tools/{name}', 'Edits the served description; every write is actored and revved.'],
     ['Enable / disable a tool', 'POST /mcp-tools/{name}', 'Live on both MCP surfaces; protected tools refuse.'],
     ['Roll a tool doc back', 'POST /mcp-tools/{name}/rollback', 'Restores an earlier rev from the History tab.'],
+    ['Tool loading profile', 'POST /mcp-tools/profile', 'Sets how many tools this NODE advertises in tools/list — '
+      + 'node-global, and advertise-only: hidden tools stay callable.'],
   ];
   var WITHHELD = [
     {
@@ -233,6 +249,12 @@
     plugins: null,                    // GET /mcp-plugins → data
     pluginOpen: null,                 // expanded plugin name
     audit: [],                        // GET /mcp-plugins/:name/audit → data.entries
+    profile: null,                    // GET /mcp-tools/profile → data
+    profileErr: '',                   // the server's own text when that read fails
+    profileBusy: '',                  // name of the profile a POST is switching to
+    profileArmed: '',                 // two-click arming, kept out of state.armed so a detail
+                                      // repaint cannot disarm a node-global switch mid-decision
+    profileMsg: null,                 // { text, err } — the OUTCOME of the last switch
     status: null,                     // { core, plugins, hub, connector } — each may hold {error}
     seq: 0,                           // drops a stale detail response for a previously-selected tool
   };
@@ -992,6 +1014,151 @@
     });
   }
 
+  // ── profile ───────────────────────────────────────────────────────────────
+  // How many tools this node ADVERTISES in tools/list. That list is a fixed cost every
+  // conversation pays before it calls anything (admin ≈ 320 tools here, basic ≈ 42), so the
+  // saving is real — but the control is easy to misread as four other things, and each of
+  // the four notes at the bottom of this tab exists to deny one of them.
+
+  /** Narrow → wide, so the cards read as a cost ladder rather than as declaration order;
+   *  equal sizes fall back to the name so the order does not shuffle between refreshes. */
+  function sortedProfiles(list) {
+    return (list || []).slice().sort(function (a, b) {
+      return a.tools !== b.tools ? a.tools - b.tools : String(a.name).localeCompare(String(b.name));
+    });
+  }
+  /** The row the server says is ACTIVE. Trust `active` (the name) over each row's flag, and
+   *  return null when no row carries it: a node can report a profile this build does not
+   *  define, and inventing a row for it would print a tool count nobody measured. */
+  function activeRow(d) {
+    if (!d) return null;
+    var rows = d.profiles || [];
+    for (var i = 0; i < rows.length; i++) if (rows[i].name === d.active) return rows[i];
+    return null;
+  }
+  function profileCard(p, cur) {
+    var isCur = !!cur && p.name === cur.name;
+    var delta = '';
+    if (cur && !isCur) {
+      var dlt = p.tools - cur.tools;
+      delta = dlt === 0 ? 'same size as the active profile'
+        : dlt < 0 ? (-dlt) + ' fewer tools advertised' : dlt + ' more tools advertised';
+    }
+    // Two-click arming, same shape as the parked-call decisions: this switch is node-global,
+    // so a stray click on the wrong card would narrow the tool surface of every other session
+    // on this host. The busy state is a DISABLED button, not a bare label, so the row keeps
+    // its shape (and its right edge) while a POST is in flight.
+    var armed = state.profileArmed === p.name;
+    var act = isCur ? ''
+      : state.profileBusy === p.name ? btn('prof-busy', 'switching…', 'ghost sm r', p.name, true)
+      : armed
+        ? btn('prof-set', 'Switch this node to ' + p.name, 'danger r', p.name, !!state.profileBusy)
+          + btn('prof-cancel', 'Cancel', 'ghost sm', p.name, !!state.profileBusy)
+        : btn('prof-arm', 'Use', 'ghost sm r', p.name, !!state.profileBusy);
+    return '<div class="card"><div class="card-top"><span class="mono b">' + esc(p.name) + '</span>'
+      + '<span class="pill">' + esc(p.tools) + ' tools</span>'
+      + (isCur ? '<span class="pill cur">active</span>' : '')
+      + act + '</div>'
+      + '<div class="card-b">' + esc(p.description) + '</div>'
+      + (delta ? '<div class="card-b dim">' + esc(delta) + '</div>' : '')
+      // A selector that matches nothing makes a profile SMALLER than its description says.
+      // Without this line the shrunken count looks like somebody's deliberate choice.
+      + ((p.unmatchedSelectors || []).length
+          ? '<div class="note warn">' + esc(p.unmatchedSelectors.join(', ')) + ' — '
+            + (p.unmatchedSelectors.length === 1 ? 'this selector matches' : 'these selectors match')
+            + ' no tool on this node (a typo, or a plugin that is not installed), so this profile advertises '
+            + 'less than its description suggests.</div>'
+          : '')
+      + '</div>';
+  }
+  function paintProfile() {
+    var el = $('profile');
+    var d = state.profile;
+    if (!d && !state.profileErr) { el.innerHTML = '<div class="empty-list">loading…</div>'; reportHeight(); return; }
+    var cur = activeRow(d);
+    var m = state.profileMsg;
+    el.innerHTML = '<div class="ptop">Tool loading profile'
+      + (d ? ' · active: <span class="mono b">' + esc(d.active) + '</span>'
+           + (cur ? ' · ' + esc(cur.tools) + ' tools advertised' : '') : '')
+      + btn('prof-reload', 'Refresh', 'ghost sm r') + '</div>'
+      + (state.profileErr ? '<div class="note warn">' + esc(state.profileErr) + '</div>' : '')
+      + (m ? '<div class="note ' + (m.err ? 'warn' : '') + '">' + esc(m.text) + '</div>' : '')
+      + (d
+          ? (d.setAt
+              ? '<div class="hint">Set ' + esc(ago(d.setAt)) + (d.setBy ? ' by ' + esc(d.setBy) : '') + '.</div>'
+              : '<div class="hint">Never changed on this node — <span class="mono">admin</span> is the default, so '
+                + 'nothing is hidden until someone chooses.</div>')
+            + sortedProfiles(d.profiles).map(function (p) { return profileCard(p, cur); }).join('')
+          : '')
+      + '<div class="note warn"><span class="b">Advertise-only.</span> A narrower profile changes what tools/list '
+      + 'RETURNS — not what may run. Every hidden tool stays callable by any client that knows its name. This is a '
+      + 'context budget, not access control: the admin gates on the Tools tab and each tool’s scope are the security '
+      + 'boundary, and a profile moves neither.</div>'
+      + '<div class="note"><span class="b">Node-global.</span> One setting for the whole node, not a per-user '
+      + 'preference — every other session on this host sees the surface chosen here, including sessions already '
+      + 'running.</div>'
+      + '<div class="note"><span class="b">The per-tool registry wins.</span> A tool switched off on the Tools tab '
+      + 'stays off under every profile; a profile can only narrow further, never re-enable.</div>'
+      + '<div class="note"><span class="b">Not instant.</span> A local Claude Code session picks the change up '
+      + 'within about 30s. A claude.ai connector CACHES tools/list and keeps advertising the old set until it is '
+      + 'refreshed (refresh_connector_tools, or the Sync action named in the ledger at the top of this pane).</div>';
+    reportHeight();
+  }
+  function loadProfile() {
+    return api('node', '/mcp-tools/profile').then(function (r) {
+      if (!r.ok) {
+        // Keep the last-known profile and SAY the read failed: a failed GET is not evidence
+        // that the node switched to anything, and blanking the tab would imply it had.
+        // One failure does not mean what it says: a Core that predates this feature has no
+        // /mcp-tools/profile route, so the GET falls through to GET /mcp-tools/:name and 404s
+        // on a TOOL named "profile" — verbatim, that sends the reader hunting for a tool.
+        state.profileErr = /named ["“']?profile/i.test(r.error.message || '')
+          ? 'This node’s Core has no /mcp-tools/profile route — it predates the profile feature. '
+            + 'The node advertises every tool (the admin default); this tab works once it is upgraded.'
+          : 'Could not read the profile — ' + r.error.code + ': ' + r.error.message;
+        paintProfile();
+        return;
+      }
+      clearFatal();
+      state.profileErr = '';
+      state.profile = r.data || null;
+      paintProfile();
+    });
+  }
+  /** POST /mcp-tools/profile {profile} answers with the same body GET does, sizes recounted,
+   *  so the switch lands without a re-read. On failure re-read anyway: the write may have
+   *  landed with only the response lost, and a card left claiming the old profile would be a
+   *  confident lie about what every other session on this node is now seeing. */
+  function setProfile(name) {
+    if (state.profileBusy || !name) return;
+    state.profileBusy = name;
+    state.profileArmed = '';
+    state.profileMsg = null;
+    paintProfile();
+    say('switching this node to the ' + name + ' profile…');
+    api('node', '/mcp-tools/profile', { method: 'POST', body: { profile: name } }).then(function (r) {
+      state.profileBusy = '';
+      if (!r.ok) {
+        state.profileMsg = { text: 'Switch to "' + name + '" failed — ' + r.error.code + ': ' + r.error.message
+          + '. Re-reading what this node actually advertises…', err: true };
+        say('profile switch failed — ' + r.error.message, true);
+        paintProfile();
+        return loadProfile();
+      }
+      state.profile = r.data || state.profile;
+      var cur = activeRow(state.profile);
+      state.profileMsg = {
+        text: 'This node now advertises the ' + name + ' profile'
+          + (cur ? ' (' + cur.tools + ' tools)' : '')
+          + '. Every session on this host is affected. A local Claude Code session sees it within ~30s; a claude.ai '
+          + 'connector keeps its cached tool list until it is refreshed.',
+        err: false,
+      };
+      paintProfile();
+      say('profile is now ' + name);
+    });
+  }
+
   // ── status ────────────────────────────────────────────────────────────────
   function statusRow(label, ok, detail) {
     return '<div class="srow"><span class="sdot ' + (ok === null ? 'unk' : ok ? 'ok' : 'bad') + '"></span>'
@@ -1047,15 +1214,17 @@
   function switchTab(t) {
     state.tab = t;
     clearFatal();                                  // a fatal from one tab must not pin over another
-    ['tools', 'plugins', 'status'].forEach(function (n) { $('view-' + n).hidden = n !== t; });
+    ['tools', 'profile', 'plugins', 'status'].forEach(function (n) { $('view-' + n).hidden = n !== t; });
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) {
       b.classList.toggle('on', b.dataset.tab === t);
     });
+    if (t === 'profile' && !state.profile) loadProfile();
     if (t === 'plugins' && !state.plugins) loadPlugins();
     if (t === 'status' && !state.status) loadStatus();
     reportHeight();
   }
   function reloadActive() {
+    if (state.tab === 'profile') return loadProfile();
     if (state.tab === 'plugins') return loadPlugins();
     if (state.tab === 'status') return loadStatus();
     return loadList();
@@ -1150,6 +1319,16 @@
     state.audit = [];
     paintPlugins();
     loadAudit(name);
+  });
+  // Delegated like every other tab: the cards are replaced on each paint, so a per-node
+  // binding would go stale the first time a switch lands.
+  $('profile').addEventListener('click', function (e) {
+    var act = e.target.dataset && e.target.dataset.act;
+    if (!act) return;
+    if (act === 'prof-reload') { state.profileMsg = null; loadProfile(); return; }
+    if (act === 'prof-arm') { state.profileArmed = e.target.dataset.arg || ''; paintProfile(); return; }
+    if (act === 'prof-cancel') { state.profileArmed = ''; paintProfile(); return; }
+    if (act === 'prof-set') { setProfile(e.target.dataset.arg || ''); return; }
   });
   $('status').addEventListener('click', function (e) {
     if (e.target.dataset && e.target.dataset.act === 'status-reload') loadStatus();

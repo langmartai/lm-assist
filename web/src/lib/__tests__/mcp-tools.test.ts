@@ -10,7 +10,14 @@ import {
   summarizeCounts,
   revConflictMessage,
   truncateDescription,
+  sortProfiles,
+  activeProfileRow,
+  profileDeltaLabel,
+  profileUnavailableMessage,
+  unmatchedSelectorNote,
   type McpToolRow,
+  type McpProfileStatus,
+  type McpProfileSummary,
 } from '../mcp-tools';
 
 function row(partial: Partial<McpToolRow> & { name: string }): McpToolRow {
@@ -101,5 +108,104 @@ describe('truncateDescription astral safety', () => {
     const lone = Array.from(out).filter((ch) => ch.length === 1 && /[\uD800-\uDFFF]/.test(ch));
     expect(lone).toEqual([]);
     expect(out.endsWith('…')).toBe(true);
+  });
+});
+
+// ── tool loading profile ─────────────────────────────────────────────────────
+// Shapes taken from a live GET /mcp-tools/profile on this node (dev Core :3200).
+
+function prof(partial: Partial<McpProfileSummary> & { name: string }): McpProfileSummary {
+  return { description: 'd', tools: 10, unmatchedSelectors: [], active: false, ...partial };
+}
+
+function status(partial: Partial<McpProfileStatus> = {}): McpProfileStatus {
+  return {
+    active: 'admin',
+    setAt: null,
+    setBy: null,
+    selectors: { categories: ['core', 'session'], plugins: ['ext__langmart'] },
+    profiles: [
+      prof({ name: 'basic', tools: 42 }),
+      prof({ name: 'langmart', tools: 75 }),
+      prof({ name: 'extended', tools: 168 }),
+      prof({ name: 'admin', tools: 320, active: true }),
+    ],
+    ...partial,
+  };
+}
+
+describe('sortProfiles', () => {
+  it('orders narrow → wide so the list reads as a cost ladder', () => {
+    const out = sortProfiles(status().profiles);
+    expect(out.map((p) => p.name)).toEqual(['basic', 'langmart', 'extended', 'admin']);
+  });
+  it('breaks ties on the name so the order is stable across refreshes', () => {
+    const out = sortProfiles([prof({ name: 'zeta', tools: 5 }), prof({ name: 'alpha', tools: 5 })]);
+    expect(out.map((p) => p.name)).toEqual(['alpha', 'zeta']);
+  });
+  it('does not mutate the input', () => {
+    const rows = [prof({ name: 'b', tools: 9 }), prof({ name: 'a', tools: 1 })];
+    sortProfiles(rows);
+    expect(rows.map((p) => p.name)).toEqual(['b', 'a']);
+  });
+});
+
+describe('activeProfileRow', () => {
+  it('returns the row named by status.active', () => {
+    expect(activeProfileRow(status())?.name).toBe('admin');
+  });
+  it('trusts status.active over a stale per-row flag', () => {
+    const s = status({ active: 'basic' }); // rows still flag admin as active
+    expect(activeProfileRow(s)?.name).toBe('basic');
+  });
+  it('returns null for an active profile this build does not define, rather than inventing a count', () => {
+    expect(activeProfileRow(status({ active: 'from-a-newer-build' }))).toBeNull();
+    expect(activeProfileRow(null)).toBeNull();
+  });
+});
+
+describe('profileDeltaLabel', () => {
+  const active = prof({ name: 'admin', tools: 320 });
+  it('is empty for the active row itself', () => {
+    expect(profileDeltaLabel(active, active)).toBe('');
+  });
+  it('is empty when the active row is unknown — a delta against a guess reads as measured', () => {
+    expect(profileDeltaLabel(null, prof({ name: 'basic', tools: 42 }))).toBe('');
+  });
+  it('counts down for a narrower profile and up for a wider one', () => {
+    expect(profileDeltaLabel(active, prof({ name: 'basic', tools: 42 }))).toBe('278 fewer advertised');
+    expect(profileDeltaLabel(prof({ name: 'basic', tools: 42 }), active)).toBe('278 more advertised');
+  });
+  it('says so when two different profiles resolve to the same size on this node', () => {
+    expect(profileDeltaLabel(active, prof({ name: 'other', tools: 320 }))).toBe('same size');
+  });
+});
+
+describe('unmatchedSelectorNote', () => {
+  it('is null when every selector matched', () => {
+    expect(unmatchedSelectorNote(prof({ name: 'basic' }))).toBeNull();
+  });
+  it('names the selectors that matched nothing', () => {
+    const note = unmatchedSelectorNote(prof({ name: 'langmart', unmatchedSelectors: ['ext__langmart'] }));
+    expect(note).toContain('ext__langmart');
+    expect(note).toContain('this selector matches');
+  });
+  it('pluralises for more than one', () => {
+    const note = unmatchedSelectorNote(prof({ name: 'x', unmatchedSelectors: ['ext__a', 'typo'] }));
+    expect(note).toContain('ext__a, typo');
+    expect(note).toContain('these selectors match');
+  });
+});
+
+describe('profileUnavailableMessage', () => {
+  it('translates the older-Core fall-through, which 404s on a TOOL named "profile"', () => {
+    // Verbatim from this box's prod Core (:3100, 0.2.4) on 2026-09-09.
+    const raw = 'no advertised tool or registry doc named "profile"';
+    const msg = profileUnavailableMessage(raw);
+    expect(msg).toContain('predates the profile feature');
+    expect(msg).not.toContain('registry doc');
+  });
+  it('passes any other failure through unchanged, so a real error is not disguised', () => {
+    expect(profileUnavailableMessage('ECONNREFUSED')).toBe('Profile unavailable: ECONNREFUSED');
   });
 });
