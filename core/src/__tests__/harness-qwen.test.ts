@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildQwenArgs, buildQwenEnv, parseQwenStream } from '../harness/qwen';
+import { buildQwenArgs, buildQwenEnv, parseQwenStream, qwenRunHome } from '../harness/qwen';
 import type { AgentExecuteRequest } from '../types/agent-api';
 import type { ProviderProfile } from '../harness/provider-config';
 
@@ -17,7 +17,7 @@ const profile: ProviderProfile = {
 
 test('argv requests machine-readable output and unattended approval', () => {
   const args = buildQwenArgs(req(), 'vendor/model:free');
-  assert.deepEqual(args.slice(0, 2), ['-p', 'do the thing']);
+  assert.deepEqual(args.slice(-2), ['--', 'do the thing'], 'prompt is the positional after --');
   assert.ok(args.includes('--output-format'));
   assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json');
   assert.equal(args[args.indexOf('--approval-mode') + 1], 'yolo');
@@ -32,19 +32,44 @@ test('the turn ceiling is always set, and the caller can raise it', () => {
   assert.equal(custom[custom.indexOf('--max-session-turns') + 1], '3');
 });
 
-test('the prompt is passed as its own argv entry, never interpolated', () => {
-  const nasty = 'fix "; rm -rf / ;" the bug';
+test('the prompt is the last argument, after --, and survives verbatim', () => {
+  // Review: `-p` is deprecated in qwen and a dash-leading value was parsed as a flag.
+  const nasty = '-x fix "; rm -rf / ;" the bug';
   const args = buildQwenArgs(req({ prompt: nasty }), 'm');
-  assert.equal(args[1], nasty, 'the prompt must survive verbatim as one argument');
+  assert.equal(args[args.length - 1], nasty, 'the prompt must survive verbatim as one argument');
+  assert.equal(args[args.length - 2], '--', 'option parsing must be closed before the prompt');
+  assert.equal(args.includes('-p'), false, 'the deprecated -p flag is gone');
   assert.equal(args.filter((a) => a === nasty).length, 1);
 });
 
-test('env carries the profile and isolates the operator local setup', () => {
-  const env = buildQwenEnv(profile, 'vendor/model:free');
-  assert.equal(env.OPENAI_BASE_URL, profile.baseUrl);
-  assert.equal(env.OPENAI_API_KEY, profile.apiKey);
-  assert.equal(env.OPENAI_MODEL, 'vendor/model:free');
-  assert.equal(env.QWEN_CODE_SAFE_MODE, 'true', 'must not inherit local hooks/extensions/MCP');
+test('env carries the profile and NOTHING else from the parent environment', () => {
+  // Review found the first version spread process.env into a child running
+  // auto-approved shell — Core's env holds encryption keys, npm and messaging tokens.
+  const canary = 'LM_TEST_SECRET_CANARY';
+  process.env[canary] = 'must-not-leak';
+  try {
+    const env = buildQwenEnv(profile, 'vendor/model:free', '/tmp/run-home');
+    assert.equal(env.OPENAI_BASE_URL, profile.baseUrl);
+    assert.equal(env.OPENAI_API_KEY, profile.apiKey);
+    assert.equal(env.OPENAI_MODEL, 'vendor/model:free');
+    assert.equal(env[canary], undefined, 'a parent secret must never reach the harness child');
+    for (const k of Object.keys(env)) {
+      assert.ok(/^(PATH|HOME|LANG|TERM|TMPDIR|QWEN_HOME|OPENAI_[A-Z_]+|FORCE_COLOR)$/.test(k), `unexpected env key leaked: ${k}`);
+    }
+  } finally {
+    delete process.env[canary];
+  }
+});
+
+test('QWEN_HOME is a per-run dir, so the operator config is not inherited and the transcript is findable', () => {
+  // `QWEN_CODE_SAFE_MODE` (the first attempt) is not a qwen variable — 0 hits in the
+  // binary. QWEN_HOME is: measured to relocate settings, MCP, hooks AND transcripts.
+  const env = buildQwenEnv(profile, 'm', '/tmp/run-home');
+  assert.equal(env.QWEN_HOME, '/tmp/run-home');
+  assert.equal(env.QWEN_CODE_SAFE_MODE, undefined, 'the fake variable must be gone');
+  const home = qwenRunHome('agent-123/../x');
+  assert.ok(home.includes('harness-runs'), 'lives under the node data dir');
+  assert.ok(!home.includes('..'), 'execution id is sanitised into the path');
 });
 
 test('a full agentic run folds into result text, turns and tool count', () => {
@@ -166,4 +191,19 @@ test('a garbage usage block cannot poison the totals with NaN', () => {
   const s = parseQwenStream(stream);
   assert.equal(Number.isFinite(s.usage.inputTokens), true, 'a non-number must not become NaN');
   assert.equal(s.usage.inputTokens, 0);
+});
+
+test('two assistant frames with the same uuid are ONE turn (qwen splits a turn across frames)', () => {
+  // Measured: the harness reported numTurns=6 on a run whose transcript had 3
+  // assistant lines — qwen emits the tool-call part and the text part as separate
+  // frames of the same turn. Frames sharing a uuid must count once.
+  const stream = [
+    JSON.stringify({ type: 'assistant', uuid: 'turn-1', message: { content: [{ type: 'tool_use', name: 'read_file', input: {} }] } }),
+    JSON.stringify({ type: 'assistant', uuid: 'turn-1', message: { content: [{ type: 'text', text: 'reading' }] } }),
+    JSON.stringify({ type: 'assistant', uuid: 'turn-2', message: { content: [{ type: 'text', text: 'done' }] } }),
+    JSON.stringify({ type: 'result', subtype: 'success', result: 'done' }),
+  ].join('\n');
+  const s = parseQwenStream(stream);
+  assert.equal(s.numTurns, 2, 'same-uuid frames are one turn');
+  assert.equal(s.toolCalls, 1, 'tool calls are still counted per block');
 });

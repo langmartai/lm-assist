@@ -521,7 +521,7 @@ export const agentExecuteToolDef = {
       prompt: { type: 'string', description: 'The task for the session.' },
       cwd: { type: 'string', description: "Working directory — MUST be under the worker's home dir." },
       model: { type: 'string', description: 'Optional model. Claude runners: opus|sonnet|haiku or claude-*.' },
-      runner: { type: 'string', description: "Harness: 'sdk' (default) | 'tmux' | 'qwen'." },
+      runner: { type: 'string', description: "Harness: 'sdk' (default) | 'tmux' | 'qwen' | 'opencode'." },
       providerProfile: { type: 'string', description: 'Provider profile name; omit for default.' },
     },
     required: ['prompt', 'cwd'],

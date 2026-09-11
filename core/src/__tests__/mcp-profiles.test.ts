@@ -127,3 +127,19 @@ test('basic costs a fraction of admin', () => {
   assert.ok(admin - basic > 200_000,
     `the saving must stay material: ${admin - basic}B`);
 });
+
+// --- review findings, 2026-09-11 ---------------------------------------------------
+
+test('an Object.prototype key is not a profile and cannot break tools/list', () => {
+  // Found in review: `PROFILE_DEFINITIONS[name]` was a bare bracket lookup, so
+  // "constructor" / "__proto__" / "toString" passed the name check, were WRITTEN to
+  // disk, and the filter then threw inside tools/list — a persistent, node-wide
+  // outage of the entire MCP surface from one POST.
+  const { getProfile } = require('../mcp-server/registry/profiles') as typeof import('../mcp-server/registry/profiles');
+  for (const bad of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    assert.equal(getProfile(bad), undefined, `"${bad}" must not resolve to a profile`);
+    // and the filter must fail OPEN, never throw
+    const out = applyProfileToToolDefs(LM_ASSIST_TOOL_DEFS as any[], bad);
+    assert.equal(out.length, LM_ASSIST_TOOL_DEFS.length, `"${bad}" must leave the surface untouched`);
+  }
+});

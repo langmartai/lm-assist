@@ -435,3 +435,29 @@ test('superseding a plugin that was never installed is a no-op', () => {
     'a fresh node has no predecessor to retire and must not report one');
   assert.equal(results.find((r) => r.name === 'new-name')!.enabled, true);
 });
+
+test('a predecessor is NOT retired when the successor failed to seed', () => {
+  // Found in review: the retire loop ran unconditionally after seedOne, so a seed
+  // that threw still switched the old plugin off — leaving the node with NEITHER,
+  // the exact case the comment beside it claimed was impossible.
+  const e = env();
+  bundlePlugin(e, 'old-name');
+  seed(e);
+  assert.equal(readState('old-name', e.stateFile).enabled, true, 'precondition');
+
+  // Index a successor whose payload is deliberately absent, so seeding it fails.
+  writeIndex(e, [{
+    name: 'new-name', version: '1.0.0',
+    checksum: 'sha256:' + 'f'.repeat(64), manifestDigest: 'sha256:' + 'f'.repeat(64),
+    supersedes: ['old-name'],
+  } as any]);
+
+  const results = seed(e);
+  const succ = results.find((r) => r.name === 'new-name');
+  assert.ok(succ && succ.enabled === false, 'precondition: the successor did not come up');
+
+  assert.equal(readState('old-name', e.stateFile).enabled, true,
+    'the predecessor must stay ON when the successor is not in place');
+  assert.equal(readState('old-name', e.stateFile).supersededBy, undefined,
+    'and must not be marked retired, so a later successful seed can still retire it');
+});

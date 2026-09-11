@@ -79,12 +79,23 @@ test('the prompt is the last argument, after --, and survives verbatim', () => {
   assert.equal(args.filter((a) => a === nasty).length, 1);
 });
 
-test('the credential travels by config file, never in the environment', () => {
-  const env = buildOpencodeEnv('/tmp/x/opencode.json');
-
-  assert.equal(env.OPENCODE_CONFIG, '/tmp/x/opencode.json');
-  const serialised = JSON.stringify(env);
-  assert.equal(serialised.includes(profile.apiKey), false, 'the key must not reach the child environment');
+test('the child env is built from scratch — a parent secret never reaches it', () => {
+  // Review flagged the previous version of this test as vacuous: buildOpencodeEnv never
+  // receives the key, so `includes(apiKey)` could not fail under ANY implementation.
+  // The real hazard is INHERITANCE — the first build spread process.env (encryption
+  // keys, npm/messaging tokens) into a child running auto-approved shell. Plant a canary.
+  const canary = 'LM_TEST_SECRET_CANARY_OC';
+  process.env[canary] = 'must-not-leak';
+  try {
+    const env = buildOpencodeEnv('/tmp/x/opencode.json');
+    assert.equal(env.OPENCODE_CONFIG, '/tmp/x/opencode.json');
+    assert.equal(env[canary], undefined, 'a parent secret must never reach the harness child');
+    for (const k of Object.keys(env)) {
+      assert.ok(/^(PATH|HOME|LANG|TERM|TMPDIR|OPENCODE_CONFIG|FORCE_COLOR)$/.test(k), `unexpected env key leaked: ${k}`);
+    }
+  } finally {
+    delete process.env[canary];
+  }
 });
 
 test('a real tool-calling run folds into text, turns, tool count and usage', () => {

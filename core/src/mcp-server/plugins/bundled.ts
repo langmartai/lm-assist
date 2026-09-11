@@ -286,16 +286,22 @@ export function seedBundledPlugins(opts: SeedOptions = {}): SeedResult[] {
   const out: SeedResult[] = [];
 
   for (const entry of index.plugins) {
+    let seeded: SeedResult;
     try {
-      out.push(seedOne(entry, sourceRoot, targetRoot, stateFile, opts));
+      seeded = seedOne(entry, sourceRoot, targetRoot, stateFile, opts);
     } catch (e) {
-      out.push({
+      seeded = {
         name: entry.name, version: entry.version, outcome: 'skipped',
         enabled: false, grantedEnv: [], detail: (e as Error).message,
-      });
+      };
     }
-    // Retire anything this entry replaced. Done AFTER the successor is in place, so a
-    // failed seed never leaves a node with neither plugin enabled.
+    out.push(seeded);
+    // Retire anything this entry replaced — but ONLY when the successor is actually
+    // in place and on. Review caught the first version running this loop
+    // unconditionally, so a seed that threw (or was skipped, or kept a local edit)
+    // would still have switched the predecessor off and left the node with NEITHER.
+    const successorLive = seeded.outcome !== 'skipped' && seeded.outcome !== 'kept-local' && seeded.enabled;
+    if (!successorLive) continue;
     for (const dead of entry.supersedes ?? []) {
       const r = retireSuperseded(dead, entry.name, targetRoot, stateFile);
       if (r) out.push(r);

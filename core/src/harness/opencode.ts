@@ -132,8 +132,21 @@ export function buildOpencodeArgs(request: AgentExecuteRequest, model: string, d
  * there, and a harness holding a credential should not also widen that hole.
  */
 export function buildOpencodeEnv(configPath: string): NodeJS.ProcessEnv {
+  // FROM SCRATCH — nothing copied from process.env. Review measured Core's own
+  // environment carrying encryption keys and npm/messaging tokens; the first version
+  // spread all of it into a child running auto-approved shell for a model. Same
+  // stance as plugins/client.ts buildPluginEnv() and the qwen harness. The provider
+  // credential reaches opencode through the 0600 config file, not the environment.
+  //
+  // NOT yet isolated from the operator's own ~/.config/opencode (MCP servers etc.) —
+  // opencode reads XDG dirs, and relocating them per run is unmeasured here, so it is
+  // not claimed. Tracked as a follow-up rather than asserted.
   return {
-    ...process.env,
+    PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    HOME: process.env.HOME ?? os.homedir(),
+    LANG: process.env.LANG ?? 'C.UTF-8',
+    TERM: 'dumb',
+    TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
     OPENCODE_CONFIG: configPath,
     FORCE_COLOR: '0',
   };

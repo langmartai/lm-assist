@@ -457,8 +457,8 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
         // Registered non-Claude harness. Must intercept BEFORE the background
         // path below, which spawns a detached `claude` CLI child and would
         // therefore run Claude for a request that named another harness.
-        // Background is not yet supported for these — say so rather than
-        // silently serving a foreground run or a Claude one.
+        // Background runs go through startHarnessBackground (in-process, not
+        // durable across a Core restart — declared as such in capabilities).
         const harness = request.runner ? getHarness(request.runner) : undefined;
         if (harness) {
           return request.background

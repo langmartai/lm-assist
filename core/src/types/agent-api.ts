@@ -493,8 +493,8 @@ export interface AgentExecuteResponse {
   tmuxSession?: string;
 
   /**
-   * Which runner produced this response. Only set when the runner was
-   * 'tmux' (callers who don't pass `runner` get the SDK and can ignore).
+   * Which runner produced this response. Set by every non-SDK runner ('tmux'
+   * and each registered harness); absent means the default Claude Agent SDK.
    */
   runner?: HarnessId;
 

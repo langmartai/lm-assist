@@ -14,6 +14,10 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
+import { getDataDir } from '../utils/path-utils';
 import type {
   AgentExecuteRequest,
   AgentExecuteResponse,
@@ -47,7 +51,6 @@ const EMPTY_USAGE: AgentTokenUsage = {
  */
 export function buildQwenArgs(request: AgentExecuteRequest, model: string): string[] {
   const args = [
-    '-p', request.prompt,
     '--output-format', 'stream-json',
     // yolo auto-approves TOOL CALLS only. It is not a sandbox: qwen still runs
     // shell and edits at this process's privilege level.
@@ -55,28 +58,52 @@ export function buildQwenArgs(request: AgentExecuteRequest, model: string): stri
     '--max-session-turns', String(request.maxTurns ?? DEFAULT_MAX_TURNS),
   ];
   if (model) args.push('-m', model);
+  // The prompt goes LAST, as a POSITIONAL after `--`. Two reasons, both found in
+  // review: qwen's own --help marks `-p/--prompt` DEPRECATED ("use the positional
+  // prompt instead; this flag will be removed"), and a `-p` value beginning with a
+  // dash was parsed as a flag. `--` ends option parsing, so a prompt like
+  // "-x fix the bug" survives verbatim (measured: it parses and runs). Same shape
+  // the OpenCode harness already uses.
+  args.push('--', request.prompt);
   return args;
 }
 
 /**
- * Build the child environment.
+ * Build the child environment FROM SCRATCH.
  *
- * Assembled explicitly rather than by spreading caller-supplied values over
- * process.env: the generic `options.env` seam has no deny-list, so a caller can
- * override PATH/HOME there. A harness that is handed a credential should not also
- * widen that hole.
+ * Nothing is copied from process.env. Review measured what Core's own environment
+ * carried — SERVER_ENCRYPTION_KEY, NPM_TOKEN, CLAUDE_CODE_MESSAGING_TOKEN, hub keys —
+ * and the first version spread all of it into a child that runs auto-approved shell
+ * for a model. One `env` from the agent would have exfiltrated every one. Same stance
+ * as plugins/client.ts buildPluginEnv(): the child gets exactly what it needs.
+ *
+ * QWEN_HOME is the REAL isolation knob (measured: it relocates the entire ~/.qwen
+ * root — settings, MCP servers, hooks, extensions, AND the projects/<cwd>/chats
+ * transcripts). The first version set a `QWEN_CODE_SAFE_MODE` that qwen does not
+ * read at all — zero occurrences in the binary — so the run silently inherited the
+ * operator's whole config while claiming not to. Pointing QWEN_HOME at a per-run dir
+ * gives a fresh config AND makes the transcript findable by execution id:
+ *   <runHome>/projects/<cwd-with-slashes-as-dashes>/chats/<sessionId>.jsonl
  */
-export function buildQwenEnv(profile: ProviderProfile, model: string): NodeJS.ProcessEnv {
+export function buildQwenEnv(profile: ProviderProfile, model: string, runHome: string): NodeJS.ProcessEnv {
   return {
-    ...process.env,
+    PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    HOME: process.env.HOME ?? os.homedir(),
+    LANG: process.env.LANG ?? 'C.UTF-8',
+    TERM: 'dumb',
+    TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
+    QWEN_HOME: runHome,
     OPENAI_BASE_URL: profile.baseUrl,
     OPENAI_API_KEY: profile.apiKey,
     OPENAI_MODEL: model,
-    // Ignore the operator's own qwen hooks/extensions/MCP servers. An agent run
-    // triggered through lm-assist should not inherit a developer's local setup.
-    QWEN_CODE_SAFE_MODE: 'true',
     FORCE_COLOR: '0',
   };
+}
+
+/** Per-run home for qwen under the node's data dir, keyed by execution id. Stays after
+ *  the run so the transcript can be inspected; nothing else on the node reads it. */
+export function qwenRunHome(executionId: string): string {
+  return path.join(getDataDir(), 'harness-runs', executionId.replace(/[^A-Za-z0-9_-]+/g, '_'), 'qwen-home');
 }
 
 export interface QwenStreamSummary {
@@ -140,6 +167,7 @@ export function parseQwenStream(stdout: string): QwenStreamSummary {
     usageReported: false,
   };
   const texts: string[] = [];
+  const seenTurnIds = new Set<string>();
 
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
@@ -155,7 +183,15 @@ export function parseQwenStream(stdout: string): QwenStreamSummary {
     if (event.session_id && !out.sessionId) out.sessionId = String(event.session_id);
 
     if (event.type === 'assistant') {
-      out.numTurns += 1;
+      // One model turn can arrive as MORE THAN ONE `assistant` frame (qwen emits the
+      // tool-call part and the text part separately). Counting frames reported exactly
+      // 2x the real turn count — measured against the on-disk transcript: 3 assistant
+      // lines, harness said 6. Dedupe on the frame's uuid when it carries one.
+      const id = typeof event.uuid === 'string' ? event.uuid : (typeof event.message?.id === 'string' ? event.message.id : null);
+      if (!id || !seenTurnIds.has(id)) {
+        if (id) seenTurnIds.add(id);
+        out.numTurns += 1;
+      }
       for (const block of event.message?.content ?? []) {
         if (block?.type === 'text' && typeof block.text === 'string') texts.push(block.text);
         if (block?.type === 'tool_use') out.toolCalls += 1;
@@ -277,10 +313,13 @@ export function createQwenHarness(): AgentHarness {
       const args = buildQwenArgs(request, model);
       const timeoutMs = request.timeout ?? DEFAULT_TIMEOUT_MS;
 
+      const runHome = qwenRunHome(executionId);
+      try { fs.mkdirSync(runHome, { recursive: true }); } catch { /* spawn will surface it */ }
+
       return new Promise<AgentExecuteResponse>((resolve) => {
         const child = spawn('qwen', args, {
           cwd: request.cwd || process.cwd(),
-          env: buildQwenEnv(profile, model),
+          env: buildQwenEnv(profile, model, runHome),
           stdio: ['ignore', 'pipe', 'pipe'],
           // Own process group, so abort/timeout can end qwen AND the shell
           // commands it spawns under yolo. See terminateRun().

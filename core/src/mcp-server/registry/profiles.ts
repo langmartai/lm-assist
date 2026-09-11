@@ -117,9 +117,19 @@ export function resolveProfileTools(profile: ProfileDefinition, available: strin
 
 /** Filter advertised defs down to the profile. Unknown profile ⇒ unfiltered (fail open:
  *  a bad name must never blank the tool surface). */
+/** Own-key lookup. A bare `PROFILE_DEFINITIONS[name]` accepted "constructor" /
+ *  "__proto__" / "toString" (Object.prototype keys are truthy), and because that
+ *  value has no `selectors`, the tools/list filter then threw — a persistent,
+ *  node-wide outage of the whole MCP surface from one POST. Found in review. */
+export function getProfile(name: string): ProfileDefinition | undefined {
+  return Object.hasOwn(PROFILE_DEFINITIONS, name) ? PROFILE_DEFINITIONS[name] : undefined;
+}
+
 export function applyProfileToToolDefs<T extends { name: string }>(defs: T[], profileName: string): T[] {
-  const profile = PROFILE_DEFINITIONS[profileName];
-  if (!profile || profile.selectors === 'all') return defs;
+  const profile = getProfile(profileName);
+  // Fail OPEN on anything malformed: this runs inside tools/list, and a throw here
+  // blanks the tool surface for every client of the node.
+  if (!profile || profile.selectors === 'all' || !Array.isArray(profile.selectors)) return defs;
   const keep = resolveProfileTools(profile, defs.map((d) => d.name));
   return defs.filter((d) => keep.has(d.name));
 }
@@ -161,7 +171,7 @@ export function activeProfileName(): string {
   let value = DEFAULT_PROFILE;
   try {
     const raw = JSON.parse(fs.readFileSync(stateFile(), 'utf-8')) as ProfileState;
-    if (raw && typeof raw.profile === 'string' && PROFILE_DEFINITIONS[raw.profile]) value = raw.profile;
+    if (raw && typeof raw.profile === 'string' && getProfile(raw.profile)) value = raw.profile;
   } catch {
     // absent or unreadable ⇒ the default. Never throw on the tools/list path.
   }
@@ -180,7 +190,7 @@ export function readProfileState(): ProfileState {
 /** Set the active profile. Returns the state written. Throws on an unknown name —
  *  silently keeping the old profile would look like the call had worked. */
 export function setActiveProfile(name: string, setBy?: string): ProfileState {
-  if (!PROFILE_DEFINITIONS[name]) {
+  if (!getProfile(name)) {
     throw new Error(
       `unknown profile "${name}". Known profiles: ${Object.keys(PROFILE_DEFINITIONS).join(', ')}.`
     );

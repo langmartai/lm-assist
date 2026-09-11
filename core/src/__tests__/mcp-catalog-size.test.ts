@@ -203,14 +203,17 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 // Re-inlining shared boilerplate across the surface costs ~90 KB and blows straight
 // through even this ceiling, which is exactly the failure that produced this file (one
 // `node` paragraph at 751 B x 188 tools = 40.3% of the catalogue). 25 KB of headroom
-// absorbs routine growth and still fails hard on that. The per-tool assertion above and
-// the shared-boilerplate assertion are untouched and remain the sharper checks.
+// absorbs routine growth and still fails hard on that. The shared-boilerplate assertion
+// above is untouched and remains the sharper check (review, 2026-09-11: there is no
+// separate per-tool assertion in this file — an earlier draft of this comment claimed one).
 //
 // 🔴 The node paragraph is STILL the real lever — 211 B x 286 = ~60 KB, ~20% of the
 // catalogue. This raise does not retire that; it stops an unrelated addition being
 // forced to pay for it. Halving it would fund ~28 tools of growth.
 //
-// The number a conversation actually pays is asserted in mcp-profiles.test.ts
+// What a conversation pays under a narrowed profile is bounded RELATIVELY in
+// mcp-profiles.test.ts (basic < 25% of admin, saving > 200 KB) — not as an absolute
+// number; that file is the load-bearing budget test for the profiled surface.
 // ("basic costs a fraction of admin"), which is now the load-bearing budget test.
 const CATALOG_BUDGET_BYTES = 330_000;
 
