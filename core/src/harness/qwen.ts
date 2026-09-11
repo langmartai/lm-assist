@@ -58,14 +58,29 @@ export function buildQwenArgs(request: AgentExecuteRequest, model: string): stri
     '--max-session-turns', String(request.maxTurns ?? DEFAULT_MAX_TURNS),
   ];
   if (model) args.push('-m', model);
-  // The prompt goes LAST, as a POSITIONAL after `--`. Two reasons, both found in
-  // review: qwen's own --help marks `-p/--prompt` DEPRECATED ("use the positional
-  // prompt instead; this flag will be removed"), and a `-p` value beginning with a
-  // dash was parsed as a flag. `--` ends option parsing, so a prompt like
-  // "-x fix the bug" survives verbatim (measured: it parses and runs). Same shape
-  // the OpenCode harness already uses.
-  args.push('--', request.prompt);
+  // The prompt is NOT on argv — it goes to stdin (see qwenStdinPrompt). MEASURED with
+  // a real auth path (an invalid key, so the run reaches the API and 401s only if the
+  // prompt was consumed):
+  //   `-p <prompt>`        deprecated per qwen --help, AND a dash-leading value is
+  //                        parsed as flags ("Unknown argument")
+  //   bare positional      same "Unknown argument" on a dash-leading value
+  //   `-- <prompt>`        NOT consumed at all — qwen's `query` positional ignores
+  //                        post-`--` tokens; it then fails "No input provided via
+  //                        stdin". (An earlier version of this file claimed this form
+  //                        was "measured to parse and run" — that probe had no
+  //                        credential, so qwen died on auth BEFORE checking for a
+  //                        prompt, and the inference was wrong.)
+  //   `--prompt=<prompt>`  works, but is the deprecated flag
+  //   stdin                works for every shape tried: dash-leading, multi-line,
+  //                        quotes, `$HOME` — verbatim, no parsing. qwen's own error
+  //                        names it ("Input can be provided by piping").
   return args;
+}
+
+/** What is written to the child's stdin: the prompt, verbatim. Kept as a function so
+ *  the contract ("argv never carries the prompt") is testable on its own. */
+export function qwenStdinPrompt(request: AgentExecuteRequest): string {
+  return request.prompt;
 }
 
 /**
@@ -320,11 +335,14 @@ export function createQwenHarness(): AgentHarness {
         const child = spawn('qwen', args, {
           cwd: request.cwd || process.cwd(),
           env: buildQwenEnv(profile, model, runHome),
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: ['pipe', 'pipe', 'pipe'],
           // Own process group, so abort/timeout can end qwen AND the shell
           // commands it spawns under yolo. See terminateRun().
           detached: true,
         });
+        // Hand the prompt over on stdin and close it — see buildQwenArgs for why not argv.
+        child.stdin?.on('error', () => { /* child exited before reading; the close handler reports it */ });
+        child.stdin?.end(qwenStdinPrompt(request));
         live.set(executionId, child);
 
         let stdout = '';

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildQwenArgs, buildQwenEnv, parseQwenStream, qwenRunHome } from '../harness/qwen';
+import { buildQwenArgs, buildQwenEnv, parseQwenStream, qwenRunHome, qwenStdinPrompt } from '../harness/qwen';
 import type { AgentExecuteRequest } from '../types/agent-api';
 import type { ProviderProfile } from '../harness/provider-config';
 
@@ -17,7 +17,7 @@ const profile: ProviderProfile = {
 
 test('argv requests machine-readable output and unattended approval', () => {
   const args = buildQwenArgs(req(), 'vendor/model:free');
-  assert.deepEqual(args.slice(-2), ['--', 'do the thing'], 'prompt is the positional after --');
+  assert.equal(args.includes('do the thing'), false, 'the prompt is never on argv — it goes to stdin');
   assert.ok(args.includes('--output-format'));
   assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json');
   assert.equal(args[args.indexOf('--approval-mode') + 1], 'yolo');
@@ -32,14 +32,18 @@ test('the turn ceiling is always set, and the caller can raise it', () => {
   assert.equal(custom[custom.indexOf('--max-session-turns') + 1], '3');
 });
 
-test('the prompt is the last argument, after --, and survives verbatim', () => {
-  // Review: `-p` is deprecated in qwen and a dash-leading value was parsed as a flag.
-  const nasty = '-x fix "; rm -rf / ;" the bug';
-  const args = buildQwenArgs(req({ prompt: nasty }), 'm');
-  assert.equal(args[args.length - 1], nasty, 'the prompt must survive verbatim as one argument');
-  assert.equal(args[args.length - 2], '--', 'option parsing must be closed before the prompt');
+test('the prompt never touches argv and reaches stdin verbatim', () => {
+  // MEASURED (auth present, invalid key → 401 only if the prompt was consumed):
+  // `-p` and a bare positional both die on a dash-leading value ("Unknown argument");
+  // `-- <prompt>` is silently NOT consumed ("No input provided via stdin");
+  // `--prompt=` works but is deprecated; stdin works for every shape. So: stdin.
+  const nasty = '-- fix "; rm -rf / ;" the bug\nsecond line $HOME';
+  const r = req({ prompt: nasty });
+  const args = buildQwenArgs(r, 'm');
+  assert.equal(args.some((a) => a.includes('rm -rf')), false, 'no fragment of the prompt on argv');
   assert.equal(args.includes('-p'), false, 'the deprecated -p flag is gone');
-  assert.equal(args.filter((a) => a === nasty).length, 1);
+  assert.equal(args.includes('--'), false, 'no -- either: qwen ignores post-`--` positionals');
+  assert.equal(qwenStdinPrompt(r), nasty, 'stdin payload is the prompt, byte for byte');
 });
 
 test('env carries the profile and NOTHING else from the parent environment', () => {
