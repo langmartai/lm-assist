@@ -60,7 +60,9 @@ export function createBusRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!topic) return wrapError('BAD_REQUEST', 'topic required', start);
         const cursors = ((req.body as { cursors?: BusCursor })?.cursors ?? {}) as BusCursor;
         const events = getBus().since(topic, cursors);
-        return wrapResponse({ events, head: getBus().topics().find((t) => t.topic === topic)?.head ?? {} }, start);
+        // head(), never topics().find(): this route is called per topic by every catching-up peer,
+        // and topics() walks the whole store to build stats nobody here reads.
+        return wrapResponse({ events, head: getBus().head(topic) }, start);
       },
     },
   ];

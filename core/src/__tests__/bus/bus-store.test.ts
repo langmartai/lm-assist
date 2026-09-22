@@ -63,6 +63,69 @@ test('readSince returns only events after the per-origin cursor, ordered', async
   await store.close();
 });
 
+/** The pre-seek readSince, verbatim: walk the whole topic, filter by cursor. The reference the
+ *  seeking version must match exactly. */
+function referenceReadSince(store: BusStore, topic: string, cursor: Record<string, unknown>, limit = 10_000): BusEvent[] {
+  const events = (store as unknown as { events: { getRange: (o: object) => Iterable<{ key: unknown; value: BusEvent }> } }).events;
+  const merged = new Map<string, BusEvent>();
+  for (const { key, value } of events.getRange({ start: [topic] })) {
+    const k = key as [string, string, number];
+    if (!Array.isArray(k) || k[0] !== topic) break;
+    if (k[2] > ((cursor[k[1]] ?? 0) as number)) merged.set(`${k[1]}\x00${k[2]}`, value);
+  }
+  for (const e of pendingOf(store).values()) {
+    if (e.topic === topic && e.seq > ((cursor[e.origin] ?? 0) as number)) merged.set(`${e.origin}\x00${e.seq}`, e);
+  }
+  const out = [...merged.values()].sort((a, b) => a.origin.localeCompare(b.origin) || a.seq - b.seq);
+  return out.length > limit ? out.slice(0, limit) : out;
+}
+
+test('readSince (seeking per origin) returns EXACTLY what the old whole-topic walk returned', async () => {
+  const { store } = tmpStore();
+  const origins = ['gw-a', 'gw-B', 'gw-c', 'z', 'Ä-node'];
+  let rnd = 7;
+  const next = (n: number) => { rnd = (rnd * 1103515245 + 12345) % 2147483648; return rnd % n; };
+  const counts: Record<string, number> = {};
+  for (let i = 0; i < 400; i++) {
+    const o = origins[next(origins.length)];
+    counts[o] = (counts[o] ?? 0) + 1;
+    store.ingest(ev({ topic: 'eq:t', origin: o, seq: counts[o] }));
+  }
+  store.ingest(ev({ topic: 'eq:other', origin: 'gw-a', seq: 1 })); // a neighbouring topic must not leak in
+  await flushedOf(store);
+  for (let s = 1; s <= 3; s++) store.append(ev({ topic: 'eq:t', origin: 'late', seq: s })); // still pending
+  const cursors: Array<Record<string, unknown>> = [
+    {}, { 'gw-a': 5 }, { 'gw-a': 0, 'gw-B': 30, z: 999 }, store.maxCursor('eq:t'),
+    { 'gw-a': '12' }, { 'gw-a': 'junk' }, { 'gw-a': Infinity }, { 'gw-a': -Infinity }, { 'gw-a': -3 },
+    { 'gw-a': 2.5 }, { 'gw-c': 1, 'never-seen': 4 }, { late: 1 },
+  ];
+  for (const c of cursors) {
+    for (const limit of [10_000, 7]) {
+      const want = referenceReadSince(store, 'eq:t', c, limit).map((e) => `${e.origin}:${e.seq}`);
+      const got = store.readSince('eq:t', c as BusCursor, limit).map((e) => `${e.origin}:${e.seq}`);
+      assert.deepEqual(got, want, `cursor ${JSON.stringify(c)} limit ${limit}`);
+    }
+  }
+  await store.close();
+});
+
+test('a caught-up readSince decodes NO events (it used to decode the whole topic)', async () => {
+  const { store } = tmpStore();
+  for (const o of ['gw-a', 'gw-b']) for (let s = 1; s <= 500; s++) store.ingest(ev({ topic: 'big:t', origin: o, seq: s }));
+  await flushedOf(store);
+  const events = (store as unknown as { events: { getRange: (o: object) => Iterable<unknown> } }).events;
+  const real = events.getRange.bind(events);
+  let yielded = 0;
+  events.getRange = (o: object) => (function* () { for (const x of real(o)) { yielded++; yield x; } })();
+  assert.deepEqual(store.readSince('big:t', store.maxCursor('big:t')), []);
+  assert.ok(yielded <= 2, `caught-up read touched ${yielded} entries (≤ 1 per origin expected)`);
+  yielded = 0;
+  assert.equal(store.readSince('big:t', { 'gw-a': 499, 'gw-b': 500 }).length, 1);
+  assert.ok(yielded <= 3, `one new event read ${yielded} entries`);
+  events.getRange = real;
+  await store.close();
+});
+
 test('durable cursors survive a store reopen (consumer restart → resume)', async () => {
   const { store, dir } = tmpStore();
   store.setCursor('sub-1', 'mission:9', { 'gw-a': 4 });
