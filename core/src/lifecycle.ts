@@ -6,6 +6,7 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { coreKind, coreRuntimeFiles } from './utils/core-runtime-files';
 
 export type LifecycleTarget = 'core' | 'web' | 'both';
 export type LifecycleAction = 'exit' | 'restart';
@@ -50,6 +51,28 @@ export function spawnCoreRelauncher(): void {
   spawn(process.execPath, args, { detached: true, stdio: 'ignore' }).unref();
 }
 
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
+/**
+ * An intentional exit releases the Core pidfile — the same thing `lm-assist stop` does — so a
+ * supervisor that reads "pidfile present, Core gone" as a crash (the Windows elevated worker's
+ * watchdog) leaves an exited Core down instead of resurrecting it. Only a pidfile naming THIS
+ * process or a dead one is removed: never another live Core's. A restart keeps it — the
+ * relauncher rewrites it with the new Core's pid.
+ */
+export function releaseCorePidFile(
+  pidFile: string = coreRuntimeFiles(coreKind(__dirname)).pid,
+  selfPid: number = process.pid,
+  isAlive: (pid: number) => boolean = pidAlive,
+): boolean {
+  let pid: number;
+  try { pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10); } catch { return false; }
+  if (Number.isFinite(pid) && pid !== selfPid && isAlive(pid)) return false;
+  try { fs.unlinkSync(pidFile); return true; } catch { return false; }
+}
+
 /** Disconnect the hub, optionally spawn the relauncher, then process.exit — after a short
  *  delay so the HTTP response (and its relay hop) flushes to the caller first. */
 export function scheduleCoreExit(relaunch: boolean, delayMs = 500): void {
@@ -65,6 +88,8 @@ export function scheduleCoreExit(relaunch: boolean, delayMs = 500): void {
     if (relaunch) {
       try { spawnCoreRelauncher(); }
       catch (e) { console.error('[lifecycle] relauncher spawn failed — core will exit WITHOUT self-respawn (supervisor must restart it):', (e as Error)?.message); }
+    } else {
+      releaseCorePidFile();
     }
     setTimeout(() => process.exit(0), 200);
   }, delayMs);

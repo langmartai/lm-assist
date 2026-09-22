@@ -16,8 +16,7 @@
  * stdout is never disturbed); otherwise nothing to do — journald rotates itself.
  */
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { coreKind, coreRuntimeFiles } from './core-runtime-files';
 
 const MAX_BYTES = 64 * 1024 * 1024; // rotate once the log passes 64 MB
 const KEEP_BYTES = 8 * 1024 * 1024; // retain the most recent 8 MB
@@ -27,9 +26,7 @@ let started = false;
 
 /** Resolve the Core log path the way the service manager names it. */
 function logFilePath(): string {
-  const dir = path.join(os.homedir(), '.cache', 'lm-assist');
-  const isProd = __dirname.includes('node_modules');
-  return path.join(dir, isProd ? 'core-prod.log' : 'core-dev.log');
+  return coreRuntimeFiles(coreKind(__dirname)).log;
 }
 
 /** True when descriptor `fd` is the very file at `file` (same inode+device). */
