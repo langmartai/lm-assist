@@ -28,6 +28,7 @@ import * as path from 'path';
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import { timingSafeEqual } from 'crypto';
 import { apiTokenFilePath } from '../auth/api-token';
+import { coreRuntimeFiles } from '../utils/core-runtime-files';
 import {
   ELEVATED_HOST,
   elevatedPort,
@@ -39,6 +40,14 @@ import {
   MAX_EXEC_TIMEOUT_MS,
   buildShellCommandLine,
 } from './common';
+import {
+  decideWatchdog,
+  pidFileFacts,
+  probePort,
+  watchdogDisabled,
+  type WatchdogAction,
+  type WatchdogState,
+} from './watchdog';
 
 const SINCE = new Date().toISOString();
 
@@ -255,6 +264,69 @@ function runExec(body: ExecReq): Promise<ExecResult> {
   });
 }
 
+// ─── Core watchdog ─────────────────────────────────────────────────────────
+// Restarts the PROD Core when it dies with its pidfile still in place (see ./watchdog.ts for why
+// the pidfile, not a health check, is the signal). Windows-only by construction: this process
+// only exists on Windows.
+const WATCHDOG_PORT = ((): number => {
+  const v = Number(process.env.LM_CORE_WATCHDOG_PORT);
+  return Number.isInteger(v) && v > 0 && v < 65536 ? v : 3100;
+})();
+const WATCHDOG_INTERVAL_MS = Math.max(5_000, Number(process.env.LM_CORE_WATCHDOG_INTERVAL_MS) || 30_000);
+const WATCHDOG_PIDFILE = coreRuntimeFiles('prod').pid;
+const WATCHDOG_OFF_FLAG = path.join(elevatedDir(), 'watchdog.off');
+
+let wdState: WatchdogState = { failures: 0, lastStartAt: null };
+let wdLast: { action: WatchdogAction; at: string } | null = null;
+let wdLastStart: { at: string; exitCode: number | null; elapsedMs: number; timedOut: boolean; tail: string } | null = null;
+let wdBusy = false;
+
+async function watchdogTick(): Promise<void> {
+  if (wdBusy) return; // a restart is still in flight
+  wdBusy = true;
+  try {
+    const disabled = watchdogDisabled(WATCHDOG_OFF_FLAG);
+    const portOpen = disabled ? false : await probePort(WATCHDOG_PORT);
+    const pf = pidFileFacts(WATCHDOG_PIDFILE);
+    const { action, next } = decideWatchdog(wdState, {
+      disabled, portOpen, pidFilePresent: pf.present, pidAlive: pf.alive, now: Date.now(),
+    });
+    wdState = next;
+    if (action !== wdLast?.action) {
+      log(`watchdog: ${action} (core :${WATCHDOG_PORT}, pidfile ${pf.present ? `pid ${pf.pid ?? '?'}` : 'absent'})`);
+    }
+    wdLast = { action, at: new Date().toISOString() };
+    if (action !== 'start') return;
+
+    log(`watchdog: Core :${WATCHDOG_PORT} is gone but its pidfile survived (pid ${pf.pid ?? '?'} dead) — running \`lm-assist start\``);
+    const r = await runExec({ cmd: 'lm-assist start', timeoutMs: 180_000 });
+    const tail = `${r.stdout}\n${r.stderr}`.trim().split(/\r?\n/).slice(-6).join(' | ').slice(-1500);
+    wdLastStart = { at: new Date().toISOString(), exitCode: r.exitCode, elapsedMs: r.elapsedMs, timedOut: !!r.timedOut, tail };
+    audit({
+      kind: 'watchdog', cmd: 'lm-assist start', args: [], cwd: null, shell: 'cmd',
+      exitCode: r.exitCode, elapsedMs: r.elapsedMs, timedOut: !!r.timedOut, caller: 'watchdog', deadPid: pf.pid,
+    });
+    log(`watchdog: lm-assist start → exit ${r.exitCode} in ${r.elapsedMs}ms: ${tail}`);
+  } catch (e) {
+    log(`watchdog: tick failed: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    wdBusy = false;
+  }
+}
+
+function watchdogReport(): Record<string, unknown> {
+  return {
+    enabled: !watchdogDisabled(WATCHDOG_OFF_FLAG),
+    port: WATCHDOG_PORT,
+    intervalMs: WATCHDOG_INTERVAL_MS,
+    pidFile: WATCHDOG_PIDFILE,
+    offFlag: WATCHDOG_OFF_FLAG,
+    last: wdLast,
+    failures: wdState.failures,
+    lastStart: wdLastStart,
+  };
+}
+
 // ─── HTTP server ───────────────────────────────────────────────────────────
 /** Port resolution: env LM_ELEVATED_PORT wins, else a `--port N` argv, else default. */
 function resolvePort(): number {
@@ -283,6 +355,7 @@ const server = http.createServer(async (req, res) => {
       pid: process.pid,
       since: SINCE,
       port: PORT,
+      watchdog: watchdogReport(),
     });
     return;
   }
@@ -368,4 +441,9 @@ ensureDir();
 server.listen(PORT, ELEVATED_HOST, () => {
   writePidFile();
   log(`elevated worker listening on ${ELEVATED_HOST}:${PORT} pid=${process.pid} integrity=${detectIntegrity()}`);
+  // Started only once the port is ours: the worker is single-instance by that bind, so exactly
+  // one watchdog runs per machine.
+  setInterval(() => { void watchdogTick(); }, WATCHDOG_INTERVAL_MS);
+  log(`watchdog: watching Core :${WATCHDOG_PORT} every ${WATCHDOG_INTERVAL_MS / 1000}s via ${WATCHDOG_PIDFILE} `
+    + `(off: LM_CORE_WATCHDOG=0 or create ${WATCHDOG_OFF_FLAG})`);
 });
