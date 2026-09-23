@@ -26,16 +26,17 @@
 // hot path, in front of the relay's fixed 25s local / 30s gateway cutoffs. Keep the hot path
 // free of: full store sweeps, unbounded network calls, and timer-only deadlines.
 import type { McpToolResult } from './configure';
-import { fleetIdentity } from './fleet-identity';
+import { fleetIdentity, shouldNameProfile, safePin } from './fleet-identity';
 import { listConversations } from '../utils/claudeai-session';
 import { extractConversationRows } from './tools/list-claudeai-conversations';
 import { getSessionCache } from '../session-cache';
-import { currentMcpContext } from './principal-context';
+import { currentMcpContext, currentEffectiveProfile } from './principal-context';
 import type { WorkerRecord } from '../worker-role/types';
 import { liveness } from '../worker-role/model';
 import { getRecord } from '../worker-role/worker-store';
 import { loadPersistedMarkers, schedulePersistMarkers, type PersistedMarker } from './bootstrap-persist';
 import { fleetBootstrappedAt, publishBootstrapToFleet } from './bootstrap-registry';
+import { activeProfileName, type EffectiveProfile } from './registry/profiles';
 
 export interface Candidate { id: string; label?: string; updatedAt?: string }
 export interface CallerCandidates {
@@ -720,25 +721,60 @@ async function getNodeClusterInfo(): Promise<{ cluster: string; otherClusters?: 
   } catch { return { cluster: 'default' }; }
 }
 
+/**
+ * session_status's `profile` field (spec 2026-09-23 §6) — present ONLY when the profile must be
+ * named (a pin, known or not, or a narrowed node default). Absent in the shipped case (no pin,
+ * node default `admin`) so that output stays byte-identical. `nodeDefault` is injectable for
+ * tests; the live read is the 1.5 s-cached profile file (session_status is not a hot path).
+ */
+export function sessionStatusProfile(
+  p: EffectiveProfile | undefined,
+  nodeDefault?: string,
+): Record<string, unknown> | undefined {
+  if (!shouldNameProfile(p)) return undefined;
+  return {
+    effective: p.name,
+    source: p.source,
+    ...(p.pin != null ? { pin: safePin(p.pin) } : {}),
+    ...(p.unknownPin
+      ? {
+          unknownPin: true,
+          note: 'The requested profile is not defined on this node (a typo, or a name newer than this build) — the node default is served.',
+        }
+      : {}),
+    nodeDefault: nodeDefault ?? activeProfileName(),
+  };
+}
+
 async function handleSessionStatus(_args: Record<string, unknown>): Promise<McpToolResult> {
   const c = await resolveCallerCandidates();
   const bootstrapped = (id?: string) => (id ? !!registry().get(id)?.bootstrappedAt : false);
   const clusterInfo = await getNodeClusterInfo();
+  // The connector's EFFECTIVE profile: the request context's (set by HTTP /mcp, by Core's
+  // /mcp-call for a stdio server, and by a pinned stdio process), else — an entry point that
+  // predates pins — the node default, which is what that call is served. No pin + default
+  // admin ⇒ no field and the legacy identity block.
+  const ep: EffectiveProfile = currentEffectiveProfile() ?? { name: activeProfileName(), source: 'node-default' };
+  const profile = sessionStatusProfile(ep);
+  const profileField = profile ? { profile } : {};
   const obj = c.precise && c.claudeCode ? {
     note: 'PRECISE: this MCP call carried a tool-call id (_meta["claudecode/toolUseId"]) that matched the calling conversation exactly — no guessing.',
     callerType: 'claude-code',
     claudeCodeSession: { ...c.claudeCode, matchedBy: 'tool-call-id', bootstrapped: bootstrapped(c.claudeCode.id) },
     ...clusterInfo,
+    ...profileField,
     howTo: 'If you have not bootstrapped, call bootstrap() once to load all lm-assist capabilities.',
   } : {
     note: 'No tool-call id on this call. These are the most-recently-active candidates resolved from the node APIs — PICK the one matching your runtime (claude.ai conversation vs Claude Code session). Heuristic by recency.',
     claudeAiConversation: c.claudeAi ? { ...c.claudeAi, bootstrapped: bootstrapped(c.claudeAi.id) } : 'unavailable (claude.ai not configured on this node)',
     claudeCodeSession: c.claudeCode ? { ...c.claudeCode, bootstrapped: bootstrapped(c.claudeCode.id) } : 'none recent',
     ...clusterInfo,
+    ...profileField,
     howTo: 'If you have not bootstrapped, call bootstrap() once to load all lm-assist capabilities.',
   };
-  // Lead with the fleet/connector identity so a conversation knows WHICH fleet it is on.
-  return { content: [{ type: 'text', text: fleetIdentity() + '\n\n' + pretty(obj) }] };
+  // Lead with the fleet/connector identity so a conversation knows WHICH fleet — and, when it
+  // matters, which PROFILE — it is on.
+  return { content: [{ type: 'text', text: fleetIdentity(ep) + '\n\n' + pretty(obj) }] };
 }
 
 export const SESSION_STATUS_TOOL_DEFS = [

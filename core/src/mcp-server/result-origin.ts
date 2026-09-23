@@ -15,15 +15,19 @@
 import type { McpToolResult } from './configure';
 import { getHubConfig } from '../hub-client/hub-config';
 import { getMyCluster } from '../cluster/cluster-config';
-import { hubHostOf } from './fleet-identity';
-import { currentMcpContext } from './principal-context';
+import { hubHostOf, quotePin } from './fleet-identity';
+import { currentMcpContext, currentEffectiveProfile } from './principal-context';
 import { playbookTopicForTool } from './tool-topics';
 import { formatBytes, type ResultSize } from './result-cap';
+import type { EffectiveProfile } from './registry/profiles';
 
 export interface OriginParts {
   hubHost: string | null;
   hostname: string;
   cluster: string;
+  /** The footer's profile label (footerProfileLabel). Absent/null ⇒ no segment ⇒ the tag is
+   *  byte-identical to the pre-profile one. */
+  profile?: string | null;
 }
 
 /**
@@ -43,7 +47,8 @@ export function formatSizeSegment(size: ResultSize | null | undefined): string {
 /** PURE — build the compact origin tag. `relayed` = came via a connector (hub).
  *  `topic` (optional) folds the governing playbook in, so the pointer costs no extra line.
  *  `size` (optional) folds in the result byte count — omitted entirely when absent, so
- *  callers that don't measure produce a byte-identical tag to before. */
+ *  callers that don't measure produce a byte-identical tag to before.
+ *  `p.profile` (optional) names a PINNED connector's profile, right after the cluster. */
 export function formatResultOriginTag(
   p: OriginParts,
   relayed: boolean,
@@ -52,11 +57,27 @@ export function formatResultOriginTag(
 ): string {
   const node = `node:${p.hostname}`;
   const cl = `cluster:${p.cluster}`;
+  const prof = p.profile ? ` · profile ${p.profile}` : '';
   const sz = formatSizeSegment(size);
   const play = topic ? ` · playbook: guide("${topic}")` : '';
   return relayed && p.hubHost
-    ? `⟦lm-assist@${p.hubHost} · ${node} · ${cl}${sz}${play}⟧`
-    : `⟦lm-assist · LOCAL · ${node} · ${cl}${sz}${play}⟧`;
+    ? `⟦lm-assist@${p.hubHost} · ${node} · ${cl}${prof}${sz}${play}⟧`
+    : `⟦lm-assist · LOCAL · ${node} · ${cl}${prof}${sz}${play}⟧`;
+}
+
+/**
+ * PURE — the footer's profile label. Present ONLY when the request carried a pin: a known pin
+ * names its profile; an UNKNOWN pin names what was served instead, so a typo can never look
+ * like it worked (spec §3). No pin ⇒ null — even on a narrowed node default (the banner says
+ * that once) — so an unpinned connector's footer stays byte-identical to before profiles.
+ * Two profile connectors on ONE hub are otherwise indistinguishable here, which is what broke
+ * the banner's "confirm which connector answered" promise.
+ */
+export function footerProfileLabel(p?: EffectiveProfile | null): string | null {
+  if (!p) return null;
+  if (p.source === 'pin') return p.name;
+  if (p.unknownPin) return `${p.name} (unknown pin ${quotePin(p.pin)})`;
+  return null;
 }
 
 /** Resolve the origin tag from the current MCP principal + this node. NEVER throws. */
@@ -66,9 +87,11 @@ export function resultOriginTag(topic?: string | null, size?: ResultSize | null)
   let hubHost: string | null = null;
   let hostname = 'this node';
   let cluster = 'default';
+  let profile: string | null = null;
   try { const c = getHubConfig(); hubHost = hubHostOf(c.hubUrl); hostname = c.hostname || 'this node'; } catch { /* minimal */ }
   try { cluster = getMyCluster(); } catch { /* default */ }
-  return formatResultOriginTag({ hubHost, hostname, cluster }, relayed, topic, size);
+  try { profile = footerProfileLabel(currentEffectiveProfile()); } catch { /* no context → no segment */ }
+  return formatResultOriginTag({ hubHost, hostname, cluster, profile }, relayed, topic, size);
 }
 
 /** The identifier shapes lm-assist hands back: prefixed ids (bl_/mission_/cse_/gw4-/sess_/

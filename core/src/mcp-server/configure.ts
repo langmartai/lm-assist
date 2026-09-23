@@ -549,23 +549,71 @@ import { enrichBootstrapWithIdentity, bootstrapGateCheck } from './mcp-session-r
 import { withOriginTag } from './result-origin';
 import { capToolResult, type ResultSize } from './result-cap';
 import { getHubConfig } from '../hub-client/hub-config';
-import { hubHostOf, envLabelOf } from './fleet-identity';
+import { hubHostOf, envLabelOf, shouldNameProfile, profilePhrase, type ConnectorEnv } from './fleet-identity';
 import {
   applyProfileToToolDefs, liveEffectiveProfile, profileNeedsExtTools, type EffectiveProfile,
 } from './registry/profiles';
 import { currentEffectiveProfile, currentMcpContext, runWithMcpContext } from './principal-context';
 
 /**
- * MCP `instructions` for THIS connector — the always-sent body prefixed with a
- * one-line ENVIRONMENT banner (PRODUCTION vs DEVELOPMENT) so an LLM that has
- * BOTH lm-assist connectors attached can tell them apart and pick the right one
- * up-front (not just from the per-result origin footer). Resolved at connect
- * time from the hub this instance serves. NEVER throws.
+ * The pre-profile banner, VERBATIM. No pin + node default `admin` (the shipped default) must
+ * produce exactly this — the byte-identity contract of the per-connector-profile spec
+ * (2026-09-23 §3), snapshotted in mcp-profile-identity-text.test.ts. Do not edit it; a
+ * profile-aware change belongs in profileBanner.
+ */
+function legacyBanner(env: ConnectorEnv, hub: string | null): string {
+  return (
+    `⟦THIS CONNECTOR⟧ lm-assist · ${env}${hub ? ` (hub ${hub})` : ' (local)'}. ` +
+    `A PRODUCTION connector (hub *.langmart.ai) and a DEVELOPMENT connector (hub *.xeenhub.com) may BOTH be ` +
+    `attached to this conversation: SAME tool names, INDEPENDENT instances over SEPARATE fleets (no shared ` +
+    `state). Use PRODUCTION for the user's real hosts/data/actions; use DEVELOPMENT only to test lm-assist ` +
+    `itself. They are independent — if one connector is down or a tool ERRORS on it, the OTHER still works, so ` +
+    `fall back to it. Every result is footer-tagged with its hub (⟦lm-assist@<hub>…⟧) so you can confirm which ` +
+    `connector answered.`
+  );
+}
+
+/**
+ * The banner when the profile must be named: a pin (known or unknown) or a narrowed node default.
  *
- * `profile` is the effective profile of the connector being served — HTTP passes the
- * request's resolution (buildServer), a pinned stdio server its process pin. With no
- * argument, or a node-default resolution to `admin`, the text MUST stay byte-identical
- * to the unpinned text: that is the compatibility contract for every existing client.
+ * 🔴 FIRST SENTENCE + LENGTH. Claude Code cuts instructions at ~2,048 chars (the 3,866-char
+ * production string arrives cut mid-"reverse-engineering"). So the profile sits in the first
+ * sentence, and this banner (647–744 chars measured 2026-09-23, vs the legacy 608) must keep
+ * "FIRST, call the bootstrap tool … ONCE" ending before the cut — worst case today: char 2,039.
+ * The test enumerates every profile × source × hub; grow this text and it fails.
+ *
+ * TWO AXES, because two profile connectors on ONE hub are the same fleet: the legacy "fall back
+ * to the other" advice would send the model to a connector that fails the same way.
+ */
+function profileBanner(env: ConnectorEnv, hub: string | null, p: EffectiveProfile): string {
+  const tagged = p.source === 'pin' || p.unknownPin ? ' with this profile' : '';
+  return (
+    `⟦THIS CONNECTOR⟧ lm-assist · ${env} · ${profilePhrase(p)}${hub ? ` (hub ${hub})` : ' (local)'}. ` +
+    `Other lm-assist connectors differ on two axes. A different HUB is a different FLEET: PRODUCTION ` +
+    `(*.langmart.ai) and DEVELOPMENT (*.xeenhub.com) are INDEPENDENT, no shared state — PRODUCTION for the user's ` +
+    `real hosts/data/actions, DEVELOPMENT only to test lm-assist; if one is down or ERRORS, fall back to the other. ` +
+    `A different PROFILE on the SAME hub (…/mcp/<profile>) is the SAME fleet, nodes and state with another tool ` +
+    `list — NOT a failover (an error here recurs there); use it only for a tool this profile does not list. ` +
+    `Results are footer-tagged ⟦lm-assist@<hub> …⟧${tagged}.`
+  );
+}
+
+/** PURE — the instructions for a given hub / hostname / effective profile. Exported for tests. */
+export function formatLmAssistInstructions(hub: string | null, hostname: string, profile?: EffectiveProfile): string {
+  const env = envLabelOf(hub, hostname);
+  const banner = shouldNameProfile(profile) ? profileBanner(env, hub, profile) : legacyBanner(env, hub);
+  return `${banner}\n\n${LM_ASSIST_INSTRUCTIONS_BODY}`;
+}
+
+/**
+ * MCP `instructions` for THIS connector — the always-sent body prefixed with a banner that
+ * names the ENVIRONMENT (PRODUCTION vs DEVELOPMENT) and, when it matters, the PROFILE, so an
+ * LLM with several lm-assist connectors attached can tell them apart up-front (not just from
+ * the per-result footer). `profile` is the connector's EFFECTIVE profile — HTTP: buildServer's
+ * per-request resolution; stdio: the process pin, else the node default resolved at spawn.
+ * Omitted, or no pin + node default `admin` ⇒ byte-identical to the pre-profile text: the
+ * compatibility contract for every existing client. No I/O beyond the hub-config read it
+ * always did. NEVER throws.
  */
 export function getLmAssistInstructions(profile?: EffectiveProfile): string {
   let hub: string | null = null;
@@ -577,16 +625,7 @@ export function getLmAssistInstructions(profile?: EffectiveProfile): string {
   } catch {
     /* config unavailable — fall back to the bare body */
   }
-  const env = envLabelOf(hub, hostname);
-  const banner =
-    `⟦THIS CONNECTOR⟧ lm-assist · ${env}${hub ? ` (hub ${hub})` : ' (local)'}. ` +
-    `A PRODUCTION connector (hub *.langmart.ai) and a DEVELOPMENT connector (hub *.xeenhub.com) may BOTH be ` +
-    `attached to this conversation: SAME tool names, INDEPENDENT instances over SEPARATE fleets (no shared ` +
-    `state). Use PRODUCTION for the user's real hosts/data/actions; use DEVELOPMENT only to test lm-assist ` +
-    `itself. They are independent — if one connector is down or a tool ERRORS on it, the OTHER still works, so ` +
-    `fall back to it. Every result is footer-tagged with its hub (⟦lm-assist@<hub>…⟧) so you can confirm which ` +
-    `connector answered.`;
-  return `${banner}\n\n${LM_ASSIST_INSTRUCTIONS_BODY}`;
+  return formatLmAssistInstructions(hub, hostname, profile);
 }
 
 /** @deprecated Back-compat alias — prefer getLmAssistInstructions() (env-aware). */
