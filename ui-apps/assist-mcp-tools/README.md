@@ -13,18 +13,20 @@ Ported from `web/src/components/mcp-tools/{McpToolsPage,ToolDetail,PluginsPanel}
 
 ```json
 [
-  { "service": "node", "pathPrefix": "/mcp-tools",              "verbs": ["GET"] },
-  { "service": "node", "pathPrefix": "/mcp-tools/*",            "verbs": ["POST"], "exact": true },
-  { "service": "node", "pathPrefix": "/mcp-tools/*/rollback",   "verbs": ["POST"], "exact": true },
-  { "service": "node", "pathPrefix": "/mcp-plugins",            "verbs": ["GET"] },
-  { "service": "node", "pathPrefix": "/mcp/access",             "verbs": ["GET"] },
-  { "service": "node", "pathPrefix": "/mcp/access/tool-gate",   "verbs": ["PUT"],  "exact": true },
-  { "service": "node", "pathPrefix": "/mcp/pending",            "verbs": ["GET"] },
-  { "service": "node", "pathPrefix": "/mcp/pending/*/confirm",  "verbs": ["POST"], "exact": true },
-  { "service": "node", "pathPrefix": "/mcp/pending/*/deny",     "verbs": ["POST"], "exact": true },
-  { "service": "node", "pathPrefix": "/health",                 "verbs": ["GET"] },
-  { "service": "node", "pathPrefix": "/hub/status",             "verbs": ["GET"] },
-  { "service": "node", "pathPrefix": "/claude-ai/mcp/servers",  "verbs": ["GET"] }
+  { "service": "node", "pathPrefix": "/mcp-tools",                 "verbs": ["GET"] },
+  { "service": "node", "pathPrefix": "/mcp-tools/*",               "verbs": ["POST"], "exact": true },
+  { "service": "node", "pathPrefix": "/mcp-tools/*/rollback",      "verbs": ["POST"], "exact": true },
+  { "service": "node", "pathPrefix": "/mcp-plugins",               "verbs": ["GET"] },
+  { "service": "node", "pathPrefix": "/mcp/access",                "verbs": ["GET"] },
+  { "service": "node", "pathPrefix": "/mcp/access/tool-gate",      "verbs": ["PUT"],  "exact": true },
+  { "service": "node", "pathPrefix": "/mcp/pending",               "verbs": ["GET"] },
+  { "service": "node", "pathPrefix": "/mcp/pending/*/confirm",     "verbs": ["POST"], "exact": true },
+  { "service": "node", "pathPrefix": "/mcp/pending/*/deny",        "verbs": ["POST"], "exact": true },
+  { "service": "node", "pathPrefix": "/mcp/profile-connectors",    "verbs": ["GET", "POST"], "exact": true },
+  { "service": "node", "pathPrefix": "/mcp/profile-connectors/*",  "verbs": ["DELETE"], "exact": true },
+  { "service": "node", "pathPrefix": "/health",                    "verbs": ["GET"] },
+  { "service": "node", "pathPrefix": "/hub/status",                "verbs": ["GET"] },
+  { "service": "node", "pathPrefix": "/claude-ai/mcp/servers",     "verbs": ["GET"] }
 ]
 ```
 
@@ -51,7 +53,20 @@ What each prefix covers:
   and `POST /mcp/pending/*/deny` as two separate LEAF rules. Note what this does **not**
   grant: `POST /mcp/pending` itself, `POST /mcp/pending/<id>`, and anything deeper than the
   two named leaves — verified against the shipped evaluator, see *Verification* below.
-- `/health`, `/hub/status`, `/claude-ai/mcp/servers` — the Status view's four probes.
+- `/mcp/profile-connectors` **GET, POST** and `/mcp/profile-connectors/*` **DELETE** —
+  the Profile tab's **Connectors** table (and the Status tab's connector probe): list this hub's
+  per-profile connector URLs with claude.ai's state for each, create the claude.ai connector for
+  ONE profile, delete ONE profile's connector. All three are **new authority**: no earlier rule
+  reaches them — `/mcp/access` and `/mcp/pending` are subtrees of their own second segment, and
+  the `/mcp-tools` rules stop at the `-` (see *`/mcp` would not work* below). Each is a LEAF
+  rule, so nothing added later under `/mcp/profile-connectors/<profile>/…` is covered, and DELETE
+  is one leaf, one verb. The routes sit under `/mcp/` rather than `/mcp-tools/` on purpose: an
+  older Core reads any one-segment path under `/mcp-tools` as a tool name (a `POST` there would
+  write a junk registry doc), while `/mcp/<x>` has no catch-all and answers a clean 404. The
+  audit in `core/src/ui-pages/local-tier/__tests__/grants.test.ts` pins that nothing else in this
+  grant reaches the three, and that no other pane holds either write.
+- `/health`, `/hub/status`, `/claude-ai/mcp/servers` — the rest of the Status view's four probes
+  (`/claude-ai/mcp/servers` now only as the connector probe's fallback on an older Core).
 
 Three prefixes are deliberately *not* the obvious shorter ones:
 
@@ -63,29 +78,32 @@ Three prefixes are deliberately *not* the obvious shorter ones:
 - **`/claude-ai/mcp/servers`, not `/claude-ai`** — that prefix would carry every claude.ai
   route, including conversations and cookies.
 
-The view token's grant is the hard ceiling — anything outside these twelve rules 403s.
+The view token's grant is the hard ceiling — anything outside these fourteen rules 403s.
 
 🔴 **A leaf rule pins a SHAPE, not a route.** `/mcp-tools/*` `POST` was written to mean "one
 tool doc", but what it enforces is *one segment under `/mcp-tools`* — and `POST
-/mcp-tools/profile` (added to Core later; it sets how many tools this node advertises) has
-exactly that shape, so this pane could fire it before anything here mentioned it. That is why
-the **Profile** tab needed no config change, and it is the honest limit of the leaf
+/mcp-tools/profile` (added to Core later; it sets the node-default profile) has exactly that
+shape, so this pane could fire it before anything here mentioned it. That is why the
+**Profile** tab's node-default switch needed no config change, and it is the honest limit of the leaf
 discipline: a leaf rule constrains the shape a future sibling may take, it does not stop one
 from existing. The profile is a context-budget setting — it changes what `tools/list`
 *returns*, never who may call what — so exercising it from here is in scope. A future
 single-segment `POST` under `/mcp-tools` that is **not** in scope has to be excluded by name;
 the audit fixture in `core/src/ui-pages/local-tier/__tests__/grants.test.ts` is where that
-exclusion belongs.
+exclusion belongs. The per-profile connector routes do **not** ride this shape: they live under
+`/mcp/` and are named by their own rules above, so the decision to hold them is visible here
+rather than inherited by accident.
 
 ### Which writes are held, and why
 
-The source page performs nine writes. Six are granted here; three are not. The line is one
+The source page performs twelve writes (the ledger at the top of the pane lists each): nine are
+granted here, three are not. The line is one
 rule, and it is not a matter of taste:
 
 > **Grant a write where no server-side locality control already exists. Withhold it where one
 > does — and say so ON THE PAGE.**
 
-**Held (6).** None of these has a server-side locality control, and the shipped web page
+**Held (9).** None of these has a server-side locality control, and the shipped web page
 already performs all of them over the hub relay, so granting them to the pane defeats nothing
 that exists:
 
@@ -103,11 +121,28 @@ that exists:
   unreachable: flipping a gate you cannot read is a coin toss on a security setting.
 - ✅ `POST /mcp-tools/:name` (override, enable/disable) and `/rollback` — audited, revved,
   reversible from the History tab, with an optimistic-concurrency pre-check.
-- ✅ `POST /mcp-tools/profile` — sets which tools this node **advertises**. Reachable under the
-  existing one-segment leaf rule (see the shape note above), and in scope because it is a
-  context budget rather than a permission: it changes what `tools/list` returns and nothing
-  about who may call what, one click reverses it, and the surface it can reach is bounded by
-  the four profiles Core defines. It is **node-global**, which is why it asks twice.
+- ✅ `POST /mcp-tools/profile` — sets the **node default**: which tools UNPINNED clients are
+  advertised (the plain `…/mcp` connector, local Claude Code over stdio without
+  `LM_MCP_PROFILE`). A connector pinned to a profile (`…/mcp/<profile>`) keeps its own surface
+  whatever the default says. Reachable under the existing one-segment leaf rule (see the shape
+  note above), and in scope because it is a context budget rather than a permission: it changes
+  what `tools/list` returns and nothing about who may call what, one click reverses it, and the
+  surface it can reach is bounded by the profiles Core defines. It reaches every unpinned client
+  on the node, which is why it asks twice.
+- ✅ `POST /mcp/profile-connectors {profile}` and `DELETE /mcp/profile-connectors/*` —
+  create or delete the claude.ai connector for one profile URL. These DO write the operator's
+  claude.ai account, like the withheld Sync; the difference is the locality control. Neither
+  route carries `requireLoopback`, and the shipped web page performs both over the hub relay, so
+  the grant defeats nothing — if either route ever gains one, it moves to *Withheld*. The reach
+  is bounded by the ROUTE, not the grant: a create can only register
+  `https://mcp.<this hub>/mcp/<known profile>`, never an arbitrary URL — which is why the raw
+  `POST /claude-ai/mcp/servers` stays denied (it is in the grant fixture's `mustNot`) — and a
+  delete can only remove connectors whose URL is this hub's `/mcp/<profile>` for the one profile
+  named, never the unpinned one every existing conversation uses. A created connector does
+  nothing until the operator clicks *Connect* in claude.ai: OAuth needs a person in a browser,
+  so holding a view token is not enough to make one live. Create runs one at a time (the hub
+  registers each with a read-modify-write), and Delete asks twice — the only way back is to
+  create and connect again.
 
 **Withheld (3)** — `POST /mcp-plugins/sync-connector`, `/:name/enable`, `/:name/disable`.
 These are loopback-only server-side (`requireLoopback`, `core/src/routes/core/mcp-plugins.routes.ts`).
@@ -138,7 +173,7 @@ version, not the only version.
 
 - **Capability ledger** — above the tabs, on every tab: the three actions of the source page
   this pane cannot fire, each with what it does, why it is not here and where to run it, plus
-  the seven it can. Collapsed to one line by default.
+  the nine it can. Collapsed to one line by default.
 - **Pending strip** — parked admin confirmations with **Confirm** and **Deny** per row, above
   the tabs so they are visible from every view. Polled every 15s (they expire in 10 minutes);
   the 286-row registry is not polled, which is what Refresh is for.
@@ -161,35 +196,52 @@ version, not the only version.
     Revert and Restore default), **Implementation** (module, tool definition incl.
     `inputSchema`, handler source — all read-only), **Settings** (enable/disable, the
     **admin-gate toggle**, scope/category/module), **History** (rev table with rollback).
-- **Profile** tab — the node's **tool loading profile**: which subset of tools it advertises
-  in `tools/list`. One card per profile (narrow → wide, so it reads as a cost ladder) with the
-  resolved tool count *on this node*, the description, the delta against the active profile,
-  and an amber warning naming any `unmatchedSelectors` — a selector matching nothing makes a
-  profile smaller than its description implies, and without that line the shrunken count looks
-  like somebody's deliberate choice. Switching arms on the first click and acts on the second:
-  the setting is **node-global**, so a stray click would narrow the tool surface of every other
-  session on the host.
+- **Profile** tab — the **tool loading profile** in two layers. The cards set the **node
+  default**: which subset of tools UNPINNED clients are advertised in `tools/list`. One card per
+  profile (narrow → wide, so it reads as a cost ladder) with the resolved tool count *on this
+  node*, the description, the delta against the node default, and an amber warning naming any
+  `unmatchedSelectors` — a selector matching nothing makes a profile smaller than its description
+  implies, and without that line the shrunken count looks like somebody's deliberate choice.
+  Switching arms on the first click and acts on the second: the default reaches every unpinned
+  client on the host. Below the cards, the **Connectors** table: one row per profile URL of this
+  hub plus the unpinned `/mcp` row, each with a Copy button and claude.ai's state (connected ·
+  tools, not connected + the Connect step, not created, or *unknown* when claude.ai cannot be read
+  from this node — never guessed as "not created"). Create / Delete per profile; the unpinned row
+  is shown, never managed.
   - Four things the tab states, because each is a way to misread the control: it is
     **advertise-only** (hidden tools stay callable — the admin gates and per-tool scopes are
-    the security boundary, and a profile moves neither); it is **node-global**, not a per-user
-    preference; the **per-tool registry wins** (a tool switched off on the Tools tab stays off
-    under every profile — a profile can only narrow further); and it is **not instant** (a
-    local Claude Code session picks it up within ~30s, a claude.ai connector caches
-    `tools/list` until it is refreshed).
-  - A Core that predates the feature has no `/mcp-tools/profile` route, so the GET falls
-    through to `GET /mcp-tools/:name` and 404s on a *tool* named `profile`. The tab says the
-    Core is too old rather than passing that through, which would send the reader hunting for
-    a missing tool.
+    the security boundary, and a profile moves neither); the cards set the **node default**,
+    which applies to unpinned clients only (a pinned connector keeps its profile — to choose per
+    conversation, enable that connector rather than switching here); the **per-tool registry
+    wins** (a tool switched off on the Tools tab stays off under every profile and on every
+    connector); and it is **not instant** (a local Claude Code session picks it up within ~30s;
+    an unpinned claude.ai connector's cached `tools/list` is cleared automatically when the node
+    holds a claude.ai session, and otherwise stays until it is refreshed).
+  - The table reads `GET /mcp/profile-connectors`, whose body keeps the unpinned connector
+    and the per-profile rows apart; `connNormalize()` in `assets/app.js` flattens it to one row
+    list, and nothing else reads the wire fields. A node with no hub answers `HUB_NOT_CONFIGURED`,
+    and the table says the node has no public MCP URL rather than showing an error.
+  - An older Core is named as one rather than passed through. One that predates
+    `/mcp-tools/profile` falls through to `GET /mcp-tools/:name` and fails `NOT_FOUND` on a
+    *tool* named `profile`, which would send the reader hunting for a missing tool; the tab says
+    the Core is too old. One that predates the connector routes answers the generic
+    `Route not found: GET /mcp/profile-connectors` (there is no `/mcp/<x>` catch-all); the table
+    hides itself and the pane never POSTs to it. The pane never sends a connector field to
+    `POST /mcp-tools/profile`: an older Core would read that request as "narrow this whole node".
 - **Plugins** tab — third-party plugins: phase, pin, declared capabilities, the namespaced
   tools each would advertise, manifest errors, and the audit tail. **Review-only, and the tab
   says so**: the missing Sync / Enable / Disable are named there, with the reason, where the
   buttons would have been.
 - **Status** tab — four independent probes (`/health`, `/mcp-plugins`,
-  `/claude-ai/mcp/servers`, `/hub/status`), each reported separately so one failure never
-  blanks the others.
+  `/mcp/profile-connectors`, `/hub/status`), each reported separately so one failure never
+  blanks the others. The connector probe shows every claude.ai connector whose URL points at
+  this node's hub (the unpinned one and each profile's), one row each — it no longer stops at the
+  first connector whose name happens to match. On a Core without that route it falls back to
+  `/claude-ai/mcp/servers` and the single pick it always showed.
 
 Consequential actions use a two-click confirm — confirming a parked call, denying one,
-disabling a tool, restoring a default, rolling back a rev, and turning an admin gate *off*.
+disabling a tool, restoring a default, rolling back a rev, turning an admin gate *off*,
+changing the node default, and deleting a profile connector.
 Turning a gate *on* is one click, because it only adds an approval step. A failure of the primary list call raises the
 full-screen fatal overlay carrying the server's own text; secondary failures land in the
 status line. `/mcp/access` is best-effort: if it is unreachable the registry still renders
@@ -200,12 +252,15 @@ which would misreport the security posture.
 
 Run from the repo with the dev Core up on :3200.
 
-- **Grant** — the twelve rules are evaluated with the *shipped* evaluator
+- **Grant** — the fourteen rules are evaluated with the *shipped* evaluator
   (`core/dist/ui-pages/local-tier/grants.js`), not a reimplementation, over a table of
-  allow/deny cases: `POST /mcp/pending/<id>/confirm|deny` and `PUT /mcp/access/tool-gate`
+  allow/deny cases: `POST /mcp/pending/<id>/confirm|deny`, `PUT /mcp/access/tool-gate`,
+  `GET|POST /mcp/profile-connectors` and `DELETE /mcp/profile-connectors/<profile>`
   allow; `POST /mcp/pending`, `POST /mcp/pending/<id>`, `.../confirm/extra`,
-  `PUT /mcp/access`, `POST /mcp-plugins/*/enable|disable`, `POST /mcp-plugins/sync-connector`
-  and `POST /mcp-plugins/call` deny.
+  `PUT /mcp/access`, `POST /mcp-plugins/*/enable|disable`, `POST /mcp-plugins/sync-connector`,
+  `POST /mcp-plugins/call`, `DELETE /mcp/profile-connectors`,
+  `DELETE /mcp/profile-connectors/<profile>/extra` and `DELETE /claude-ai/mcp/servers/<uuid>`
+  deny.
 - **Behaviour** — `assets/app.js` is executed in a DOM shim against the live Core, with
   `lmui.call` enforcing the real grant: a call is really parked over `POST /mcp` (by gating
   `search`, a read-only tool), then really denied and really confirmed through the pane's own
@@ -233,9 +288,20 @@ strips the outer layer when present, so this pane runs unchanged under both.
 ## Deploy
 
 ```bash
-cp -r ui-apps/assist-mcp-tools ~/.lmui/apps/assist-mcp-tools
-lm-assist restart
+mkdir -p ~/.lmui/apps/assist-mcp-tools
+cp -r ui-apps/assist-mcp-tools/. ~/.lmui/apps/assist-mcp-tools/   # app.js, index.html, AND the grant
+lm-assist restart                                                  # boot sync re-asserts the managed grant
+env -u API_PORT ./core.sh panes check                              # from the repo; expect: in sync
 ```
+
+`cp -r <dir>/.` copies the directory's CONTENTS, so a re-deploy over an existing install does
+not nest a second `assist-mcp-tools/` inside it. `panes sync` only ever re-copies the shim
+(`assets/lmui.js`), which this pane's own edits never touch — run
+`env -u API_PORT ./core.sh panes sync` only when `panes check` reports drift. (`env -u API_PORT`
+keeps a shell that inherited the prod `API_PORT` from steering `core.sh`.) For a dev Core from
+this repo, restart with `env -u API_PORT ./core.sh restart` instead of `lm-assist restart`. The
+Connectors table needs a Core with `/mcp/profile-connectors`; against an older Core it
+hides itself, so the pane can be deployed before the Core.
 
 - Hub gateway: `https://ui-<ownerSlug>-assist-mcp-tools.<appDomain>/`
 - Local tier: `http://<lan-ip>:<localUiPort>/ui/assist-mcp-tools/?lt=<entry token>`

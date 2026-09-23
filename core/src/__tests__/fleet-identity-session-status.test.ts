@@ -1,5 +1,13 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the lm-assist imports: session_status reports per-profile bootstrap
+// state, read against the node-default profile file under getDataDir(). Never the
+// developer's real ~/.lm-assist.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'fid-session-status-'));
 import { SESSION_STATUS_HANDLERS } from '../mcp-server/mcp-session-resolver';
 import { stopSessionCache } from '../session-cache';
 

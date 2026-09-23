@@ -19,11 +19,16 @@ import { getToolCatalog, handlerSourceFor, CATEGORY_ORDER, type ToolCatalogEntry
 import { overlayFromDocs } from '../../mcp-server/registry/overlay';
 import { invalidateOverlayCache } from '../../mcp-server/registry/overlay-live';
 import { currentToolsRev } from '../../mcp-server/registry/tools-rev';
-import { bumpToolsRev } from '../../mcp-server/registry/tools-rev';
 import {
-  PROFILE_DEFINITIONS, activeProfileName, setActiveProfile, readProfileState,
+  PROFILE_DEFINITIONS, activeProfileName, readProfileState,
   resolveProfileTools, unmatchedSelectors, knownSelectors,
+  canonicalProfileName, isValidPinSyntax,
 } from '../../mcp-server/registry/profiles';
+import { profileReport, setNodeDefaultProfile } from '../../mcp-server/registry/profile-report';
+import {
+  mcpBase, connectorUrlFor, connectorNameFor, hubLabelFor, ourConnectors, type ConnectorLike,
+} from '../../mcp-server/profile-connectors';
+import { listMcpRemoteServers, createMcpRemoteServer, deleteMcpRemoteServer } from '../../utils/claudeai-session';
 import { sharedLiveOverlay, overlayDigest } from '../../mcp-server/registry/overlay-live';
 import { createHash } from 'crypto';
 import type { ToolRegistryDoc } from '../../mcp-server/registry/model';
@@ -211,12 +216,18 @@ function toApi(e: Envelope, start: number) {
     : wrapError(e.error?.code ?? 'ERROR', e.error?.message ?? 'error', start);
 }
 
-/** GET /mcp-tools/profile — the active profile, what else is available, and what each costs. */
-async function handleProfileGet(): Promise<Envelope> {
+/** GET /mcp-tools/profile — the node default, what else is available, what each costs, and this
+ *  fleet's connector URL per profile.
+ *
+ *  REST carries no pin (it is the node's management surface), so `effective` === `nodeDefault`
+ *  and `source` is always 'node-default' here. The fields exist so the UI, `mcp_profile` and
+ *  GET /mcp/profile-connectors share one vocabulary. `active` STAYS: deployed panes and
+ *  older UIs read it, and it is — and always was — the node default. */
+export async function handleProfileGet(): Promise<Envelope> {
   // Built-ins AND the ext plugin tools. getToolCatalog() covers only the built-ins, so
-  // counting from it alone made every `ext__*` selector match nothing — `langmart`
-  // reported the same size as `basic` and the plugin list came back empty, while the
-  // real tools/list was 33 tools larger. Fail-open, like the tools/list path itself.
+  // counting from it alone made every `ext__*` selector match nothing — `platform`
+  // (then named `langmart`) reported the same size as `basic` and the plugin list came
+  // back empty, while the real tools/list was 33 tools larger. Fail-open, like tools/list.
   let extNames: string[] = [];
   try {
     extNames = (await getPluginAggregator().listToolDefs()).map((d) => d.name);
@@ -225,10 +236,16 @@ async function handleProfileGet(): Promise<Envelope> {
   }
   const advertised = [...getToolCatalog().keys(), ...extNames];
   const active = activeProfileName();
+  const report = profileReport();
   return ok({
     active,
     setAt: readProfileState().setAt ?? null,
     setBy: readProfileState().setBy ?? null,
+    effective: report.effective,
+    source: report.source,
+    pin: report.pin,
+    nodeDefault: report.nodeDefault,
+    connectors: report.connectors,
     selectors: knownSelectors(advertised),
     profiles: Object.entries(PROFILE_DEFINITIONS).map(([name, def]) => ({
       name,
@@ -240,26 +257,244 @@ async function handleProfileGet(): Promise<Envelope> {
   });
 }
 
-/** POST /mcp-tools/profile {profile} — set it.
+/** POST /mcp-tools/profile {profile} — set the NODE DEFAULT (unpinned clients only).
  *
  *  Deliberately NOT origin-anchored, unlike the per-tool set/rollback above. Those write
  *  a fleet-synced dataset and must land on its origin; this is NODE-LOCAL state, and a
  *  node must be able to change its own context budget even when every other machine is
  *  down. Anchoring it would also be wrong on the merits: dataset scope is cluster/fleet,
- *  so a shared doc would flip every node's tool surface at once. */
-async function handleProfileSet(body: Record<string, unknown>, actor?: string): Promise<Envelope> {
+ *  so a shared doc would flip every node's tool surface at once.
+ *
+ *  The write, the tools-rev bump and the background refresh of UNPINNED claude.ai connectors
+ *  all go through setNodeDefaultProfile — the same path `mcp_profile set` takes. */
+export async function handleProfileSet(body: Record<string, unknown>, actor?: string): Promise<Envelope> {
   const name = typeof body.profile === 'string' ? body.profile.trim() : '';
   if (!name) return fail('INVALID_PROFILE', 'body.profile is required');
+  let note: string;
   try {
-    setActiveProfile(name, actor || 'rest');
+    note = setNodeDefaultProfile(name, actor || 'rest').note;
   } catch (e) {
     return fail('UNKNOWN_PROFILE', e instanceof Error ? e.message : String(e));
   }
-  // Same staleness stamp the overlay uses, so the MCP processes' watcher notices and
-  // emits notifications/tools/list_changed. A claude.ai connector caches tools/list and
-  // needs refresh_connector_tools — reported, not silently assumed.
-  bumpToolsRev();
-  return (await handleProfileGet()) as Envelope;
+  const got = await handleProfileGet();
+  return got.success ? ok({ ...(got.data as Record<string, unknown>), note }) : got;
+}
+
+// --- per-profile claude.ai connectors (spec §7.3) ---
+// REST for these lives under /mcp/ (§7.3, amended d7a4d0c), NOT /mcp-tools/: an older Core has
+// no /mcp/<x> catch-all (rest-server.ts special-cases only the exact path '/mcp'; every other
+// /mcp/* route in mcp-api.routes.ts is a literal), so it answers a clean 404 instead of a mistaken
+// Core reading POST /mcp-tools/profile-connectors as the registry's POST /mcp-tools/:name and
+// minting a junk tool doc. The handlers stay in THIS file (their dependencies — profiles.ts,
+// profile-connectors.ts, claudeai-session.ts — are already imported above); only the route
+// patterns below are anchored to /mcp/profile-connectors.
+
+/** The seam the connector handlers work through; tests inject a fake claude.ai roster. */
+export interface ProfileConnectorDeps {
+  /** THIS node's public MCP base ('' = no hub configured). */
+  base(): string;
+  /** claude.ai's connector roster for the account (throws when this node has no cookie). */
+  listServers(): Promise<ConnectorLike[]>;
+  createServer(url: string, name: string): Promise<{ status: number; body: unknown }>;
+  deleteServer(uuid: string): Promise<{ status: number; body: unknown }>;
+}
+
+export function realProfileConnectorDeps(): ProfileConnectorDeps {
+  return {
+    base: () => mcpBase(),
+    listServers: async () => {
+      const r = await listMcpRemoteServers();
+      if (r.status >= 400) throw new Error(`claude.ai responded ${r.status} ${r.statusText}`);
+      return r.body.servers;
+    },
+    createServer: async (url, name) => {
+      const r = await createMcpRemoteServer({ url, name });
+      return { status: r.status, body: r.body };
+    },
+    deleteServer: async (uuid) => {
+      const r = await deleteMcpRemoteServer(uuid);
+      return { status: r.status, body: r.body };
+    },
+  };
+}
+
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const NO_HUB = 'this node has no hub configured, so it has no public MCP URL for claude.ai to connect to';
+const CONNECT_STEP =
+  'Connect it once in a browser: claude.ai → Customize → Connectors → "Connect" on this connector ' +
+  '(claude.ai generates the OAuth state in-page, so this step cannot be done server-side).';
+
+/** A pinned profile as the node serves it (alias → canonical; an unknown pin stays as-is). */
+const canonPin = (p: string): string => canonicalProfileName(p) ?? p;
+
+/** The bounded view of one claude.ai connector — never its tool names. */
+function connectorView(c: ConnectorLike | undefined) {
+  if (!c) return null;
+  return {
+    uuid: c.uuid ?? null,
+    name: c.name ?? '',
+    connected: !!c.connected,
+    authStatus: c.authStatus ?? null,
+    toolCount: typeof c.toolCount === 'number' ? c.toolCount : null,
+  };
+}
+
+/** Several claude.ai connectors can share one URL (a duplicate created by hand, or one never
+ *  Connected next to a working one). Whichever is REPORTED must be the one a user would keep: a
+ *  connected one first, then the most tools, then claude.ai's order (the sort is stable). Taking
+ *  bootstrap order instead reported a working profile as "NOT connected" and told the user to
+ *  Connect the dead duplicate. */
+function bestFirst<T extends ConnectorLike>(cs: T[]): T[] {
+  const tools = (c: ConnectorLike): number => (typeof c.toolCount === 'number' ? c.toolCount : -1);
+  return [...cs].sort((a, b) => Number(!!b.connected) - Number(!!a.connected) || tools(b) - tools(a));
+}
+
+/** claude.ai's create and the hub's client registration are both read-modify-writes, and
+ *  concurrent registrations can lose a client — so create/delete run one at a time. */
+let connectorWriteChain: Promise<unknown> = Promise.resolve();
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const run = connectorWriteChain.then(() => fn());
+  connectorWriteChain = run.catch(() => undefined);
+  return run;
+}
+
+/** GET /mcp/profile-connectors — per profile: its URL on this hub and its claude.ai
+ *  connector (or null), plus the unpinned one. Bounded by construction: one row per profile. */
+export async function handleProfileConnectorsList(deps: ProfileConnectorDeps = realProfileConnectorDeps()): Promise<Envelope> {
+  const base = deps.base();
+  if (!base) return fail('HUB_NOT_CONFIGURED', NO_HUB);
+  let servers: ConnectorLike[] = [];
+  let claudeai: { ok: boolean; error?: string } = { ok: true };
+  try {
+    servers = await deps.listServers();
+  } catch (e) {
+    // The URLs are still worth showing: they are what a user pastes into claude.ai by hand.
+    claudeai = { ok: false, error: errMsg(e) };
+  }
+  const mine = ourConnectors(servers, base);
+  const pinned = (profile: string) => bestFirst(mine.filter((c) => c.profile !== null && canonPin(c.profile) === profile));
+  const unpinned = bestFirst(mine.filter((c) => c.profile === null));
+  return ok({
+    base,
+    hub: hubLabelFor(base),
+    nodeDefault: activeProfileName(),
+    claudeai,
+    unpinned: {
+      url: connectorUrlFor(null, base),
+      suggestedName: connectorNameFor(null, base),
+      connector: connectorView(unpinned[0]),
+      duplicates: Math.max(0, unpinned.length - 1),
+    },
+    profiles: Object.keys(PROFILE_DEFINITIONS).map((profile) => {
+      const hits = pinned(profile);
+      return {
+        profile,
+        url: connectorUrlFor(profile, base),
+        suggestedName: connectorNameFor(profile, base),
+        connector: connectorView(hits[0]),
+        duplicates: Math.max(0, hits.length - 1),
+      };
+    }),
+    // Pinned to a name this node does not know (a newer profile, a typo): it is served the node default.
+    unknownPins: mine
+      .filter((c) => c.profile !== null && !canonicalProfileName(c.profile))
+      .map((c) => ({ profile: c.profile as string, url: c.url ?? '', connector: connectorView(c) })),
+  });
+}
+
+/** POST /mcp/profile-connectors {profile} — idempotent by URL: an existing connector for
+ *  that profile's URL is returned, otherwise one is registered on claude.ai as
+ *  `lm-assist <hub> <profile>`. The OAuth Connect stays one browser step (named in `nextStep`). */
+export async function handleProfileConnectorCreate(
+  body: Record<string, unknown>, deps: ProfileConnectorDeps = realProfileConnectorDeps(),
+): Promise<Envelope> {
+  const known = Object.keys(PROFILE_DEFINITIONS).join(', ');
+  const raw = typeof body.profile === 'string' ? body.profile.trim() : '';
+  if (!raw) return fail('INVALID_PROFILE', `body.profile is required (one of: ${known})`);
+  const profile = canonicalProfileName(raw);
+  if (!profile) return fail('UNKNOWN_PROFILE', `unknown profile "${raw}". Known profiles: ${known}.`);
+  const base = deps.base();
+  if (!base) return fail('HUB_NOT_CONFIGURED', NO_HUB);
+  const url = connectorUrlFor(profile, base);
+  const name = connectorNameFor(profile, base);
+  return serialized(async () => {
+    let servers: ConnectorLike[];
+    try {
+      servers = await deps.listServers();
+    } catch (e) {
+      return fail('CLAUDEAI_UNAVAILABLE', errMsg(e));
+    }
+    // The connected one when there are duplicates, so `nextStep` never says "Connect" while a
+    // working connector for this URL already exists.
+    const existing = bestFirst(ourConnectors(servers, base).filter((c) => c.profile !== null && canonPin(c.profile) === profile))[0];
+    if (existing) {
+      return ok({ created: false, profile, url: existing.url ?? url, connector: connectorView(existing), nextStep: existing.connected ? null : CONNECT_STEP });
+    }
+    let r: { status: number; body: unknown };
+    try {
+      r = await deps.createServer(url, name);
+    } catch (e) {
+      return fail('CLAUDEAI_UNAVAILABLE', errMsg(e));
+    }
+    if (r.status >= 400) {
+      return fail(`UPSTREAM_${r.status}`, `claude.ai refused to create the connector: ${JSON.stringify(r.body ?? null).slice(0, 300)}`);
+    }
+    const b = (r.body && typeof r.body === 'object' ? r.body : {}) as Record<string, unknown>;
+    let uuid = typeof b.uuid === 'string' ? b.uuid : null;
+    if (!uuid) {
+      // The create response's shape is claude.ai's, not ours: re-list once to name the new uuid.
+      try {
+        uuid = ourConnectors(await deps.listServers(), base).find((c) => c.profile !== null && canonPin(c.profile) === profile)?.uuid ?? null;
+      } catch {
+        /* it exists; its uuid shows on the next list */
+      }
+    }
+    return ok({
+      created: true, profile, url,
+      connector: { uuid, name, connected: false, authStatus: null, toolCount: null },
+      nextStep: CONNECT_STEP,
+    });
+  });
+}
+
+/** DELETE /mcp/profile-connectors/:profile — removes the claude.ai connector(s) pinned to
+ *  that profile's URL. The unpinned connector is not deletable through this route. */
+export async function handleProfileConnectorDelete(
+  rawProfile: string, deps: ProfileConnectorDeps = realProfileConnectorDeps(),
+): Promise<Envelope> {
+  let seg = rawProfile;
+  try { seg = decodeURIComponent(rawProfile); } catch { /* keep raw — the grammar check below refuses it */ }
+  if (!isValidPinSyntax(seg)) {
+    return fail('INVALID_PROFILE', `"${seg}" is not a profile name (want ^[a-z][a-z0-9-]{0,31}$). The unpinned connector is not deleted through this route.`);
+  }
+  const base = deps.base();
+  if (!base) return fail('HUB_NOT_CONFIGURED', NO_HUB);
+  const want = canonPin(seg);
+  return serialized(async () => {
+    let servers: ConnectorLike[];
+    try {
+      servers = await deps.listServers();
+    } catch (e) {
+      return fail('CLAUDEAI_UNAVAILABLE', errMsg(e));
+    }
+    const hits = ourConnectors(servers, base).filter(
+      (c): c is typeof c & { uuid: string } => c.profile !== null && canonPin(c.profile) === want && typeof c.uuid === 'string',
+    );
+    if (hits.length === 0) return fail('NOT_FOUND', `no claude.ai connector points at ${connectorUrlFor(want, base)}`);
+    const removed: Array<{ uuid: string; name: string }> = [];
+    const failed: Array<{ uuid: string; error: string }> = [];
+    for (const c of hits) {
+      try {
+        const r = await deps.deleteServer(c.uuid);
+        if (r.status >= 400) failed.push({ uuid: c.uuid, error: `claude.ai responded ${r.status}` });
+        else removed.push({ uuid: c.uuid, name: c.name ?? '' });
+      } catch (e) {
+        failed.push({ uuid: c.uuid, error: errMsg(e) });
+      }
+    }
+    if (removed.length === 0) return fail('DELETE_FAILED', failed.map((f) => `${f.uuid}: ${f.error}`).join('; '));
+    return ok({ profile: want, url: connectorUrlFor(want, base), removed, failed });
+  });
 }
 
 export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
@@ -281,5 +516,15 @@ export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/rollback$/, handler: wrapped((req) => handleToolRollback(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor())) },
     { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: wrapped((req) => handleToolGet(req.params.name)) },
     { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: wrapped((req) => handleToolSet(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor())) },
+    // Per-profile claude.ai connectors (spec §7.3, amended d7a4d0c): a DIFFERENT prefix
+    // (/mcp/, not /mcp-tools/) on purpose — an older Core has no /mcp/<x> catch-all (only the
+    // literal /mcp/* routes in mcp-api.routes.ts, plus the exact-path '/mcp' MCP-protocol
+    // special-case in rest-server.ts), so it answers a clean 404 here instead of misrouting
+    // into handleToolSet/handleToolGet above and minting a junk registry doc named
+    // "profile-connectors". No ordering concern versus the /mcp-tools/(?<name>)/ patterns
+    // above: different literal prefix, so these can sit anywhere in this file's route list.
+    { method: 'GET', pattern: /^\/mcp\/profile-connectors$/, handler: wrapped(() => handleProfileConnectorsList()) },
+    { method: 'POST', pattern: /^\/mcp\/profile-connectors$/, handler: wrapped((req) => handleProfileConnectorCreate((req.body || {}) as Record<string, unknown>)) },
+    { method: 'DELETE', pattern: /^\/mcp\/profile-connectors\/(?<profile>[^/]+)$/, handler: wrapped((req) => handleProfileConnectorDelete(req.params.profile)) },
   ];
 }

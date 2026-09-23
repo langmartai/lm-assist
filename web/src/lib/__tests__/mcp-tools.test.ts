@@ -15,9 +15,31 @@ import {
   profileDeltaLabel,
   profileUnavailableMessage,
   unmatchedSelectorNote,
+  CONNECT_STEP,
+  applyCreateResult,
+  applyDeleteResult,
+  connectorActions,
+  connectorStateLabel,
+  connectorStatusLines,
+  createConnectorMessage,
+  deleteConfirmLabel,
+  deleteConnectorMessage,
+  duplicatesNote,
+  legacyConnectorLine,
+  noHubProfileConnectors,
+  normalizeProfileConnectors,
+  orderConnectorRows,
+  parseProfileConnectors,
+  profileConnectorsHubMissing,
+  profileConnectorsRouteMissing,
+  type ClaudeAiConnectorState,
   type McpToolRow,
   type McpProfileStatus,
   type McpProfileSummary,
+  type ProfileConnectorRow,
+  type ProfileConnectorsStatus,
+  type ProfileConnectorsWire,
+  type WireConn,
 } from '../mcp-tools';
 
 function row(partial: Partial<McpToolRow> & { name: string }): McpToolRow {
@@ -126,7 +148,7 @@ function status(partial: Partial<McpProfileStatus> = {}): McpProfileStatus {
     selectors: { categories: ['core', 'session'], plugins: ['ext__langmart'] },
     profiles: [
       prof({ name: 'basic', tools: 42 }),
-      prof({ name: 'langmart', tools: 75 }),
+      prof({ name: 'platform', tools: 75 }),
       prof({ name: 'extended', tools: 168 }),
       prof({ name: 'admin', tools: 320, active: true }),
     ],
@@ -137,7 +159,7 @@ function status(partial: Partial<McpProfileStatus> = {}): McpProfileStatus {
 describe('sortProfiles', () => {
   it('orders narrow → wide so the list reads as a cost ladder', () => {
     const out = sortProfiles(status().profiles);
-    expect(out.map((p) => p.name)).toEqual(['basic', 'langmart', 'extended', 'admin']);
+    expect(out.map((p) => p.name)).toEqual(['basic', 'platform', 'extended', 'admin']);
   });
   it('breaks ties on the name so the order is stable across refreshes', () => {
     const out = sortProfiles([prof({ name: 'zeta', tools: 5 }), prof({ name: 'alpha', tools: 5 })]);
@@ -166,18 +188,18 @@ describe('activeProfileRow', () => {
 
 describe('profileDeltaLabel', () => {
   const active = prof({ name: 'admin', tools: 320 });
-  it('is empty for the active row itself', () => {
+  it('is empty for the node-default row itself', () => {
     expect(profileDeltaLabel(active, active)).toBe('');
   });
-  it('is empty when the active row is unknown — a delta against a guess reads as measured', () => {
+  it('is empty when the node default is unknown — a delta against a guess reads as measured', () => {
     expect(profileDeltaLabel(null, prof({ name: 'basic', tools: 42 }))).toBe('');
   });
-  it('counts down for a narrower profile and up for a wider one', () => {
-    expect(profileDeltaLabel(active, prof({ name: 'basic', tools: 42 }))).toBe('278 fewer advertised');
-    expect(profileDeltaLabel(prof({ name: 'basic', tools: 42 }), active)).toBe('278 more advertised');
+  it('counts against the NODE DEFAULT — not against any one connector', () => {
+    expect(profileDeltaLabel(active, prof({ name: 'basic', tools: 42 }))).toBe('278 fewer than the node default');
+    expect(profileDeltaLabel(prof({ name: 'basic', tools: 42 }), active)).toBe('278 more than the node default');
   });
   it('says so when two different profiles resolve to the same size on this node', () => {
-    expect(profileDeltaLabel(active, prof({ name: 'other', tools: 320 }))).toBe('same size');
+    expect(profileDeltaLabel(active, prof({ name: 'other', tools: 320 }))).toBe('same size as the node default');
   });
 });
 
@@ -186,7 +208,7 @@ describe('unmatchedSelectorNote', () => {
     expect(unmatchedSelectorNote(prof({ name: 'basic' }))).toBeNull();
   });
   it('names the selectors that matched nothing', () => {
-    const note = unmatchedSelectorNote(prof({ name: 'langmart', unmatchedSelectors: ['ext__langmart'] }));
+    const note = unmatchedSelectorNote(prof({ name: 'platform', unmatchedSelectors: ['ext__langmart'] }));
     expect(note).toContain('ext__langmart');
     expect(note).toContain('this selector matches');
   });
@@ -207,5 +229,333 @@ describe('profileUnavailableMessage', () => {
   });
   it('passes any other failure through unchanged, so a real error is not disguised', () => {
     expect(profileUnavailableMessage('ECONNREFUSED')).toBe('Profile unavailable: ECONNREFUSED');
+  });
+});
+
+// ── one connector per profile ─────────────────────────────────────────────────
+
+/** GET /mcp/profile-connectors → data, copied VERBATIM from the REST task's
+ *  core/src/__tests__/profile-connectors-routes.test.ts `WIRE_FIXTURE` (which that suite deep-equals
+ *  against the real handler). If the REST shape changes, that fixture changes, and this copy must
+ *  change with it — that is the point of copying it. */
+const WIRE_FIXTURE: ProfileConnectorsWire = {
+  base: 'https://mcp.langmart.ai',
+  hub: 'langmart',
+  nodeDefault: 'admin',
+  claudeai: { ok: true },
+  unpinned: {
+    url: 'https://mcp.langmart.ai/mcp',
+    suggestedName: 'lm-assist langmart',
+    connector: { uuid: '8f61a74e-9d48-44b6-9ba0-a8d4873a86c2', name: 'lm-assist langmart', connected: true, authStatus: 'authenticated', toolCount: 320 },
+    duplicates: 0,
+  },
+  profiles: [
+    {
+      profile: 'basic', url: 'https://mcp.langmart.ai/mcp/basic', suggestedName: 'lm-assist langmart basic',
+      connector: { uuid: '3b3b3b3b-0000-4000-8000-00000000000b', name: 'lm-assist langmart basic', connected: false, authStatus: 'auth_required', toolCount: 0 },
+      duplicates: 0,
+    },
+    { profile: 'platform', url: 'https://mcp.langmart.ai/mcp/platform', suggestedName: 'lm-assist langmart platform', connector: null, duplicates: 0 },
+    { profile: 'extended', url: 'https://mcp.langmart.ai/mcp/extended', suggestedName: 'lm-assist langmart extended', connector: null, duplicates: 0 },
+    { profile: 'admin', url: 'https://mcp.langmart.ai/mcp/admin', suggestedName: 'lm-assist langmart admin', connector: null, duplicates: 0 },
+  ],
+  unknownPins: [
+    {
+      profile: 'nextgen', url: 'https://mcp.langmart.ai/mcp/nextgen',
+      connector: { uuid: '5d5d5d5d-0000-4000-8000-00000000000d', name: 'from a newer build', connected: true, authStatus: 'authenticated', toolCount: 3 },
+    },
+  ],
+};
+
+describe('normalizeProfileConnectors (the REST wire shape → the table model)', () => {
+  it('flattens unpinned + profiles into one row list, unpinned first as profile:null', () => {
+    expect(normalizeProfileConnectors(WIRE_FIXTURE)).toEqual({
+      base: 'https://mcp.langmart.ai',
+      nodeDefault: 'admin',
+      claudeaiError: null,
+      connectors: [
+        { profile: null, url: 'https://mcp.langmart.ai/mcp', name: 'lm-assist langmart',
+          claudeai: { uuid: '8f61a74e-9d48-44b6-9ba0-a8d4873a86c2', name: 'lm-assist langmart', connected: true, authStatus: 'authenticated', toolCount: 320 } },
+        { profile: 'basic', url: 'https://mcp.langmart.ai/mcp/basic', name: 'lm-assist langmart basic',
+          claudeai: { uuid: '3b3b3b3b-0000-4000-8000-00000000000b', name: 'lm-assist langmart basic', connected: false, authStatus: 'auth_required', toolCount: 0 } },
+        { profile: 'platform', url: 'https://mcp.langmart.ai/mcp/platform', name: 'lm-assist langmart platform', claudeai: null },
+        { profile: 'extended', url: 'https://mcp.langmart.ai/mcp/extended', name: 'lm-assist langmart extended', claudeai: null },
+        { profile: 'admin', url: 'https://mcp.langmart.ai/mcp/admin', name: 'lm-assist langmart admin', claudeai: null },
+        // A connector of THIS hub pinned to a profile this node does not know: served the node
+        // default, and shown (spec §3: fail open, visibly) — never dropped.
+        { profile: 'nextgen', url: 'https://mcp.langmart.ai/mcp/nextgen', name: 'from a newer build', unknown: true,
+          claudeai: { uuid: '5d5d5d5d-0000-4000-8000-00000000000d', name: 'from a newer build', connected: true, authStatus: 'authenticated', toolCount: 3 } },
+      ],
+    });
+  });
+  it('feeds the helpers the page renders from without a TypeError', () => {
+    const s = normalizeProfileConnectors(WIRE_FIXTURE);
+    expect(orderConnectorRows(s.connectors, status().profiles).map((r) => r.profile)).toEqual([null, 'basic', 'platform', 'extended', 'admin', 'nextgen']);
+    expect(connectorStatusLines(s)).toEqual([
+      { label: 'Connector', ok: true, detail: 'lm-assist langmart · connected · 320 tools' },
+      { label: 'Connector · basic', ok: false, detail: 'lm-assist langmart basic · not connected (auth_required)' },
+      { label: 'Connector · nextgen (unknown profile)', ok: false,
+        detail: 'from a newer build · connected · 3 tools · pinned to a profile this node does not know — served the node default' },
+    ]);
+  });
+  it('carries each row\'s duplicate count, and groups several connectors on one unknown pin into one row', () => {
+    const conn = (uuid: string, connected: boolean): WireConn => ({ uuid, name: `n-${uuid}`, connected, authStatus: null, toolCount: 1 });
+    const s = normalizeProfileConnectors({
+      ...WIRE_FIXTURE,
+      unpinned: { ...WIRE_FIXTURE.unpinned, duplicates: 2 },
+      unknownPins: [
+        { profile: 'basci', url: 'https://mcp.langmart.ai/mcp/basci', connector: conn('dead', false) },
+        { profile: 'basci', url: 'https://mcp.langmart.ai/mcp/basci', connector: conn('live', true) },
+      ],
+    });
+    expect(s.connectors[0].duplicates).toBe(2);
+    expect(s.connectors[1].duplicates).toBeUndefined();
+    const typo = s.connectors.filter((r) => r.profile === 'basci');
+    expect(typo).toHaveLength(1);
+    expect(typo[0]).toMatchObject({ unknown: true, duplicates: 1, claudeai: { uuid: 'live' } });
+  });
+  it('turns claudeai.ok:false into claudeaiError (with a fallback text) — the rows stay, as URLs', () => {
+    const down = normalizeProfileConnectors({
+      ...WIRE_FIXTURE,
+      claudeai: { ok: false, error: 'No claude.ai session configured' },
+      unpinned: { ...WIRE_FIXTURE.unpinned, connector: null },
+    });
+    expect(down.claudeaiError).toBe('No claude.ai session configured');
+    expect(down.connectors.map((r) => r.url)).toContain('https://mcp.langmart.ai/mcp/basic');
+    expect(normalizeProfileConnectors({ ...WIRE_FIXTURE, claudeai: { ok: false } }).claudeaiError).toBe('claude.ai unreadable');
+  });
+  it('a null uuid (claude.ai named none) becomes the empty string, never null', () => {
+    const s = normalizeProfileConnectors({
+      ...WIRE_FIXTURE,
+      profiles: [{ ...WIRE_FIXTURE.profiles[0], connector: { ...(WIRE_FIXTURE.profiles[0].connector as WireConn), uuid: null } }],
+    });
+    expect(s.connectors[1].claudeai?.uuid).toBe('');
+  });
+});
+
+describe('parseProfileConnectors / profileConnectorsHubMissing / noHubProfileConnectors', () => {
+  it('parses the wire body', () => {
+    expect(parseProfileConnectors(WIRE_FIXTURE)).toEqual(normalizeProfileConnectors(WIRE_FIXTURE));
+  });
+  it('throws — with the code in the message — on an error envelope passed through as data', () => {
+    const body = { success: false, error: { code: 'HUB_NOT_CONFIGURED', message: 'this node has no hub configured' } };
+    expect(() => parseProfileConnectors(body)).toThrow(/HUB_NOT_CONFIGURED/);
+    expect(() => parseProfileConnectors(null)).toThrow(/unexpected/);
+  });
+  it('recognises HUB_NOT_CONFIGURED in the raw error string, which errText would drop', () => {
+    expect(profileConnectorsHubMissing(
+      'Error: API 400: {"success":false,"error":{"code":"HUB_NOT_CONFIGURED","message":"this node has no hub configured"}}',
+    )).toBe(true);
+    expect(profileConnectorsHubMissing('this node has no hub configured')).toBe(false);
+  });
+  it('maps a hub-less node to an empty table that says "no hub"', () => {
+    expect(noHubProfileConnectors()).toEqual({ base: null, nodeDefault: '', connectors: [], claudeaiError: null });
+    expect(connectorStatusLines(noHubProfileConnectors())[0]).toEqual({
+      label: 'Connector', ok: null, detail: 'no hub on this node, so no connector URL',
+    });
+  });
+});
+
+function crow(partial: Partial<ProfileConnectorRow> & { profile: string | null }): ProfileConnectorRow {
+  const p = partial.profile;
+  return {
+    url: p ? `https://mcp.langmart.ai/mcp/${p}` : 'https://mcp.langmart.ai/mcp',
+    name: p ? `lm-assist langmart ${p}` : 'lm-assist langmart',
+    claudeai: null,
+    ...partial,
+  };
+}
+function made(name: string, over: Partial<ClaudeAiConnectorState> = {}): ClaudeAiConnectorState {
+  return { uuid: `u-${name}`, name, connected: true, authStatus: 'authenticated', toolCount: 42, ...over };
+}
+/** A connector as POST /mcp/profile-connectors returns it (uuid may be null). */
+function wire(name: string, over: Partial<WireConn> = {}): WireConn {
+  return { uuid: `u-${name}`, name, connected: true, authStatus: 'authenticated', toolCount: 42, ...over };
+}
+function conns(partial: Partial<ProfileConnectorsStatus> = {}): ProfileConnectorsStatus {
+  return {
+    base: 'https://mcp.langmart.ai',
+    nodeDefault: 'admin',
+    connectors: [
+      crow({ profile: null, claudeai: made('lm-assist langmart', { toolCount: 320 }) }),
+      crow({ profile: 'admin' }),
+      crow({ profile: 'basic', claudeai: made('lm-assist langmart basic') }),
+      crow({ profile: 'extended' }),
+      crow({ profile: 'platform' }),
+    ],
+    claudeaiError: null,
+    ...partial,
+  };
+}
+
+describe('profileConnectorsRouteMissing', () => {
+  // An older Core has no /mcp/<x> catch-all, so it answers rest-server's generic 404. The message
+  // is verbatim from core/src/rest-server.ts, unchanged from v0.2.0 through v0.2.5.
+  it('recognises an older Core\'s generic 404 for the route', () => {
+    expect(profileConnectorsRouteMissing('Route not found: GET /mcp/profile-connectors')).toBe(true);
+    expect(profileConnectorsRouteMissing(
+      'Error: API 404: {"success":false,"error":{"code":"NOT_FOUND","message":"Route not found: GET /mcp/profile-connectors"}}',
+    )).toBe(true);
+    expect(profileConnectorsRouteMissing('Route not found: DELETE /mcp/profile-connectors/basic')).toBe(true);
+  });
+  it('does not mistake the route\'s own NOT_FOUND, another missing route, or any other failure, for it', () => {
+    expect(profileConnectorsRouteMissing('no claude.ai connector points at https://mcp.langmart.ai/mcp/basic')).toBe(false);
+    expect(profileConnectorsRouteMissing('Route not found: GET /mcp-tools/profile')).toBe(false);
+    expect(profileConnectorsRouteMissing('Route not found: GET /mcp/profile-connectors-v2')).toBe(false);
+    expect(profileConnectorsRouteMissing('no advertised tool or registry doc named "profile"')).toBe(false);
+    expect(profileConnectorsRouteMissing('ECONNREFUSED')).toBe(false);
+  });
+});
+
+describe('orderConnectorRows', () => {
+  it('puts the unpinned connector first, then narrow → wide by this node\'s counts', () => {
+    const out = orderConnectorRows(conns().connectors, status().profiles);
+    expect(out.map((r) => r.profile)).toEqual([null, 'basic', 'platform', 'extended', 'admin']);
+  });
+  it('sorts profiles with no count last, by name', () => {
+    const out = orderConnectorRows([crow({ profile: 'zz-new' }), crow({ profile: 'aa-new' }), crow({ profile: 'basic' })], status().profiles);
+    expect(out.map((r) => r.profile)).toEqual(['basic', 'aa-new', 'zz-new']);
+  });
+  it('does not mutate the input', () => {
+    const rows = conns().connectors;
+    const before = rows.map((r) => r.profile);
+    orderConnectorRows(rows, status().profiles);
+    expect(rows.map((r) => r.profile)).toEqual(before);
+  });
+});
+
+describe('connectorStateLabel', () => {
+  it('says "not created" only when claude.ai was actually read', () => {
+    expect(connectorStateLabel(crow({ profile: 'basic' }))).toEqual({ text: 'not created', tone: 'none' });
+    const unknown = connectorStateLabel(crow({ profile: 'basic' }), 'no claude.ai cookie on this node');
+    expect(unknown.tone).toBe('unknown');
+    expect(unknown.text).not.toContain('not created');
+  });
+  it('reports the loaded tool count for a connected connector', () => {
+    expect(connectorStateLabel(crow({ profile: 'basic', claudeai: made('x') }))).toEqual({ text: 'connected · 42 tools', tone: 'ok' });
+  });
+  it('names the Connect step and claude.ai\'s auth status for one not yet connected', () => {
+    const s = connectorStateLabel(crow({ profile: 'basic', claudeai: made('x', { connected: false, authStatus: 'auth_required', toolCount: 0 }) }));
+    expect(s.tone).toBe('warn');
+    expect(s.text).toContain('auth_required');
+    expect(s.text).toContain(CONNECT_STEP);
+  });
+});
+
+describe('unknown pins and duplicates in the table', () => {
+  const typo = crow({ profile: 'basci', url: 'https://mcp.langmart.ai/mcp/basci', unknown: true, claudeai: made('typo') });
+  it('an unknown pin says it is served the node default, and offers Delete only', () => {
+    const st = connectorStateLabel(typo);
+    expect(st.tone).toBe('warn');
+    expect(st.text).toContain('served the node default');
+    expect(connectorActions(typo, { busy: null })).toEqual({ create: false, remove: true, disabled: false });
+    expect(connectorActions({ ...typo, claudeai: null }, { busy: null }).create).toBe(false);
+  });
+  it('duplicates show in the claude.ai cell and the Delete confirmation', () => {
+    const dup = crow({ profile: 'basic', claudeai: made('lm-assist langmart basic'), duplicates: 2 });
+    expect(duplicatesNote(dup)).toBe(' (+2 duplicates)');
+    expect(duplicatesNote(crow({ profile: 'basic', duplicates: 1 }))).toBe(' (+1 duplicate)');
+    expect(duplicatesNote(crow({ profile: 'basic' }))).toBe('');
+    expect(connectorStateLabel(dup).text).toBe('connected · 42 tools (+2 duplicates)');
+    expect(deleteConfirmLabel(dup)).toBe('Delete "lm-assist langmart basic" and its 2 duplicates (3 connectors) from claude.ai?');
+    expect(deleteConfirmLabel(crow({ profile: 'basic', claudeai: made('x') }))).toBe('Delete "x" from claude.ai?');
+    expect(connectorStatusLines(conns({ connectors: [dup] }))[0].detail).toBe('lm-assist langmart basic · connected · 42 tools (+2 duplicates)');
+  });
+  it('a delete clears the duplicates and drops an unknown-pin row', () => {
+    const s = conns({ connectors: [crow({ profile: 'basic', claudeai: made('b'), duplicates: 1 }), typo] });
+    const afterBasic = applyDeleteResult(s, 'basic');
+    expect(afterBasic.connectors[0]).toEqual(crow({ profile: 'basic' }));
+    expect(applyDeleteResult(s, 'basci').connectors.map((r) => r.profile)).toEqual(['basic']);
+  });
+  it('the delete message says how many went, and names any claude.ai refused', () => {
+    expect(deleteConnectorMessage('basic', { removed: [{ uuid: 'a', name: 'a' }], failed: [] }))
+      .toBe('Deleted the basic connector from claude.ai. Conversations that had it lose its tools.');
+    expect(deleteConnectorMessage('basic', { removed: [{ uuid: 'a', name: 'a' }, { uuid: 'b', name: 'b' }], failed: [] }))
+      .toContain('Deleted 2 connectors on the basic URL (duplicates included)');
+    expect(deleteConnectorMessage('basic', { removed: [{ uuid: 'a', name: 'a' }], failed: [{ uuid: 'b', error: 'claude.ai responded 500' }] }))
+      .toContain('1 could not be deleted and still exists: b (claude.ai responded 500).');
+    expect(deleteConnectorMessage('basic', null)).toContain('Deleted the basic connector');
+  });
+});
+
+describe('connectorActions', () => {
+  it('never offers Create or Delete on the unpinned connector', () => {
+    expect(connectorActions(crow({ profile: null, claudeai: made('x') }), { busy: null }))
+      .toEqual({ create: false, remove: false, disabled: true });
+  });
+  it('offers Create when missing and Delete when present', () => {
+    expect(connectorActions(crow({ profile: 'basic' }), { busy: null })).toEqual({ create: true, remove: false, disabled: false });
+    expect(connectorActions(crow({ profile: 'basic', claudeai: made('x') }), { busy: null }))
+      .toEqual({ create: false, remove: true, disabled: false });
+  });
+  it('offers nothing while claude.ai is unreadable — "missing" is then a guess', () => {
+    expect(connectorActions(crow({ profile: 'basic' }), { busy: null, claudeaiError: 'no cookie' }))
+      .toEqual({ create: false, remove: false, disabled: true });
+  });
+  it('runs one write at a time (the hub registers each with a read-modify-write)', () => {
+    expect(connectorActions(crow({ profile: 'extended' }), { busy: 'basic' }).disabled).toBe(true);
+  });
+});
+
+describe('createConnectorMessage', () => {
+  const base = { profile: 'basic', url: 'https://mcp.langmart.ai/mcp/basic' };
+  it('names the one step left after a create', () => {
+    const m = createConnectorMessage({
+      ...base, created: true, connector: wire('lm-assist langmart basic', { connected: false }),
+      nextStep: 'claude.ai → Customize → Connectors → Connect.',
+    });
+    expect(m).toBe('Created "lm-assist langmart basic" for the basic profile. One step left: claude.ai → Customize → Connectors → Connect.');
+  });
+  it('says nothing was created when the URL already had a connector (nextStep null when connected)', () => {
+    const connected = createConnectorMessage({ ...base, created: false, connector: wire('lm-assist langmart basic'), nextStep: null });
+    expect(connected).toContain('already exists');
+    expect(connected).toContain('nothing to do');
+    expect(createConnectorMessage({ ...base, created: false, connector: wire('n', { connected: false }) })).toContain(CONNECT_STEP);
+  });
+});
+
+describe('applyCreateResult / applyDeleteResult', () => {
+  it('patch only the named row and leave the input alone', () => {
+    const s = conns();
+    const c = wire('lm-assist langmart extended', { connected: false });
+    const after = applyCreateResult(s, { profile: 'extended', url: 'u', created: true, connector: c });
+    expect(after.connectors.find((r) => r.profile === 'extended')?.claudeai).toEqual(c);
+    expect(s.connectors.find((r) => r.profile === 'extended')?.claudeai).toBeNull();
+    const gone = applyDeleteResult(after, 'basic');
+    expect(gone.connectors.find((r) => r.profile === 'basic')?.claudeai).toBeNull();
+    expect(gone.connectors.find((r) => r.profile === null)?.claudeai?.name).toBe('lm-assist langmart');
+  });
+  it('a create whose uuid is still unknown (null) patches the row with an empty uuid', () => {
+    const after = applyCreateResult(conns(), { profile: 'extended', url: 'u', created: true, connector: wire('x', { uuid: null }) });
+    expect(after.connectors.find((r) => r.profile === 'extended')?.claudeai?.uuid).toBe('');
+  });
+});
+
+describe('connectorStatusLines', () => {
+  it('lists every connector that exists — not the first /langmart/i match', () => {
+    const lines = connectorStatusLines(conns());
+    expect(lines.map((l) => l.label)).toEqual(['Connector', 'Connector · basic']);
+    expect(lines[0].detail).toBe('lm-assist langmart · connected · 320 tools');
+    expect(lines.every((l) => l.ok === true)).toBe(true);
+  });
+  it('says claude.ai could not be read instead of claiming there is nothing', () => {
+    expect(connectorStatusLines(conns({ claudeaiError: 'no claude.ai cookie on this node' })))
+      .toEqual([{ label: 'Connector', ok: false, detail: 'claude.ai unreadable — no claude.ai cookie on this node' }]);
+  });
+  it('says none exist for this hub when claude.ai has none on its URLs', () => {
+    const lines = connectorStatusLines(conns({ connectors: [crow({ profile: null }), crow({ profile: 'basic' })] }));
+    expect(lines[0].detail).toContain('none in claude.ai for https://mcp.langmart.ai');
+  });
+  it('a node with no hub has no URL to match', () => {
+    expect(connectorStatusLines(conns({ base: null, connectors: [] }))[0].ok).toBeNull();
+  });
+});
+
+describe('legacyConnectorLine', () => {
+  it('keeps the older-Core pick: first /langmart/i by url or name, else the first server', () => {
+    expect(legacyConnectorLine([{ name: 'gh', url: 'https://gh' },
+      { name: 'x', url: 'https://mcp.langmart.ai/mcp', connected: true, toolCount: 9 }]).detail).toBe('x · connected · 9 tools');
+    expect(legacyConnectorLine([{ name: 'gh', url: 'https://gh', connected: false }]).detail).toBe('gh · disconnected');
+    expect(legacyConnectorLine([])).toEqual({ label: 'Connector', ok: false, detail: 'no connector' });
   });
 });

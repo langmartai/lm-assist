@@ -75,6 +75,10 @@ import {
   setMcpToolsAccess,
   setMcpToolsAutoApprove,
   listMcpRemoteServers,
+  approvalConnectorRoster,
+  applyConnectorToolUpdates,
+  validateConnectorToolUpdates,
+  parseAutoApproveTools,
   listOrgStyles,
   getModelConfig,
   getMemorySettings,
@@ -244,7 +248,13 @@ async function resolveDrivenTools(body: Record<string, unknown>): Promise<{ tool
     try {
       const names = Array.isArray(enableConn) ? enableConn.map(String) : undefined;
       const roster = await listMcpRemoteServers();
-      const conn = pickLmAssistConnector((roster.body?.servers as unknown[] as never) || []);
+      // Optional `connectorProfile`: drive THAT profile's connector (exact, or no tools). Default:
+      // this node's unpinned connector, else admin, else the widest — chosen by URL, never by name.
+      const cp = body.connectorProfile ?? body.connector_profile;
+      const conn = pickLmAssistConnector(
+        (roster.body?.servers as unknown[] as never) || [],
+        typeof cp === 'string' && cp.trim() ? { profile: cp.trim() } : {},
+      );
       if (conn) {
         // Live defs = compiled-in built-ins + dynamically-registered third-party
         // plugin tools (ext__…). LM_ASSIST_TOOL_DEFS alone is baked at build time,
@@ -971,7 +981,9 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
 
     // POST /claude-ai/mcp/servers/:uuid/auto-approve — turn ON/off "always approve" auto-approval
     //   for a connector's tools so driven tool calls don't hit the per-call approval gate. Body:
-    //   { enable?: bool (default true), tools?: string[] (default ALL the connector's tools) }.
+    //   { enable?: bool (default true), tools?: string[] (OMITTED = ALL the connector's tools) }.
+    //   A `tools` that is not an array, or names no tool once non-strings are dropped, is REFUSED:
+    //   always-approve removes the human approval gate, so a malformed scope must never widen it.
     //   Read-modify-write on enabled_mcp_tools using the live bootstrap's always_approved_key.
     { method: 'POST', pattern: /^\/claude-ai\/mcp\/servers\/(?<uuid>[^/?]+)\/auto-approve$/,
       handler: async (req) => {
@@ -981,9 +993,26 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         const b = req.body || {};
         const enable = typeof b.enable === 'boolean' ? b.enable : true;
-        const tools = Array.isArray(b.tools) ? b.tools.filter((t: unknown): t is string => typeof t === 'string') : undefined;
+        const scope = parseAutoApproveTools(b.tools);
+        if ('error' in scope) return { success: false, error: { code: 'INVALID_INPUT', message: `tools ${scope.error}` } };
         try {
-          return upstreamWrap(await setMcpToolsAutoApprove(uuid, enable, tools));
+          return upstreamWrap(await setMcpToolsAutoApprove(uuid, enable, scope.tools));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      } },
+
+    // POST /claude-ai/mcp/tool-settings/batch — several connectors' tool access + auto-approve in
+    //   ONE serialized read-modify-write of enabled_mcp_tools (the PATCH replaces the whole map, so
+    //   per-connector writes in parallel drop each other's keys). Body: { updates: [{ connectorUuid,
+    //   access?: {tool: bool}, autoApprove?: {enable, tools?, carryForward?} }] }. Deliberately NOT
+    //   under /claude-ai/mcp/servers: that prefix is on the hub relay allow-list; this is local upkeep.
+    { method: 'POST', pattern: /^\/claude-ai\/mcp\/tool-settings\/batch$/,
+      handler: async (req) => {
+        const v = validateConnectorToolUpdates(req.body || {});
+        if ('error' in v) return { success: false, error: v.error };
+        try {
+          return upstreamWrap(await applyConnectorToolUpdates(v.updates));
         } catch (err) {
           return catchOAuth(err);
         }
@@ -2025,7 +2054,10 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
     //   uses: track tool_use blocks during SSE drain, POST /tool_approval
     //   on each content_block_stop, then poll the conv for the
     //   post-approval continuation. The returned envelope includes an
-    //   `approvals: [{toolUseId, toolName, status, ok}, ...]` field.
+    //   `approvals: [{toolUseId, toolName, status, ok}, ...]` field. Keys are
+    //   chosen per CONNECTOR (the tool_use's `<integration>:` prefix → uuid,
+    //   from a bounded roster read here + the `tools` array), never the last
+    //   connector written — several lm-assist connectors share tool names.
     //
     //   `attachments` / `files` / `syncSources` / `tools` are embedded
     //   into the snippet via JSON.stringify. Large payloads make the
@@ -2052,6 +2084,15 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           };
         }
         try {
+          const autoApproveTools = typeof b.autoApproveTools === 'boolean'
+            ? b.autoApproveTools
+            : (typeof b.auto_approve_tools === 'boolean' ? b.auto_approve_tools : undefined);
+          // Driven approvals pick the key of the connector a tool_use NAMES (several lm-assist
+          // connectors share tool names). The snippet cannot list connectors itself, so Core
+          // injects the name → uuid roster — best-effort and bounded (approvalConnectorRoster);
+          // the `tools` array's own integration_name/mcp_server_uuid pairs cover a node without
+          // a claude.ai cookie.
+          const approvalConnectors = autoApproveTools ? await approvalConnectorRoster() : undefined;
           const out = snippetSendMessage(uuid, b.prompt, {
             model: typeof b.model === 'string' ? b.model : undefined,
             timezone: typeof b.timezone === 'string' ? b.timezone : undefined,
@@ -2062,9 +2103,8 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             syncSources: Array.isArray(b.syncSources) ? b.syncSources
               : Array.isArray(b.sync_sources) ? b.sync_sources : undefined,
             tools: Array.isArray(b.tools) ? b.tools : undefined,
-            autoApproveTools: typeof b.autoApproveTools === 'boolean'
-              ? b.autoApproveTools
-              : (typeof b.auto_approve_tools === 'boolean' ? b.auto_approve_tools : undefined),
+            autoApproveTools,
+            approvalConnectors,
             showOverlay: typeof b.showOverlay === 'boolean'
               ? b.showOverlay
               : (typeof b.show_overlay === 'boolean' ? b.show_overlay : undefined),

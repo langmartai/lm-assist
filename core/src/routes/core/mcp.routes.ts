@@ -20,12 +20,18 @@
  * Separate from the REST shims at `/mcp/search`, `/mcp/detail`,
  * `/mcp/feedback` in `mcp-api.routes.ts` — those exist for the stdio MCP
  * server's HTTP client. This file matches the exact path `/mcp` only.
+ *
+ * A request may carry a profile PIN as `/mcp?profile=<name>` (the hub rewrites the
+ * public `/mcp/<name>` path into that query on every relay). It is resolved once per
+ * request and threaded to the tools/list filter and the MCP context — see
+ * handleMcpRequest. The QUERY form is what keeps a pin clear of the `/mcp/*` shims.
  */
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { runWithMcpContext } from '../../mcp-server/principal-context';
+import { resolveEffectiveProfile, type EffectiveProfile } from '../../mcp-server/registry/profiles';
 import { getDataService } from '../../data/data-service';
 import type { ParsedRequest } from '../index';
 
@@ -77,12 +83,34 @@ export const dispatch: McpToolDispatcher = async (name, args) => {
   }
 };
 
+/**
+ * The profile PIN a request carries: `profile` from the raw `req.url` query
+ * (`/mcp?profile=basic`). The hub rewrites the public `/mcp/<profile>` path into this
+ * query on every relay; a local client (the mission controller, curl) sends it directly.
+ * rest-server matches `/mcp` with the query stripped but hands over the untouched `req`,
+ * so the query is still here. Returned as sent (trimmed) — resolveEffectiveProfile
+ * decides whether it names a profile. Pure; never throws.
+ */
+export function parseProfilePin(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  const q = url.indexOf('?');
+  if (q < 0) return undefined;
+  let raw: string | null = null;
+  try { raw = new URLSearchParams(url.slice(q + 1)).get('profile'); } catch { return undefined; }
+  const v = raw?.trim();
+  return v ? v : undefined;
+}
+
 // Fresh Server per request (stateless mode). The SDK errors with
 // "Already connected to a transport" if a Server is `.connect()`'d more
 // than once — caching breaks the second call. A new Server is cheap;
 // all expensive work (vector store, session cache, etc.) lives in
 // module-level singletons that the handlers reach through.
-function buildServer(): Server {
+//
+// `profile` is this request's effective profile. It decides what tools/list advertises
+// and which instructions the server is built with. The Server is built BEFORE the
+// request context exists, so it is handed in rather than read from the context.
+function buildServer(profile: EffectiveProfile): Server {
   let name = 'lm-assist';
   try {
     const cfg = getHubConfig();
@@ -92,7 +120,7 @@ function buildServer(): Server {
   }
   const server = new Server(
     { name, version: '2.0.0' },
-    { capabilities: { tools: {} }, instructions: getLmAssistInstructions() },
+    { capabilities: { tools: {} }, instructions: getLmAssistInstructions(profile) },
   );
   // Tool-registry overlay (spec §4.4): fresh Server per request + per-request provider
   // reads ⇒ registry edits reach tools/list + tools/call live, no Core restart.
@@ -100,11 +128,12 @@ function buildServer(): Server {
     // In-process: this surface IS the Core, so the aggregator is reachable directly.
     // Local defs first, then remote-owned ext tools from the rest of the fleet so
     // the connector sees every plugin tool regardless of which node it routed to.
+    // (Not called at all under a profile with no ext__ selector — see configure.ts.)
     list: async () => {
       const local = await getPluginAggregator().listToolDefs();
       try { return [...local, ...(await fleetExtToolDefs())]; } catch { return local; }
     },
-  });
+  }, { profile });
   return server;
 }
 
@@ -221,7 +250,12 @@ export async function handleMcpRequest(
     return typeof v === 'string' ? v : undefined;
   })();
 
-  const server = buildServer();
+  // The profile this request is served under: its pin, else the node default. Resolved
+  // ONCE, here — no disk beyond activeProfileName()'s 1.5 s cached read — and handed to
+  // both consumers: the tools/list filter + instructions (buildServer) and the request
+  // context for tool handlers and the result footer (runWithMcpContext below).
+  const effective = resolveEffectiveProfile(parseProfilePin(req.url));
+  const server = buildServer(effective);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
   });
@@ -237,7 +271,7 @@ export async function handleMcpRequest(
 
   try {
     await server.connect(transport);
-    await runWithMcpContext({ principal, toolUseId: callerToolUseId }, () => transport.handleRequest(req, res, body));
+    await runWithMcpContext({ principal, toolUseId: callerToolUseId, profile: effective }, () => transport.handleRequest(req, res, body));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!res.headersSent) {

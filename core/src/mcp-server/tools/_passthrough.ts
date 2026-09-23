@@ -189,18 +189,31 @@ export async function workerPut<T = unknown>(
   return unwrapEnvelope<T>(res, routePath);
 }
 
-/** DELETE an lm-assist route on loopback. Same envelope handling as workerGet. */
+/** DELETE an lm-assist route on loopback. Same envelope handling as workerGet. `timeoutMs`
+ *  defaults to 30 s, like workerPost. */
 export async function workerDelete<T = unknown>(
   routePath: string,
   body?: Record<string, unknown>,
+  timeoutMs = 30000,
 ): Promise<T> {
   const res = await fetch(`${BASE_URL}${routePath}`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   return unwrapEnvelope<T>(res, routePath);
+}
+
+/**
+ * True when a loopback call gave up WAITING (AbortSignal.timeout ⇒ `TimeoutError`, or an abort)
+ * rather than being answered with a failure. The route behind it keeps running, so a WRITE may
+ * still land: a tool must not report it as a plain failure (see refresh-connector.ts,
+ * mcp-connectors.ts).
+ */
+export function isLoopbackTimeout(e: unknown): boolean {
+  const name = e && typeof e === 'object' ? (e as { name?: unknown }).name : undefined;
+  return name === 'TimeoutError' || name === 'AbortError';
 }
 
 /**

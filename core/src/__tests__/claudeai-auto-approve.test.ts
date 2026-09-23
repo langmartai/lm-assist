@@ -39,3 +39,14 @@ test('does not mutate the input map', () => {
   buildAutoApproveMap(TOOLS, cur, true);
   assert.deepEqual(cur, { 'X:y': true });
 });
+
+test('an EMPTY toolNames list approves nothing — only an OMITTED list means every tool', () => {
+  // Always-approve removes the human approval gate, so an empty scope must never widen to "all".
+  for (const enable of [true, false]) {
+    const cur = { 'X:y': true, 'SRV:data_catalog-HASH1': true };
+    const { map, changed, skipped } = buildAutoApproveMap(TOOLS, cur, enable, []);
+    assert.deepEqual(changed, []);
+    assert.deepEqual(skipped, []);
+    assert.deepEqual(map, cur);
+  }
+});

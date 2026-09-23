@@ -63,6 +63,75 @@ const INSTRUCTIONS =
   "The tool returns `{ status, statusText, body }`. If you don't have a claude.ai tab open, " +
   "use mcp__claude-in-chrome__tabs_create_mcp + navigate to https://claude.ai/ first.";
 
+// ── driven approvals on the Chrome transport ─────────────────────────────────
+//
+// In-page mirror of indexApprovalKeys + selectApprovalKey (claudeai-session.ts). Several
+// lm-assist connectors (one per profile) expose the SAME tool names, so a flat
+// tool → key map answers with whichever connector's key came last in enabled_mcp_tools, and a
+// tool_use from the other connector goes out with the wrong `mcp_server_uuid` ('Tool result
+// could not be submitted'). Keys are indexed per connector from the `<uuid>:` prefix, and the
+// connector is chosen from the tool_use's `<integration>:` prefix through a name → uuid map built
+// in Core (approvalConnectorMap) and injected into the snippet. Same order as selectApprovalKey:
+// a prefix naming a KNOWN connector answers from that connector only (no key ⇒ no approval POST,
+// never another connector's key); otherwise the flat maps, hash and bare from ONE connector.
+// approval-select-parity.test.ts runs this code and selectApprovalKey over the same inputs.
+// Tool names may carry '-' and '.' (plugin tools such as `ext__demo-plugin__alerts_list`).
+export const APPROVAL_SELECT_JS = `
+  const lmHasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const lmApprovalIndex = (emt) => {
+    const HASH_RE = /^(${UUID_RE_STR}):([A-Za-z0-9_.-]+)-([0-9a-f]{32})$/;
+    const BARE_RE = /^(${UUID_RE_STR}):([A-Za-z0-9_.-]+)$/;
+    const idx = { hashKeys: {}, bareKeys: {}, byConnector: {} };
+    const own = (u) => (lmHasOwn(idx.byConnector, u) ? idx.byConnector[u] : (idx.byConnector[u] = { hashKeys: {}, bareKeys: {} }));
+    for (const k of Object.keys(emt || {})) {
+      const mh = k.match(HASH_RE);
+      if (mh) { idx.hashKeys[mh[2]] = k; own(mh[1]).hashKeys[mh[2]] = k; continue; }
+      const mb = k.match(BARE_RE);
+      if (mb) { idx.bareKeys[mb[2]] = k; own(mb[1]).bareKeys[mb[2]] = k; }
+    }
+    return idx;
+  };
+  const lmSelectApprovalKey = (idx, uuidByName, toolName) => {
+    const cut = toolName.lastIndexOf(':');
+    const tool = cut >= 0 ? toolName.slice(cut + 1) : toolName;
+    const integration = cut >= 0 ? toolName.slice(0, cut).trim().toLowerCase() : '';
+    const uuid = integration && lmHasOwn(uuidByName, integration) ? uuidByName[integration] : undefined;
+    if (uuid) {
+      const c = lmHasOwn(idx.byConnector, uuid) ? idx.byConnector[uuid] : undefined;
+      const bare = (c && c.bareKeys[tool]) || undefined;
+      return { key: (c && c.hashKeys[tool]) || bare, bare: bare };
+    }
+    const hash = idx.hashKeys[toolName] || idx.hashKeys[tool];
+    if (hash) {
+      const hc = idx.byConnector[hash.slice(0, hash.indexOf(':'))];
+      return { key: hash, bare: (hc && hc.bareKeys[tool]) || idx.bareKeys[toolName] || idx.bareKeys[tool] };
+    }
+    const bare = idx.bareKeys[toolName] || idx.bareKeys[tool];
+    return { key: bare, bare: bare };
+  };`;
+
+/**
+ * Pure: the `<integration>` name (lowercased) → connector uuid map a driven snippet selects
+ * approval keys with. `roster` is claude.ai's connector list as Core read it
+ * (approvalConnectorRoster — may be `{}` when this node cannot read claude.ai); the turn's own
+ * `tools` array (SPA shape: `integration_name` + `mcp_server_uuid`) is layered on top, since it
+ * names exactly the connectors this turn exposes and needs no network. Malformed entries are
+ * skipped, so a caller-supplied array can never inject anything but a uuid.
+ */
+export function approvalConnectorMap(tools: unknown[] | undefined, roster?: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  const put = (name: unknown, uuid: unknown): void => {
+    if (typeof name !== 'string' || typeof uuid !== 'string') return;
+    const n = name.trim().toLowerCase();
+    if (n && UUID_RE.test(uuid)) out[n] = uuid.toLowerCase();
+  };
+  for (const [n, u] of Object.entries(roster || {})) put(n, u);
+  for (const t of tools || []) {
+    if (t && typeof t === 'object') put((t as Record<string, unknown>).integration_name, (t as Record<string, unknown>).mcp_server_uuid);
+  }
+  return out;
+}
+
 /**
  * Serialize a query object to a URL-safe query string. Supports the
  * mixed-case `tree=True` that the web app uses (booleans are stringified).
@@ -608,6 +677,13 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
    */
   autoApproveTools?: boolean;
   /**
+   * With `autoApproveTools`: claude.ai's connector roster as Core read it — lowercased connector
+   * name → server uuid (approvalConnectorRoster). Merged with the `tools` array's own
+   * integration_name → mcp_server_uuid pairs (approvalConnectorMap) and injected, so a tool_use
+   * named `<integration>:<tool>` is approved with THAT connector's key. Omitted ⇒ `tools` alone.
+   */
+  approvalConnectors?: Record<string, string>;
+  /**
    * When true, the generated snippet injects a status banner at the top of
    * the page explaining what lm-assist is doing, updates the banner as the
    * flow progresses (sending prompt → tool calls → approval → polling →
@@ -755,30 +831,23 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
   // values reach back into the outer snippet via `org`, `conv`,
   // `baseHeaders`, `text`, `events` declared above.
   const autoApproveSetup = autoApprove ? `
-  // === auto-approve setup ===
-  let approvalLookup = { hashKeys: {}, bareKeys: {} };
+  // === auto-approve setup ===${APPROVAL_SELECT_JS}
+  // <integration> name → connector uuid, built in Core (approvalConnectorMap).
+  const approvalConnectors = ${JSON.stringify(approvalConnectorMap(tools, opts.approvalConnectors))};
+  let approvalLookup = { hashKeys: {}, bareKeys: {}, byConnector: {} };
   try {
     const sr = await fetch('/api/organizations/' + org + '/chat_conversations/' + conv + '?tree=True&rendering_mode=messages&render_all_tools=true', {
       credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' },
     });
     if (sr.ok) {
       const sj = await sr.json();
-      const emt = (sj.settings && sj.settings.enabled_mcp_tools) || {};
-      const HASH_RE = /^([0-9a-f-]{36}):([a-zA-Z0-9_]+)-([0-9a-f]{32})$/;
-      const BARE_RE = /^([0-9a-f-]{36}):([a-zA-Z0-9_]+)$/;
-      for (const k of Object.keys(emt)) {
-        const mh = k.match(HASH_RE);
-        if (mh) { approvalLookup.hashKeys[mh[2]] = k; continue; }
-        const mb = k.match(BARE_RE);
-        if (mb) approvalLookup.bareKeys[mb[2]] = k;
-      }
+      approvalLookup = lmApprovalIndex((sj.settings && sj.settings.enabled_mcp_tools) || {});
     }
   } catch (_e) {}
   const toolUseBlocks = [];
   const approvalPromises = [];
   const firedToolUses = new Set();
-  const approvals = [];
-  const stripPrefix = (n) => n.includes(':') ? n.split(':').pop() : n;` : '';
+  const approvals = [];` : '';
 
   const autoApproveInLoop = autoApprove ? `
         // === auto-approve: detect tool_use blocks + fire /tool_approval ===
@@ -794,10 +863,8 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
             const tu = toolUseBlocks.find(t => t.index === stoppedIdx);
             if (tu && !firedToolUses.has(tu.id)) {
               firedToolUses.add(tu.id);
-              const fullName = tu.name;
-              const strippedName = stripPrefix(fullName);
-              const key = approvalLookup.hashKeys[fullName] || approvalLookup.hashKeys[strippedName] ||
-                          approvalLookup.bareKeys[fullName] || approvalLookup.bareKeys[strippedName];
+              // The connector the tool_use names, never the last one written (APPROVAL_SELECT_JS).
+              const key = lmSelectApprovalKey(approvalLookup, approvalConnectors, tu.name).key;
               if (key) {
                 const p = fetch('/api/organizations/' + org + '/chat_conversations/' + conv + '/tool_approval', {
                   method: 'POST', credentials: 'include',

@@ -52,7 +52,7 @@ How to capture the cookie:
 | `POST` | `/claude-ai/conversations` | **WRITE** — create a new empty conversation. Body: `{ name?, uuid? }` (UUID auto-generated if omitted). Returns `{ ...conversation, uuid }`. |
 | `GET` | `/claude-ai/conversations/:uuid?tree=&rendering_mode=&render_all_tools=` | Read one conversation (full message tree). |
 | `DELETE` | `/claude-ai/conversations/:uuid` | **WRITE (destructive)** — permanently delete one conversation. UUID validated. claude.ai responds 204. |
-| `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return `{ text, events, humanMessageUuid, assistantMessageUuid }`. Body: `{ prompt, model?, timezone?, locale?, parentMessageUuid?, tools?, enableConnectorTools?, autoApproveTools?, timeoutMs? }`. |
+| `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return `{ text, events, humanMessageUuid, assistantMessageUuid }`. Body: `{ prompt, model?, timezone?, locale?, parentMessageUuid?, tools?, enableConnectorTools?, connectorProfile?, autoApproveTools?, timeoutMs? }` — see [the body shape](#body-shape). |
 | `POST` | `/claude-ai/conversations/:uuid/completion/stream` | **WRITE** — streaming variant for embedded chat clients: same body, answers `text/event-stream` over the raw socket (see "Embedded browser chat clients" below). |
 | `GET` | `/claude-ai/conversations/:uuid/messages` | Parsed transcript for chat UIs: `{ uuid, name, messages: [{ role, type, text, thinking?, toolCalls?: [{name, input, result, isError, images?: [{fileUuid}]}] }] }` (core-side `parseChatMessages`; image tool-results become file refs, base64 never lands in `result`; successful `tool_search` meta-calls are suppressed). |
 | `GET` | `/claude-ai/conversations/named?limit=&prefix=&refresh=` | Name-prefix-filtered list, newest-updated first: `{ prefix, conversations: [{uuid, name, updatedAt, createdAt}] }`. Scoped tokens may only use their mint-bound `listPrefix` (query ignored; none bound → 403); full-token callers must pass `?prefix=`. Defaults to a live upstream fetch (cache lags right after a create); `refresh=false` serves the cache index. |
@@ -128,6 +128,47 @@ Manage the account's claude.ai **plugin marketplaces** (each a GitHub repo with 
 | `GET` | `/claude-ai/org/sync/gdrive-progress` | Google Drive ingestion status. |
 | `GET` | `/claude-ai/org/notifications` | Email / push notification preferences. |
 | `GET` | `/claude-ai/memory` | Claude's persistent memory entries for the org. |
+
+#### MCP connectors on the claude.ai account
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/claude-ai/mcp/servers` | Connectors with `uuid, name, url, connected, authStatus, customOauthClientId, toolCount, tools`, distilled from the org `mcp/v2/bootstrap` stream (may take up to ~30 s). |
+| `POST` | `/claude-ai/mcp/servers` | **WRITE** — register a connector. Body: `{ url, name, customOauthClientId?, customOauthClientSecret? }`. For lm-assist's own per-profile connectors use `POST /mcp/profile-connectors` instead (idempotent by URL; see [mcp-connector.md](mcp-connector.md#one-connector-per-profile)). |
+| `DELETE` | `/claude-ai/mcp/servers/:uuid` | **WRITE** — remove a connector. |
+| `POST` | `/claude-ai/mcp/servers/:uuid/clear-cache` | **WRITE** — clear claude.ai's cached `tools/list` for one connector (the web "refresh tools" button). |
+| `POST` | `/claude-ai/mcp/servers/:uuid/tool-access` | **WRITE** — `{ enable?: string[], block?: string[] }`, one read-modify-write of `enabled_mcp_tools`. |
+| `POST` | `/claude-ai/mcp/servers/:uuid/auto-approve` | **WRITE** — `{ enable?: bool, tools?: string[] }`; `tools` omitted = every tool the connector lists; an empty or malformed list is REFUSED (always-approve removes the human gate). |
+| `POST` | `/claude-ai/mcp/tool-settings/batch` | **WRITE** — several connectors' tool access and auto-approve in ONE serialized read-modify-write. See below. |
+
+**`POST /claude-ai/mcp/tool-settings/batch`.** The account's `enabled_mcp_tools` map is replaced
+whole by every PATCH, so per-connector writes running side by side drop each other's keys. This
+route applies many connectors' changes in one read-modify-write, behind the same per-process queue
+as the per-connector routes above. Body:
+
+```json
+{ "updates": [
+  { "connectorUuid": "<uuid>", "access": { "search": true, "agent_execute": false } },
+  { "connectorUuid": "<uuid>", "autoApprove": { "enable": true, "tools": ["search"], "carryForward": false } }
+] }
+```
+
+- `updates` must be a non-empty array of at most **50** connectors (`NO_UPDATES`,
+  `TOO_MANY_UPDATES`). Each entry needs a UUID `connectorUuid` (`INVALID_UUID`) and at least one
+  of `access` / `autoApprove` (`NO_CHANGES`). `access` values must be booleans.
+- `autoApprove.tools` omitted = every tool the connector lists in the live bootstrap; an empty or
+  malformed list is refused (`INVALID_INPUT`), never read as "all".
+- `autoApprove.carryForward: true` re-keys ONLY tools that already hold an always-approved key
+  under an older version hash (after a connector refresh changed the hash). It never approves
+  anything new.
+- The bootstrap is read once, and only when an entry asks for auto-approval. A connector the
+  bootstrap lists no tools for gets `error` in its result, and the others still apply. No PATCH
+  is sent when nothing changed.
+- Response: `{ results: [{ connectorUuid, accessChanged, approved, skipped, error? }], totalKeys, patched }`.
+- It can take well over 30 s (bootstrap read + account read + PATCH, queued). lm-assist's own
+  callers wait up to 75 s.
+- **Not relayable.** It is deliberately outside `/claude-ai/mcp/servers`, the prefix on the hub
+  relay allow-list: it is this node's connector upkeep, called on loopback.
 
 ### Header fingerprint
 
@@ -478,11 +519,27 @@ Both families expose the completion endpoint. It is one of the **write** operati
                                  //   For an empty thread, pass the canonical
                                  //   null UUID "00000000-0000-4000-8000-000000000000".
   "tools": [],                   // optional pass-through (cookie path only)
+  "enableConnectorTools": true,  // optional (cookie path) — build `tools` from THIS node's
+                                 //   lm-assist connector: true = all its tools, or string[]
+  "connectorProfile": "basic",   // optional, with enableConnectorTools — see below
+  "autoApproveTools": true,      // optional — release MCP approval gates (default ON when
+                                 //   lm-assist built the tools)
   "attachments": [...],          // optional — text-channel attachments (see below)
   "files": [...],                // optional — file_uuid strings (see below)
   "syncSources": [...]           // optional — sync_source uuids (URL ingestion)
 }
 ```
+
+**`enableConnectorTools` + `connectorProfile`.** With `enableConnectorTools` (also
+`enable_connector_tools`) and no `tools`, lm-assist builds the SPA `tools` array for ONE of this
+node's lm-assist connectors, chosen by URL: by default the unpinned connector, else the `admin` one,
+else the widest. `connectorProfile` (also `connector_profile`) asks for the connector pinned to that
+profile (`…/mcp/<profile>`; an alias such as `langmart` means `platform`). It is an EXACT match:
+**an unmatched `connectorProfile` — a profile with no connected connector, or a typo — gives a turn
+with NO connector tools**, not a different connector's surface. The completion itself still runs
+(text only), so check the result, or `GET /mcp/profile-connectors` first. With several lm-assist
+connectors attached, auto-approval picks each tool_use's key from the connector its
+`<integration>:` prefix names (both the cookie path and the via-chrome snippet).
 
 **`attachments` (text channel) — RECOMMENDED for any text content.** Pass full attachment objects:
 

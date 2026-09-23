@@ -2,11 +2,11 @@
  * deps. Every data call goes through the injected SDK helper (lmui.call), which carries
  * the view token and re-mints it on 401/403.
  *
- * GRANT — twelve rules. Every WRITE is a LEAF rule naming exactly one route, never a
+ * GRANT — fourteen rules. Every WRITE is a LEAF rule naming exactly one route, never a
  * subtree, so no future sibling route can inherit this pane's authority:
  *   node:/mcp-tools                    [GET]       list + detail + history + overlay + rev
  *   node:/mcp-tools/{id}               [POST] leaf description override, enable/disable,
- *                                                  AND the tool loading profile — see below
+ *                                                  AND the node-default profile — see below
  *   node:/mcp-tools/{id}/rollback      [POST] leaf roll a tool doc back to an earlier rev
  *   node:/mcp-plugins                  [GET]       third-party plugin review + audit tail
  *   node:/mcp/access                   [GET]       admin-gate state
@@ -14,6 +14,8 @@
  *   node:/mcp/pending                  [GET]       parked admin calls
  *   node:/mcp/pending/{id}/confirm     [POST] leaf release ONE parked call
  *   node:/mcp/pending/{id}/deny        [POST] leaf drop ONE parked call
+ *   node:/mcp/profile-connectors [GET, POST] leaf  list / create ONE per-profile connector
+ *   node:/mcp/profile-connectors/{profile} [DELETE] leaf  delete ONE profile's connector
  *   node:/health                       [GET]       \
  *   node:/hub/status                   [GET]        > the Status view's four probes
  *   node:/claude-ai/mcp/servers        [GET]       /
@@ -29,9 +31,10 @@
  *
  * 🔴 A LEAF RULE IS NOT A ROUTE. `/mcp-tools/{id}` was written to mean "one tool doc", but it
  * pins a SHAPE — one segment under /mcp-tools — and `POST /mcp-tools/profile` (added to Core
- * later; sets which tools this node advertises) has exactly that shape, so this pane could
- * already fire it before anything here mentioned it. That is why the Profile tab needs no
- * config change, and it is also the limit of the leaf discipline worth stating out loud: a
+ * later; sets the node-default profile) has exactly that shape, so this pane could already
+ * fire it before anything here mentioned it. That is why the node-default switch needs no
+ * config change (the per-profile connector routes live under /mcp/ and have their own rules
+ * above), and it is also the limit of the leaf discipline worth stating out loud: a
  * leaf rule narrows the SHAPE a future sibling may take, it does not stop one from existing.
  * The profile is a context-budget setting, not a security one — it changes what tools/list
  * RETURNS and nothing about who may call what — so this pane exercising it is in scope. A
@@ -71,6 +74,13 @@
  *   GET  /mcp-tools/profile       → data = { active, setAt, setBy, selectors:{categories,plugins},
  *                                                 profiles:[{ name, description, tools, unmatchedSelectors, active }] }
  *   POST /mcp-tools/profile {profile} → data = the SAME shape (sizes recounted) — no re-read needed
+ *   GET  /mcp/profile-connectors → data = { base, hub, nodeDefault, claudeai:{ ok, error? },
+ *                                   unpinned:{ url, suggestedName, connector, duplicates },
+ *                                   profiles:[{ profile, url, suggestedName, connector, duplicates }], unknownPins:[…] }
+ *                                   connector = { uuid|null, name, connected, authStatus|null, toolCount|null } | null
+ *                                   ⚠ connNormalize() flattens it to ONE row list — never read these fields elsewhere
+ *   POST /mcp/profile-connectors {profile} → data = { created, profile, url, connector, nextStep|null }
+ *   DELETE /mcp/profile-connectors/:profile → data = { profile, url, removed:[…], failed:[…] }
  *   GET  /mcp/access              → data = { tools:[{ tool, scope, adminGate, description }] }
  *                                   ⚠ the key is `tool`, NOT `name` — joining on `name` silently yields nothing
  *   GET  /mcp/pending             → data = { pending:[{ id, tool, summary, createdAt, expiresAt }] }
@@ -89,7 +99,7 @@
 
   // ── the capability ledger, rendered IN the pane ───────────────────────────
   // The source page (web/src/components/mcp-tools/McpToolsPage.tsx + ToolDetail +
-  // PluginsPanel) performs nine writes. This list names all nine and states, on the page
+  // PluginsPanel) performs twelve writes. This list names all twelve and states, on the page
   // itself, which ones this pane can fire and which it cannot — because a capability gap a
   // reader has to find in a README is a gap they discover the moment they needed it.
   var HELD = [
@@ -99,8 +109,12 @@
     ['Description override', 'POST /mcp-tools/{name}', 'Edits the served description; every write is actored and revved.'],
     ['Enable / disable a tool', 'POST /mcp-tools/{name}', 'Live on both MCP surfaces; protected tools refuse.'],
     ['Roll a tool doc back', 'POST /mcp-tools/{name}/rollback', 'Restores an earlier rev from the History tab.'],
-    ['Tool loading profile', 'POST /mcp-tools/profile', 'Sets how many tools this NODE advertises in tools/list — '
-      + 'node-global, and advertise-only: hidden tools stay callable.'],
+    ['Tool loading profile', 'POST /mcp-tools/profile', 'Sets the NODE DEFAULT — what unpinned clients advertise in '
+      + 'tools/list. Advertise-only: hidden tools stay callable. Connectors pinned to a profile are unaffected.'],
+    ['Create a profile connector', 'POST /mcp/profile-connectors', 'Adds the claude.ai connector for ONE profile '
+      + 'URL of this hub (idempotent by URL). Connect stays one browser step in claude.ai.'],
+    ['Delete a profile connector', 'DELETE /mcp/profile-connectors/{profile}', 'Removes that profile’s claude.ai '
+      + 'connector. The unpinned connector is never offered.'],
   ];
   var WITHHELD = [
     {
@@ -253,9 +267,15 @@
     profileErr: '',                   // the server's own text when that read fails
     profileBusy: '',                  // name of the profile a POST is switching to
     profileArmed: '',                 // two-click arming, kept out of state.armed so a detail
-                                      // repaint cannot disarm a node-global switch mid-decision
+                                      // repaint cannot disarm a node-default switch mid-decision
     profileMsg: null,                 // { text, err } — the OUTCOME of the last switch
-    status: null,                     // { core, plugins, hub, connector } — each may hold {error}
+    conn: null,                       // connNormalize(GET /mcp/profile-connectors → data)
+    connErr: '',                      // the server's own text when that read fails
+    connMissing: false,               // an older Core has no such route — the table is hidden
+    connBusy: '',                     // profile a create/delete is in flight for (one at a time)
+    connArmed: '',                    // two-click arming for Delete
+    connMsg: null,                    // { text, err } — the OUTCOME of the last create/delete/copy
+    status: null,                     // { core, plugins, hub, connectors } — each may hold {error}
     seq: 0,                           // drops a stale detail response for a previously-selected tool
   };
 
@@ -1041,23 +1061,23 @@
     var delta = '';
     if (cur && !isCur) {
       var dlt = p.tools - cur.tools;
-      delta = dlt === 0 ? 'same size as the active profile'
-        : dlt < 0 ? (-dlt) + ' fewer tools advertised' : dlt + ' more tools advertised';
+      delta = dlt === 0 ? 'same size as the node default'
+        : dlt < 0 ? (-dlt) + ' fewer than the node default' : dlt + ' more than the node default';
     }
-    // Two-click arming, same shape as the parked-call decisions: this switch is node-global,
-    // so a stray click on the wrong card would narrow the tool surface of every other session
-    // on this host. The busy state is a DISABLED button, not a bare label, so the row keeps
-    // its shape (and its right edge) while a POST is in flight.
+    // Two-click arming, same shape as the parked-call decisions: the node default reaches every
+    // UNPINNED client on this host, so a stray click on the wrong card would narrow the surface of
+    // sessions that never chose it. The busy state is a DISABLED button, not a bare label, so the
+    // row keeps its shape (and its right edge) while a POST is in flight.
     var armed = state.profileArmed === p.name;
     var act = isCur ? ''
       : state.profileBusy === p.name ? btn('prof-busy', 'switching…', 'ghost sm r', p.name, true)
       : armed
-        ? btn('prof-set', 'Switch this node to ' + p.name, 'danger r', p.name, !!state.profileBusy)
+        ? btn('prof-set', 'Make ' + p.name + ' the node default', 'danger r', p.name, !!state.profileBusy)
           + btn('prof-cancel', 'Cancel', 'ghost sm', p.name, !!state.profileBusy)
         : btn('prof-arm', 'Use', 'ghost sm r', p.name, !!state.profileBusy);
     return '<div class="card"><div class="card-top"><span class="mono b">' + esc(p.name) + '</span>'
       + '<span class="pill">' + esc(p.tools) + ' tools</span>'
-      + (isCur ? '<span class="pill cur">active</span>' : '')
+      + (isCur ? '<span class="pill cur">node default</span>' : '')
       + act + '</div>'
       + '<div class="card-b">' + esc(p.description) + '</div>'
       + (delta ? '<div class="card-b dim">' + esc(delta) + '</div>' : '')
@@ -1078,30 +1098,33 @@
     var cur = activeRow(d);
     var m = state.profileMsg;
     el.innerHTML = '<div class="ptop">Tool loading profile'
-      + (d ? ' · active: <span class="mono b">' + esc(d.active) + '</span>'
-           + (cur ? ' · ' + esc(cur.tools) + ' tools advertised' : '') : '')
+      + (d ? ' · node default: <span class="mono b">' + esc(d.active) + '</span>'
+           + (cur ? ' · ' + esc(cur.tools) + ' tools' : '') : '')
       + btn('prof-reload', 'Refresh', 'ghost sm r') + '</div>'
       + (state.profileErr ? '<div class="note warn">' + esc(state.profileErr) + '</div>' : '')
       + (m ? '<div class="note ' + (m.err ? 'warn' : '') + '">' + esc(m.text) + '</div>' : '')
       + (d
           ? (d.setAt
-              ? '<div class="hint">Set ' + esc(ago(d.setAt)) + (d.setBy ? ' by ' + esc(d.setBy) : '') + '.</div>'
+              ? '<div class="hint">Node default set ' + esc(ago(d.setAt)) + (d.setBy ? ' by ' + esc(d.setBy) : '') + '.</div>'
               : '<div class="hint">Never changed on this node — <span class="mono">admin</span> is the default, so '
                 + 'nothing is hidden until someone chooses.</div>')
             + sortedProfiles(d.profiles).map(function (p) { return profileCard(p, cur); }).join('')
           : '')
+      + connSection()
       + '<div class="note warn"><span class="b">Advertise-only.</span> A narrower profile changes what tools/list '
       + 'RETURNS — not what may run. Every hidden tool stays callable by any client that knows its name. This is a '
       + 'context budget, not access control: the admin gates on the Tools tab and each tool’s scope are the security '
       + 'boundary, and a profile moves neither.</div>'
-      + '<div class="note"><span class="b">Node-global.</span> One setting for the whole node, not a per-user '
-      + 'preference — every other session on this host sees the surface chosen here, including sessions already '
-      + 'running.</div>'
+      + '<div class="note"><span class="b">Node default.</span> The cards set what UNPINNED clients get — the unpinned '
+      + '/mcp connector, local Claude Code over stdio without LM_MCP_PROFILE, and anything that names no profile. A '
+      + 'connector pinned to a profile (the table above) keeps its profile whatever is chosen here. Still one setting '
+      + 'for the whole node, not a per-user preference.</div>'
       + '<div class="note"><span class="b">The per-tool registry wins.</span> A tool switched off on the Tools tab '
-      + 'stays off under every profile; a profile can only narrow further, never re-enable.</div>'
+      + 'stays off under every profile and on every connector; a profile can only narrow further, never re-enable.</div>'
       + '<div class="note"><span class="b">Not instant.</span> A local Claude Code session picks the change up '
-      + 'within about 30s. A claude.ai connector CACHES tools/list and keeps advertising the old set until it is '
-      + 'refreshed (refresh_connector_tools, or the Sync action named in the ledger at the top of this pane).</div>';
+      + 'within about 30s. A claude.ai connector CACHES tools/list: when this node holds a claude.ai cookie, Core clears '
+      + 'the unpinned connectors’ cache after a node-default change; otherwise run refresh_connector_tools (or the Sync '
+      + 'action named in the ledger at the top of this pane). Pinned connectors never change with the node default.</div>';
     reportHeight();
   }
   function loadProfile() {
@@ -1135,7 +1158,7 @@
     state.profileArmed = '';
     state.profileMsg = null;
     paintProfile();
-    say('switching this node to the ' + name + ' profile…');
+    say('setting the node default to ' + name + '…');
     api('node', '/mcp-tools/profile', { method: 'POST', body: { profile: name } }).then(function (r) {
       state.profileBusy = '';
       if (!r.ok) {
@@ -1147,16 +1170,304 @@
       }
       state.profile = r.data || state.profile;
       var cur = activeRow(state.profile);
+      // The unpinned row of the Connectors table names the default it follows; the POST just
+      // told us what that is, so do not leave the row quoting the old one until the next read.
+      if (state.conn && state.profile && state.profile.active) state.conn.nodeDefault = state.profile.active;
       state.profileMsg = {
-        text: 'This node now advertises the ' + name + ' profile'
+        text: 'The node default is now ' + name
           + (cur ? ' (' + cur.tools + ' tools)' : '')
-          + '. Every session on this host is affected. A local Claude Code session sees it within ~30s; a claude.ai '
-          + 'connector keeps its cached tool list until it is refreshed.',
+          + '. Unpinned clients on this host get it — a local Claude Code session within ~30s, an unpinned claude.ai '
+          + 'connector once its cached tool list is cleared. Connectors pinned to a profile are unaffected.',
         err: false,
       };
       paintProfile();
-      say('profile is now ' + name);
+      say('node default is now ' + name);
     });
+  }
+
+  // ── connectors — one per profile ──────────────────────────────────────────
+  // Mirrors the pure helpers in web/src/lib/mcp-tools.ts (a pane cannot import them). A connector
+  // on a profile URL advertises THAT profile whatever the node default is; the unpinned /mcp URL
+  // follows the default. Create/Delete ride their own LEAF grants (see lmui.config.json).
+  var CONNECT_STEP = 'claude.ai → Customize → Connectors → Connect on that connector';
+
+  /** GET /mcp/profile-connectors → the table model. The REST body keeps the unpinned
+   *  connector and the per-profile rows apart (the mcp_connectors tool renders from that shape);
+   *  the table wants ONE row list, unpinned first as profile:null. The same mapping as
+   *  normalizeProfileConnectors in web/src/lib/mcp-tools.ts, behind the same shape check as its
+   *  parseProfileConnectors — keep the two in step. Returns null for a body that is not that
+   *  shape, so a caller reports it instead of throwing mid-paint. */
+  function connNormalize(d) {
+    if (!d || typeof d !== 'object' || !d.unpinned || !Array.isArray(d.profiles) || !d.claudeai) return null;
+    function state(c) { return c ? Object.assign({}, c, { uuid: c.uuid == null ? '' : c.uuid }) : null; }
+    function row(profile, r) {
+      var out = { profile: profile, url: r.url, name: r.suggestedName, claudeai: state(r.connector) };
+      if (r.duplicates) out.duplicates = r.duplicates;
+      return out;
+    }
+    // A connector pinned to a profile this node does not know is served the NODE DEFAULT — shown
+    // (fail open, visibly), Delete only. The wire lists each such connector on its own; one row
+    // per URL here, the connected one shown and the rest counted as duplicates.
+    var byPin = {};
+    var order = [];
+    (d.unknownPins || []).forEach(function (u) {
+      if (!Object.prototype.hasOwnProperty.call(byPin, u.profile)) { byPin[u.profile] = []; order.push(u.profile); }
+      byPin[u.profile].push(u);
+    });
+    var unknownRows = order.map(function (profile) {
+      var list = byPin[profile];
+      var best = list.slice().sort(function (a, b) {
+        return Number(!!(b.connector && b.connector.connected)) - Number(!!(a.connector && a.connector.connected));
+      })[0];
+      var out = { profile: profile, url: best.url, name: (best.connector && best.connector.name) || '',
+        claudeai: state(best.connector), unknown: true };
+      if (list.length > 1) out.duplicates = list.length - 1;
+      return out;
+    });
+    var ca = d.claudeai;
+    return {
+      base: d.base || null,
+      nodeDefault: d.nodeDefault,
+      claudeaiError: ca.ok ? null : (ca.error || 'claude.ai unreadable'),
+      connectors: [row(null, d.unpinned)].concat(d.profiles.map(function (p) { return row(p.profile, p); }), unknownRows),
+    };
+  }
+  /** ' (+N duplicate[s])' for a URL that carries several claude.ai connectors — Delete removes all. */
+  function connDupNote(row) {
+    var n = row.duplicates || 0;
+    return n > 0 ? ' (+' + n + ' duplicate' + (n === 1 ? '' : 's') + ')' : '';
+  }
+  /** A node with no hub refuses the GET with HUB_NOT_CONFIGURED: it has no public MCP URL, so
+   *  the table is empty and says so — that is a state, not an error. */
+  function connNoHub() { return { base: null, nodeDefault: '', connectors: [], claudeaiError: null }; }
+  /** An older Core has no /mcp/profile-connectors and no `/mcp/<x>` catch-all, so every method on
+   *  it gets rest-server's generic 404: NOT_FOUND with the message
+   *  "Route not found: GET /mcp/profile-connectors". Hide the table then, and post nothing to it.
+   *  Only that message counts — a NOT_FOUND from the route itself is a real error. The same test
+   *  as profileConnectorsRouteMissing in web/src/lib/mcp-tools.ts. */
+  function connRouteMissing(r) {
+    return /Route not found:\s*[A-Z]+\s+\/mcp\/profile-connectors(?![\w-])/.test((r && r.error && r.error.message) || '');
+  }
+  /** Unpinned first, then narrow → wide by this node's per-profile counts, unknown last. */
+  function connOrder(rows, sizes) {
+    function rank(r) { return r.profile === null ? -1 : (sizes[r.profile] != null ? sizes[r.profile] : Number.MAX_SAFE_INTEGER); }
+    return (rows || []).slice().sort(function (a, b) {
+      var d = rank(a) - rank(b);
+      return d !== 0 ? d : String(a.profile || '').localeCompare(String(b.profile || ''));
+    });
+  }
+  /** "not created" only when claude.ai was READ; unreadable ⇒ unknown, or it invites a duplicate. */
+  function connState(row, claudeaiError) {
+    var c = row.claudeai;
+    if (!c) return { text: claudeaiError ? 'unknown — claude.ai could not be read' : 'not created', cls: 'dim' };
+    var dup = connDupNote(row);
+    if (row.unknown) {
+      return { text: 'pinned to a profile this node does not know — served the node default · '
+        + (c.connected ? 'connected' : 'not connected') + dup, cls: 'warn' };
+    }
+    if (c.connected) return { text: 'connected' + (c.toolCount != null ? ' · ' + c.toolCount + ' tools' : '') + dup, cls: 'ok' };
+    return { text: 'not connected' + (c.authStatus ? ' (' + c.authStatus + ')' : '') + ' — ' + CONNECT_STEP + dup, cls: 'warn' };
+  }
+  function connCreateMsg(res) {
+    var step = String(res.nextStep || CONNECT_STEP).replace(/\.\s*$/, '');
+    var name = (res.connector && res.connector.name) || res.url;
+    if (!res.created) {
+      return res.connector && res.connector.connected
+        ? '"' + name + '" already exists for ' + res.url + ' and is connected — nothing to do.'
+        : '"' + name + '" already exists for ' + res.url + ' — nothing created. One step left: ' + step + '.';
+    }
+    return 'Created "' + name + '" for the ' + res.profile + ' profile. One step left: ' + step + '.';
+  }
+  function connStatusLines(d) {
+    if (d.claudeaiError) return [{ label: 'Connector', ok: false, detail: 'claude.ai unreadable — ' + d.claudeaiError }];
+    if (!d.base) return [{ label: 'Connector', ok: null, detail: 'no hub on this node, so no connector URL' }];
+    var existing = (d.connectors || []).filter(function (r) { return !!r.claudeai; });
+    if (!existing.length) return [{ label: 'Connector', ok: false, detail: 'none in claude.ai for ' + d.base }];
+    return existing.map(function (r) {
+      var c = r.claudeai;
+      return {
+        label: r.profile ? 'Connector · ' + r.profile + (r.unknown ? ' (unknown profile)' : '') : 'Connector',
+        ok: r.unknown ? false : !!c.connected,
+        detail: (c.name || r.name) + ' · '
+          + (c.connected ? 'connected' : 'not connected' + (c.authStatus ? ' (' + c.authStatus + ')' : ''))
+          + (c.connected && c.toolCount != null ? ' · ' + c.toolCount + ' tools' : '')
+          + (r.unknown ? ' · pinned to a profile this node does not know — served the node default' : '')
+          + connDupNote(r),
+      };
+    });
+  }
+  /** An older Core: the single pick this tab has always shown. */
+  function legacyConnLine(servers) {
+    var lm = null;
+    for (var i = 0; i < servers.length; i++) {
+      if (/langmart/i.test(servers[i].url || '') || /langmart/i.test(servers[i].name || '')) { lm = servers[i]; break; }
+    }
+    if (!lm) lm = servers[0];
+    if (!lm) return { label: 'Connector', ok: false, detail: 'no connector' };
+    var n = lm.toolCount != null ? lm.toolCount : (lm.tools || []).length;
+    return { label: 'Connector', ok: !!lm.connected,
+      detail: (lm.name || 'connector') + ' · ' + (lm.connected ? 'connected' : 'disconnected') + ' · ' + n + ' tools' };
+  }
+  function connRow(row, d, err) {
+    var st = connState(row, err);
+    var p = row.profile;
+    // Never the unpinned connector (every existing conversation uses it); nothing while claude.ai
+    // is unreadable; one write at a time (the hub registers each with a read-modify-write).
+    var locked = p === null || !!err;
+    var act = '';
+    var dups = row.duplicates || 0;
+    if (!locked) {
+      if (state.connBusy && state.connBusy === p) act = btn('conn-busy', 'working…', 'ghost sm', p, true);
+      // An unknown pin is never created from here (Core refuses the name) — Delete only.
+      else if (!row.claudeai) act = row.unknown ? '' : btn('conn-create', 'Create', 'ghost sm', p, !!state.connBusy);
+      else if (state.connArmed === p) {
+        act = btn('conn-del', 'Delete ' + ((row.claudeai && row.claudeai.name) || row.name)
+          + (dups ? ' and its ' + dups + ' duplicate' + (dups === 1 ? '' : 's') : '') + ' from claude.ai', 'danger', p, !!state.connBusy)
+          + btn('conn-cancel', 'Cancel', 'ghost sm', p, !!state.connBusy);
+      } else act = btn('conn-arm', 'Delete', 'ghost sm', p, !!state.connBusy);
+    }
+    return '<tr><td><span class="b">' + esc(p === null ? 'unpinned' : p) + '</span>'
+      + (p === null ? '<div class="dim">follows the node default (' + esc(d.nodeDefault) + ')</div>' : '')
+      + (row.unknown ? '<div class="warn">not a profile on this node — served the node default (' + esc(d.nodeDefault) + ')</div>' : '')
+      + '</td>'
+      + '<td><span class="mono-inline">' + esc(row.url) + '</span> ' + btn('conn-copy', 'Copy', 'ghost sm', row.url) + '</td>'
+      + '<td class="' + st.cls + '">' + (row.claudeai && row.claudeai.name ? esc(row.claudeai.name) + '<br>' : '')
+      + esc(st.text) + '</td>'
+      + '<td>' + act + '</td></tr>';
+  }
+  function connSection() {
+    if (state.connMissing) {
+      return '<div class="hint">Per-profile connectors need a newer Core on this node — it has no '
+        + '/mcp/profile-connectors route.</div>';
+    }
+    var d = state.conn;
+    var m = state.connMsg;
+    var head = '<div class="card-h" style="margin-top:.6rem">Connectors — one per profile</div>'
+      + '<div class="hint">A connector on a profile URL advertises that profile whatever the node default is. Each is '
+      + 'its own claude.ai connector with its own Connect step (' + esc(CONNECT_STEP) + '). Every enabled connector '
+      + 'loads its own tool list, so keep one per conversation. Claude Code: lm-assist mcp add --profile &lt;name&gt;.</div>'
+      + (state.connErr ? '<div class="note warn">' + esc(state.connErr) + '</div>' : '')
+      + (m ? '<div class="note ' + (m.err ? 'warn' : '') + '">' + esc(m.text) + '</div>' : '');
+    if (!d) return head + (state.connErr ? '' : '<div class="empty-list">reading claude.ai…</div>');
+    if (!d.base) return head + '<div class="hint">This node has no hub connection, so it has no public MCP URL to pin a profile to.</div>';
+    var err = d.claudeaiError || '';
+    var sizes = {};
+    ((state.profile && state.profile.profiles) || []).forEach(function (p) { sizes[p.name] = p.tools; });
+    return head
+      + (err ? '<div class="note warn">claude.ai could not be read from this node (' + esc(err) + '), so which '
+        + 'connectors exist is unknown — Create and Delete stay off until it can be.</div>' : '')
+      + '<table class="tbl"><thead><tr><th>profile</th><th>url</th><th>claude.ai</th><th></th></tr></thead><tbody>'
+      + connOrder(d.connectors || [], sizes).map(function (row) { return connRow(row, d, err); }).join('')
+      + '</tbody></table>';
+  }
+  function loadConnectors() {
+    return api('node', '/mcp/profile-connectors').then(function (r) {
+      if (!r.ok) {
+        if (r.error.code === 'HUB_NOT_CONFIGURED') {
+          state.connMissing = false; state.connErr = ''; state.conn = connNoHub();
+        } else if (connRouteMissing(r)) {
+          state.connMissing = true; state.connErr = '';
+        } else {
+          // Keep the last-known table: a failed read is not evidence that anything was deleted.
+          state.connErr = 'Could not read the connectors — ' + r.error.code + ': ' + r.error.message;
+        }
+        paintProfile();
+        return;
+      }
+      var n = connNormalize(r.data);
+      if (!n) {
+        state.connErr = 'Unexpected /mcp/profile-connectors body — ' + String(JSON.stringify(r.data)).slice(0, 200);
+        paintProfile();
+        return;
+      }
+      state.connMissing = false;
+      state.connErr = '';
+      state.conn = n;
+      paintProfile();
+    });
+  }
+  /** Idempotent by URL server-side. The response patches its row; on failure re-read, because
+   *  the write may have landed with only the response lost. */
+  function createConnector(profile) {
+    if (state.connBusy || !profile || state.connMissing) return;
+    state.connBusy = profile; state.connArmed = ''; state.connMsg = null;
+    paintProfile();
+    say('creating the ' + profile + ' connector in claude.ai…');
+    api('node', '/mcp/profile-connectors', { method: 'POST', body: { profile: profile } }).then(function (r) {
+      state.connBusy = '';
+      if (!r.ok) {
+        state.connMsg = { text: 'Create for "' + profile + '" failed — ' + r.error.code + ': ' + r.error.message
+          + '. Re-reading claude.ai…', err: true };
+        say('connector create failed — ' + r.error.message, true);
+        paintProfile();
+        return loadConnectors();
+      }
+      var res = r.data || {};
+      if (state.conn && res.connector) {
+        // The wire uuid may be null (claude.ai named none); the row keeps '' until the next read.
+        var c = Object.assign({}, res.connector, { uuid: res.connector.uuid == null ? '' : res.connector.uuid });
+        state.conn.connectors = (state.conn.connectors || []).map(function (row) {
+          return row.profile === res.profile ? Object.assign({}, row, { claudeai: c }) : row;
+        });
+      }
+      state.connMsg = { text: connCreateMsg(res), err: false };
+      paintProfile();
+      say('connector ' + (res.created ? 'created' : 'already existed') + ' for ' + profile);
+    });
+  }
+  function deleteConnector(profile) {
+    if (state.connBusy || !profile || state.connMissing) return;
+    state.connBusy = profile; state.connArmed = ''; state.connMsg = null;
+    paintProfile();
+    say('deleting the ' + profile + ' connector from claude.ai…');
+    api('node', '/mcp/profile-connectors/' + encodeURIComponent(profile), { method: 'DELETE' }).then(function (r) {
+      state.connBusy = '';
+      if (!r.ok) {
+        state.connMsg = { text: 'Delete for "' + profile + '" failed — ' + r.error.code + ': ' + r.error.message
+          + '. Re-reading claude.ai…', err: true };
+        say('connector delete failed — ' + r.error.message, true);
+        paintProfile();
+        return loadConnectors();
+      }
+      // Every connector on that URL goes, duplicates included: say how many, and name any claude.ai
+      // refused (those still exist — re-read instead of patching the row).
+      var res = r.data || {};
+      var removed = (res.removed || []).length || 1;
+      var failed = res.failed || [];
+      var text = 'Deleted ' + (removed === 1 ? 'the ' + profile + ' connector'
+        : removed + ' connectors on the ' + profile + ' URL (duplicates included)')
+        + ' from claude.ai. Conversations that had it lose its tools.'
+        + (failed.length ? ' ' + failed.length + ' could not be deleted and still exist' + (failed.length === 1 ? 's' : '') + ': '
+          + failed.map(function (f) { return f.uuid + ' (' + f.error + ')'; }).join('; ') + '.' : '');
+      state.connMsg = { text: text, err: failed.length > 0 };
+      if (failed.length) { paintProfile(); return loadConnectors(); }
+      if (state.conn) {
+        state.conn.connectors = (state.conn.connectors || []).reduce(function (out, row) {
+          if (row.profile !== profile) { out.push(row); return out; }
+          if (row.unknown) return out; // it existed only because the connector did
+          var cleared = Object.assign({}, row, { claudeai: null });
+          delete cleared.duplicates;
+          out.push(cleared);
+          return out;
+        }, []);
+      }
+      paintProfile();
+      say('connector deleted for ' + profile);
+    });
+  }
+  /** An embedded cross-origin pane usually may not write the clipboard — say so, keep the URL visible. */
+  function copyUrl(url) {
+    function done(ok) {
+      state.connMsg = ok
+        ? { text: 'Copied ' + url, err: false }
+        : { text: 'The browser blocked the clipboard here (an embedded pane usually cannot write it) — select the URL and copy it: ' + url, err: true };
+      paintProfile();
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(function () { done(true); }, function () { done(false); });
+      } else done(false);
+    } catch (e) { done(false); }
   }
 
   // ── status ────────────────────────────────────────────────────────────────
@@ -1168,43 +1479,50 @@
     var s = state.status;
     var el = $('status');
     if (!s) { el.innerHTML = '<div class="empty-list">loading…</div>'; reportHeight(); return; }
-    var c = s.core, p = s.plugins, h = s.hub, k = s.connector;
+    var c = s.core, p = s.plugins, h = s.hub;
     var pc = p && p.counts;
     el.innerHTML = '<div class="ptop">MCP status' + btn('status-reload', 'Refresh', 'ghost sm r') + '</div>'
       + statusRow('Core /health', c ? (!c.error && c.status === 'healthy') : null,
           c ? (c.error || ((c.status || '?') + (c.version ? ' · v' + c.version : '') + (c.hostname ? ' · ' + c.hostname : ''))) : '…')
       + statusRow('Plugins', p ? !p.error : null,
           p ? (p.error || (pc ? pc.enabled + ' enabled / ' + pc.total + ' total' + (pc.unhealthy ? ', ' + pc.unhealthy + ' unhealthy' : '') : '…')) : '…')
-      + statusRow('Connector', k ? (!k.error && !!k.connected) : null,
-          k ? (k.error || ((k.name || 'connector') + ' · ' + (k.connected ? 'connected' : 'disconnected')
-            + (k.toolCount != null ? ' · ' + k.toolCount + ' tools' : ''))) : '…')
+      // One line per lm-assist connector of THIS hub (Core matches them by URL) — no longer the
+      // first /langmart/i match, which showed one connector and hid the rest.
+      + (s.connectors
+          ? s.connectors.map(function (l) { return statusRow(l.label, l.ok, l.detail); }).join('')
+          : statusRow('Connector', null, '…'))
       + statusRow('Hub', h ? (!h.error && !!h.authenticated) : null,
           h ? (h.error || ((h.authenticated ? 'authenticated' : h.connected ? 'connected (not authed)'
             : h.configured ? 'configured, offline' : 'not configured')
             + (h.hubUrl ? ' · ' + String(h.hubUrl).replace(/^wss?:\/\//, '') : ''))) : '…')
-      + '<div class="hint">Four independent probes: /health, /mcp-plugins, /claude-ai/mcp/servers and /hub/status. '
-      + 'Each is reported on its own — one failing probe never blanks the others.</div>';
+      + '<div class="hint">Four independent probes: /health, /mcp-plugins, /mcp/profile-connectors (on an older '
+      + 'Core, /claude-ai/mcp/servers) and /hub/status. Each is reported on its own — one failing probe never blanks '
+      + 'the others.</div>';
     reportHeight();
   }
   function loadStatus() {
-    state.status = { core: null, plugins: null, hub: null, connector: null };
+    state.status = { core: null, plugins: null, hub: null, connectors: null };
     paintStatus();
     var s = state.status;
     var jobs = [
       api('node', '/health').then(function (r) { s.core = r.ok ? (r.data || {}) : { error: r.error.code + ': ' + r.error.message }; }),
       api('node', '/mcp-plugins').then(function (r) { s.plugins = r.ok ? (r.data || {}) : { error: r.error.code + ': ' + r.error.message }; }),
       api('node', '/hub/status').then(function (r) { s.hub = r.ok ? (r.data || {}) : { error: r.error.code + ': ' + r.error.message }; }),
-      api('node', '/claude-ai/mcp/servers').then(function (r) {
-        if (!r.ok) { s.connector = { error: r.error.code + ': ' + r.error.message }; return; }
-        var servers = (r.data && r.data.servers) || [];
-        var lm = null;
-        for (var i = 0; i < servers.length; i++) {
-          if (/langmart/i.test(servers[i].url || '') || /langmart/i.test(servers[i].name || '')) { lm = servers[i]; break; }
+      api('node', '/mcp/profile-connectors').then(function (r) {
+        if (r.ok) {
+          var n = connNormalize(r.data);
+          s.connectors = n ? connStatusLines(n)
+            : [{ label: 'Connector', ok: false, detail: 'unexpected /mcp/profile-connectors body' }];
+          return;
         }
-        if (!lm) lm = servers[0];
-        s.connector = lm
-          ? { name: lm.name, connected: lm.connected, toolCount: lm.toolCount != null ? lm.toolCount : (lm.tools || []).length }
-          : { error: 'no connector' };
+        if (r.error.code === 'HUB_NOT_CONFIGURED') { s.connectors = connStatusLines(connNoHub()); return; }
+        if (!connRouteMissing(r)) { s.connectors = [{ label: 'Connector', ok: false, detail: r.error.code + ': ' + r.error.message }]; return; }
+        // An older Core: the single pick this tab has always shown.
+        return api('node', '/claude-ai/mcp/servers').then(function (r2) {
+          s.connectors = [r2.ok
+            ? legacyConnLine((r2.data && r2.data.servers) || [])
+            : { label: 'Connector', ok: false, detail: r2.error.code + ': ' + r2.error.message }];
+        });
       }),
     ];
     return Promise.all(jobs).then(paintStatus);
@@ -1219,12 +1537,13 @@
       b.classList.toggle('on', b.dataset.tab === t);
     });
     if (t === 'profile' && !state.profile) loadProfile();
+    if (t === 'profile' && !state.conn && !state.connMissing) loadConnectors();
     if (t === 'plugins' && !state.plugins) loadPlugins();
     if (t === 'status' && !state.status) loadStatus();
     reportHeight();
   }
   function reloadActive() {
-    if (state.tab === 'profile') return loadProfile();
+    if (state.tab === 'profile') { if (!state.connMissing) loadConnectors(); return loadProfile(); }
     if (state.tab === 'plugins') return loadPlugins();
     if (state.tab === 'status') return loadStatus();
     return loadList();
@@ -1325,10 +1644,21 @@
   $('profile').addEventListener('click', function (e) {
     var act = e.target.dataset && e.target.dataset.act;
     if (!act) return;
-    if (act === 'prof-reload') { state.profileMsg = null; loadProfile(); return; }
-    if (act === 'prof-arm') { state.profileArmed = e.target.dataset.arg || ''; paintProfile(); return; }
+    var arg = e.target.dataset.arg || '';
+    if (act === 'prof-reload') {
+      state.profileMsg = null; state.connMsg = null;
+      loadProfile();
+      if (!state.connMissing) loadConnectors();
+      return;
+    }
+    if (act === 'prof-arm') { state.profileArmed = arg; paintProfile(); return; }
     if (act === 'prof-cancel') { state.profileArmed = ''; paintProfile(); return; }
-    if (act === 'prof-set') { setProfile(e.target.dataset.arg || ''); return; }
+    if (act === 'prof-set') { setProfile(arg); return; }
+    if (act === 'conn-create') { createConnector(arg); return; }
+    if (act === 'conn-arm') { state.connArmed = arg; paintProfile(); return; }
+    if (act === 'conn-cancel') { state.connArmed = ''; paintProfile(); return; }
+    if (act === 'conn-del') { deleteConnector(arg); return; }
+    if (act === 'conn-copy') { copyUrl(arg); return; }
   });
   $('status').addEventListener('click', function (e) {
     if (e.target.dataset && e.target.dataset.act === 'status-reload') loadStatus();

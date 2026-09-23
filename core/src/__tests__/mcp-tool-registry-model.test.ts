@@ -102,3 +102,15 @@ test('validateToolName rejects reserved route-namespace names', () => {
   assert.equal(r.ok, false);
   assert.equal((r as { code: string }).code, 'RESERVED_NAME');
 });
+
+test('every literal segment under /mcp-tools/ is reserved — a doc there would be shadowed or minted by a mistaken POST', () => {
+  for (const name of ['overlay', 'rev', 'profile']) {
+    const r = validateToolName(name);
+    assert.equal(r.ok, false, name);
+    assert.equal((r as { code: string }).code, 'RESERVED_NAME', name);
+  }
+});
+
+test('"profile-connectors" is NOT reserved — its REST surface lives under /mcp/, not /mcp-tools/ (spec §7.3, amended d7a4d0c)', () => {
+  assert.deepEqual(validateToolName('profile-connectors'), { ok: true });
+});

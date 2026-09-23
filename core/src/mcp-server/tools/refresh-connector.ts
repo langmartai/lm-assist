@@ -4,13 +4,18 @@
  *   - list_claudeai_connectors   — discover connectors + their uuids/tools
  *   - refresh_connector_tools    — clear a connector's cached tools/list
  *   - set_connector_tool_access  — enable/block a connector's tools
+ *   - set_connector_auto_approve — "always approve" a connector's tools
  *
- * The two write tools target a connector by `server_uuid`, by `connector`
- * (name/url substring), or — with neither — auto-pick the langmart connector
- * (or the only one). Endpoints captured via lm-proxy 2026-06-20; see the
- * claude.ai routes. Registered in EXPANDED_TOOL_DEFS + EXPANDED_HANDLERS.
+ * The write tools target a connector by `server_uuid`, by `connector` (uuid, name,
+ * a profile name, or a name/url substring), or — with neither — EVERY connector whose
+ * URL is this node's MCP endpoint (the unpinned `/mcp` and each `/mcp/<profile>`; see
+ * profile-connectors.ts). Several targets are written in ONE batched read-modify-write.
+ * Endpoints captured via lm-proxy 2026-06-20; see the claude.ai routes. Registered in
+ * EXPANDED_TOOL_DEFS + EXPANDED_HANDLERS.
  */
-import { ok, err, workerGet, workerPost, type McpToolResult } from './_passthrough';
+import { ok, err, workerGetLong, workerPost, workerPostLong, isLoopbackTimeout, type McpToolResult } from './_passthrough';
+import { CONNECTOR_LIST_TIMEOUT_MS, CONNECTOR_WRITE_TIMEOUT_MS, mcpBase, ourConnectors } from '../profile-connectors';
+import { parseAutoApproveTools } from '../../utils/claudeai-session';
 
 export const listClaudeaiConnectorsToolDef = {
   name: 'list_claudeai_connectors',
@@ -21,7 +26,7 @@ export const listClaudeaiConnectorsToolDef = {
     '"which connectors are connected". Use this to get the `server_uuid` for ' +
     '`refresh_connector_tools` / `set_connector_tool_access` when you have MULTIPLE ' +
     'connectors. Pass `include_tools` to also list each connector\'s tool names. ' +
-    'Read-only. (Distinct from `list_nodes` = physical hosts, and ' +
+    'Read-only. This node\'s own connectors are tagged with the profile their URL pins. (Distinct from `list_nodes` = physical hosts, and ' +
     '`list_claudeai_conversations` = chats.)',
   annotations: { readOnlyHint: true },
   inputSchema: {
@@ -39,8 +44,9 @@ export const refreshConnectorToolsToolDef = {
     'tools/list so newly-added/changed MCP tools appear (the API equivalent of the ' +
     'web "refresh tools" button). Trigger words: "refresh tools", "reload the connector", ' +
     '"my new tools aren\'t showing", "re-sync tools", "update the tool menu". Target the ' +
-    'connector with `server_uuid` or `connector` (name/url substring, e.g. "langmart", ' +
-    '"drive"); with neither it auto-picks the langmart connector (or the only one). After ' +
+    'connector with `server_uuid` or `connector` (uuid, name, a profile name like "basic", or a ' +
+    'name/url substring like "drive"); with neither it refreshes EVERY connector of this node ' +
+    '(unpinned + per-profile). After ' +
     'it runs, the new tools surface on the next tool-menu reload / fresh session. WRITE — ' +
     'changes claude.ai connector state. Runs where the claude.ai cookie lives (use `node`).',
   annotations: { readOnlyHint: false },
@@ -48,7 +54,7 @@ export const refreshConnectorToolsToolDef = {
     type: 'object' as const,
     properties: {
       server_uuid: { type: 'string', description: 'Connector UUID (from list_claudeai_connectors).' },
-      connector: { type: 'string', description: 'Connector name/url substring to target (alternative to server_uuid).' },
+      connector: { type: 'string', description: 'Connector uuid, name, profile name, or name/url substring (alternative to server_uuid).' },
     },
   },
 };
@@ -61,7 +67,7 @@ export const setConnectorToolAccessToolDef = {
     'off browser_task", "re-enable detail", "stop showing X", "allow tool Y". Pass ' +
     '`block` (tool names to disable — they stop showing/running) and/or `enable` (tool ' +
     'names to turn back on). Target the connector with `server_uuid` or `connector` ' +
-    '(name/url substring); with neither it auto-picks the langmart connector. ' +
+    '(uuid, name, profile name or name/url substring); with neither it applies to EVERY connector of this node. ' +
     'Read-modify-write: reads the full enabled-tools map, flips ONLY the named tools, and ' +
     'writes it all back, so other tools/connectors are preserved. (Sets enabled-vs-blocked; ' +
     'the per-version "always allow" auto-approval is separate.) WRITE — changes claude.ai ' +
@@ -73,7 +79,7 @@ export const setConnectorToolAccessToolDef = {
       block: { type: 'array', items: { type: 'string' }, description: 'Tool names to BLOCK (disable).' },
       enable: { type: 'array', items: { type: 'string' }, description: 'Tool names to ENABLE (un-block).' },
       server_uuid: { type: 'string', description: 'Connector UUID (from list_claudeai_connectors).' },
-      connector: { type: 'string', description: 'Connector name/url substring to target (alternative to server_uuid).' },
+      connector: { type: 'string', description: 'Connector uuid, name, profile name, or name/url substring (alternative to server_uuid).' },
     },
   },
 };
@@ -88,16 +94,16 @@ export const setConnectorAutoApproveToolDef = {
     'current tool defs — a stale hash is exactly what makes a driven approval 404) and writes it via ' +
     'read-modify-write, preserving all other settings. Pass `tools` (names) to scope, else applies to ' +
     'ALL the connector\'s tools; `enable:false` removes auto-approval. Target with `server_uuid`/' +
-    '`connector` (default langmart). WRITE — changes claude.ai account settings. Runs where the ' +
+    '`connector` (default: every connector of this node). WRITE — changes claude.ai account settings. Runs where the ' +
     'claude.ai cookie lives (use `node`).',
   annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
     properties: {
       enable: { type: 'boolean', description: 'true (default) = auto-approve the tools; false = remove always-approved.' },
-      tools: { type: 'array', items: { type: 'string' }, description: 'Tool names to scope to (default: ALL the connector\'s tools).' },
+      tools: { type: 'array', items: { type: 'string' }, description: 'Tool names to scope to; omit for ALL the connector\'s tools (an empty list is refused).' },
       server_uuid: { type: 'string', description: 'Connector UUID (from list_claudeai_connectors).' },
-      connector: { type: 'string', description: 'Connector name/url substring (alternative to server_uuid).' },
+      connector: { type: 'string', description: 'Connector uuid, name, profile name, or name/url substring (alternative to server_uuid).' },
     },
   },
 };
@@ -119,42 +125,72 @@ interface ConnectorEntry {
   tools?: string[];
 }
 
+/** The org bootstrap behind this route may run to its own 30 s abort — past workerGet's 15 s. */
 async function listConnectors(): Promise<ConnectorEntry[]> {
-  const list = (await workerGet('/claude-ai/mcp/servers')) as { servers?: ConnectorEntry[] };
+  const list = await workerGetLong<{ servers?: ConnectorEntry[] }>('/claude-ai/mcp/servers', CONNECTOR_LIST_TIMEOUT_MS);
   return list.servers || [];
 }
 
+interface Target { uuid: string; label: string }
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+/** A WRITE's failure text. A loopback timeout is not a refusal: the route keeps running behind
+ *  any queued claude.ai writer, and the write — always-approve included, which removes the human
+ *  approval gate — may still land. Say so, instead of reporting a failure that did not happen. */
+const writeErrText = (e: unknown): string =>
+  isLoopbackTimeout(e)
+    ? `${errText(e)} — Core did not answer in time, but the claude.ai write MAY STILL LAND (it runs behind any ` +
+      'queued connector write). Check with list_claudeai_connectors or a fresh conversation before retrying.'
+    : errText(e);
+const describeTargets = (ts: Target[]): string => ts.map((t) => `"${t.label}" (${t.uuid})`).join(', ');
+
 /**
- * Resolve the target connector: an explicit `serverUuid`, else a `connector`
- * name/url substring (must match exactly one), else auto-pick langmart / the
- * only one.
+ * Resolve the target connector(s):
+ *   - `serverUuid` → exactly that one (no listing);
+ *   - `match` → an exact uuid or name (case-insensitive); else a PROFILE name, meaning this node's
+ *     connector pinned to it (`basic` → `<base>/mcp/basic`; compared literally, so the retired
+ *     alias `langmart` reads as the hub name, below); else a name/url substring — one hit, or
+ *     several hits that are ALL this node's connectors (`"langmart"` → every lm-assist connector
+ *     on that hub). A substring spanning ours AND others is ambiguous;
+ *   - neither → EVERY connector whose URL is this node's MCP endpoint (unpinned + per-profile).
+ *     There is no first-match fallback: from a dev Core it acted on the production connector.
  */
-async function resolveConnector(serverUuid: string, match: string): Promise<{ uuid: string; label: string } | { error: string }> {
+async function resolveConnectors(serverUuid: string, match: string): Promise<{ targets: Target[] } | { error: string }> {
   const uuid = serverUuid.trim();
-  if (uuid) return { uuid, label: uuid };
+  if (uuid) return { targets: [{ uuid, label: uuid }] };
 
   let servers: ConnectorEntry[];
   try {
     servers = await listConnectors();
   } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
+    return { error: errText(e) };
   }
   if (servers.length === 0) return { error: 'No claude.ai MCP connectors found (is the cookie configured? check auth_status).' };
 
+  const base = mcpBase();
+  const mine = ourConnectors(servers, base);
+  const label = (s: ConnectorEntry) => s.name || s.uuid;
   const opts = () => servers.map((s) => `${s.name || '?'} (${s.uuid})`).join('; ');
   const m = match.trim().toLowerCase();
   if (m) {
+    const exact = servers.filter((s) => s.uuid.toLowerCase() === m || (s.name || '').toLowerCase() === m);
+    if (exact.length === 1) return { targets: [{ uuid: exact[0].uuid, label: label(exact[0]) }] };
+    const byProfile = mine.filter((c) => c.profile === m);
+    if (byProfile.length) return { targets: byProfile.map((c) => ({ uuid: c.uuid, label: label(c) })) };
     const hits = servers.filter((s) => (s.name || '').toLowerCase().includes(m) || (s.url || '').toLowerCase().includes(m));
     if (hits.length === 0) return { error: `No connector matches "${match}". Connectors: ${opts()}` };
-    if (hits.length > 1) return { error: `"${match}" matches ${hits.length} connectors — be more specific or pass server_uuid. Matches: ${hits.map((s) => `${s.name} (${s.uuid})`).join('; ')}` };
-    return { uuid: hits[0].uuid, label: hits[0].name || hits[0].uuid };
+    if (hits.length === 1) return { targets: [{ uuid: hits[0].uuid, label: label(hits[0]) }] };
+    const ours = new Set(mine.map((c) => c.uuid));
+    if (hits.every((s) => ours.has(s.uuid))) return { targets: hits.map((s) => ({ uuid: s.uuid, label: label(s) })) };
+    return { error: `"${match}" matches ${hits.length} connectors — be more specific or pass server_uuid. Matches: ${hits.map((s) => `${s.name} (${s.uuid})`).join('; ')}` };
   }
 
-  const pick =
-    servers.find((s) => /langmart/i.test(s.url || '') || /langmart/i.test(s.name || '')) ||
-    (servers.length === 1 ? servers[0] : undefined);
-  if (!pick) return { error: `Multiple connectors — pass server_uuid or connector (name). Options: ${opts()}` };
-  return { uuid: pick.uuid, label: pick.name || pick.uuid };
+  if (mine.length) return { targets: mine.map((c) => ({ uuid: c.uuid, label: label(c) })) };
+  return {
+    error: base
+      ? `No connector points at this node's MCP URL (${base}/mcp or ${base}/mcp/<profile>) — pass server_uuid or connector. Options: ${opts()}`
+      : `This node has no hub configured, so none of these connectors is its own — pass server_uuid or connector. Options: ${opts()}`,
+  };
 }
 
 async function handleListClaudeaiConnectors(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -162,14 +198,18 @@ async function handleListClaudeaiConnectors(args: Record<string, unknown>): Prom
   try {
     servers = await listConnectors();
   } catch (e) {
-    return err(e instanceof Error ? e.message : String(e));
+    return err(errText(e));
   }
   if (servers.length === 0) return ok('No claude.ai MCP connectors registered.');
   const includeTools = args.include_tools === true;
+  const mine = new Map(ourConnectors(servers).map((c) => [c.uuid, c.profile]));
   const lines = [`claude.ai MCP connectors (${servers.length}):`, ''];
   for (const s of servers) {
     const status = [s.connected ? 'connected' : 'disconnected', s.authStatus || undefined].filter(Boolean).join(', ');
-    lines.push(`- ${s.name || '(unnamed)'}  [${status}]`);
+    const own = mine.has(s.uuid)
+      ? ` · this node's ${mine.get(s.uuid) ? `"${mine.get(s.uuid)}" profile` : 'unpinned'} connector`
+      : '';
+    lines.push(`- ${s.name || '(unnamed)'}  [${status}]${own}`);
     lines.push(`  uuid: ${s.uuid}`);
     lines.push(`  url: ${s.url || '?'}`);
     lines.push(`  ${s.toolCount ?? s.tools?.length ?? 0} tools`);
@@ -181,62 +221,104 @@ async function handleListClaudeaiConnectors(args: Record<string, unknown>): Prom
 }
 
 async function handleRefreshConnectorTools(args: Record<string, unknown>): Promise<McpToolResult> {
-  const r = await resolveConnector(String(args.server_uuid || ''), String(args.connector || ''));
+  const r = await resolveConnectors(String(args.server_uuid || ''), String(args.connector || ''));
   if ('error' in r) return err(r.error);
-  try {
-    await workerPost(`/claude-ai/mcp/servers/${encodeURIComponent(r.uuid)}/clear-cache`, {});
-    return ok(
-      `Cleared claude.ai's tool cache for connector "${r.label}" (${r.uuid}). ` +
-        'claude.ai will re-fetch tools/list on the next bootstrap — newly-added tools ' +
-        'surface on the next tool-menu reload / fresh session.',
-    );
-  } catch (e) {
-    return err(e instanceof Error ? e.message : String(e));
+  const done: Target[] = [];
+  const failed: string[] = [];
+  for (const t of r.targets) {
+    try {
+      await workerPost(`/claude-ai/mcp/servers/${encodeURIComponent(t.uuid)}/clear-cache`, {});
+      done.push(t);
+    } catch (e) {
+      failed.push(`"${t.label}" (${t.uuid}): ${writeErrText(e)}`);
+    }
   }
+  if (done.length === 0) return err(`Could not clear the tool cache — ${failed.join('; ')}`);
+  const which = done.length === 1
+    ? `connector "${done[0].label}" (${done[0].uuid})`
+    : `${done.length} connectors: ${describeTargets(done)}`;
+  return ok(
+    `Cleared claude.ai's tool cache for ${which}. ` +
+      'claude.ai will re-fetch tools/list on the next bootstrap — newly-added tools ' +
+      'surface on the next tool-menu reload / fresh session.' +
+      (failed.length ? ` FAILED for ${failed.length}: ${failed.join('; ')}` : ''),
+  );
 }
 
 async function handleSetConnectorToolAccess(args: Record<string, unknown>): Promise<McpToolResult> {
   const block = Array.isArray(args.block) ? (args.block as unknown[]).filter((t): t is string => typeof t === 'string') : [];
   const enable = Array.isArray(args.enable) ? (args.enable as unknown[]).filter((t): t is string => typeof t === 'string') : [];
   if (block.length === 0 && enable.length === 0) return err('Provide block[] and/or enable[] tool names.');
-  const r = await resolveConnector(String(args.server_uuid || ''), String(args.connector || ''));
+  const r = await resolveConnectors(String(args.server_uuid || ''), String(args.connector || ''));
   if ('error' in r) return err(r.error);
+  const what =
+    `${block.length ? `blocked [${block.join(', ')}]` : ''}${block.length && enable.length ? '; ' : ''}` +
+    `${enable.length ? `enabled [${enable.join(', ')}]` : ''}`;
   try {
-    const res = (await workerPost(`/claude-ai/mcp/servers/${encodeURIComponent(r.uuid)}/tool-access`, { enable, block })) as {
-      changed?: Record<string, boolean>;
-      totalKeys?: number;
-    };
-    const n = res.changed ? Object.keys(res.changed).length : 0;
+    if (r.targets.length === 1) {
+      const t = r.targets[0];
+      const res = await workerPostLong<{ changed?: Record<string, boolean>; totalKeys?: number }>(
+        `/claude-ai/mcp/servers/${encodeURIComponent(t.uuid)}/tool-access`, { enable, block }, CONNECTOR_WRITE_TIMEOUT_MS);
+      const n = res.changed ? Object.keys(res.changed).length : 0;
+      return ok(
+        `Updated tool access on connector "${t.label}" (${t.uuid}): ${what}. ` +
+          `${n} tool(s) changed; ${res.totalKeys ?? '?'} total settings preserved. Reload the tool menu to see it take effect.`,
+      );
+    }
+    // Several connectors → ONE serialized read-modify-write (the PATCH replaces the whole map).
+    const access: Record<string, boolean> = {};
+    for (const t of block) access[t] = false;
+    for (const t of enable) access[t] = true; // enable wins, as on the per-connector route
+    // The same budget connector-sync.ts gives this route: bootstrap + account map + PATCH, queued.
+    const res = await workerPostLong<{ totalKeys?: number }>('/claude-ai/mcp/tool-settings/batch', {
+      updates: r.targets.map((t) => ({ connectorUuid: t.uuid, access })),
+    }, CONNECTOR_WRITE_TIMEOUT_MS);
     return ok(
-      `Updated tool access on connector "${r.label}" (${r.uuid}): ` +
-        `${block.length ? `blocked [${block.join(', ')}]` : ''}${block.length && enable.length ? '; ' : ''}` +
-        `${enable.length ? `enabled [${enable.join(', ')}]` : ''}. ` +
-        `${n} tool(s) changed; ${res.totalKeys ?? '?'} total settings preserved. Reload the tool menu to see it take effect.`,
+      `Updated tool access on ${r.targets.length} connectors (${describeTargets(r.targets)}) in one write: ${what}. ` +
+        `${res.totalKeys ?? '?'} total settings preserved. Reload the tool menu to see it take effect.`,
     );
   } catch (e) {
-    return err(e instanceof Error ? e.message : String(e));
+    return err(writeErrText(e));
   }
 }
 
 async function handleSetConnectorAutoApprove(args: Record<string, unknown>): Promise<McpToolResult> {
   const enable = typeof args.enable === 'boolean' ? args.enable : (args.enable === 'false' ? false : true);
-  const tools = Array.isArray(args.tools) ? (args.tools as unknown[]).filter((t): t is string => typeof t === 'string') : undefined;
-  const r = await resolveConnector(String(args.server_uuid || ''), String(args.connector || ''));
+  // Refused BEFORE resolving targets: with no connector argument this fans out to every connector
+  // of the node, and always-approve removes the approval gate — `tools: []` must never mean "all".
+  const parsed = parseAutoApproveTools(args.tools);
+  if ('error' in parsed) return err(`\`tools\` ${parsed.error}. Nothing was changed.`);
+  const tools = parsed.tools;
+  const r = await resolveConnectors(String(args.server_uuid || ''), String(args.connector || ''));
   if ('error' in r) return err(r.error);
+  const scope = tools ? ` [${tools.join(', ')}]` : ' (all)';
   try {
-    const res = (await workerPost(`/claude-ai/mcp/servers/${encodeURIComponent(r.uuid)}/auto-approve`, { enable, tools })) as {
-      changed?: string[]; skipped?: string[]; totalKeys?: number;
-    };
-    const n = res.changed?.length || 0;
+    if (r.targets.length === 1) {
+      const t = r.targets[0];
+      const res = await workerPostLong<{ changed?: string[]; skipped?: string[]; totalKeys?: number }>(
+        `/claude-ai/mcp/servers/${encodeURIComponent(t.uuid)}/auto-approve`, { enable, tools }, CONNECTOR_WRITE_TIMEOUT_MS);
+      const n = res.changed?.length || 0;
+      return ok(
+        `${enable ? 'Enabled' : 'Disabled'} auto-approval on connector "${t.label}" (${t.uuid}) for ${n} tool(s)${scope}. ` +
+          `${res.skipped?.length ? `Skipped ${res.skipped.length} (no always-approved key). ` : ''}` +
+          `${res.totalKeys ?? '?'} total settings preserved. Driven tool calls should no longer hit the approval ` +
+          'gate (use a fresh conversation to see it take effect).',
+      );
+    }
+    const res = await workerPostLong<{ results?: Array<{ connectorUuid: string; approved?: string[]; error?: string }>; totalKeys?: number }>(
+      '/claude-ai/mcp/tool-settings/batch', {
+        updates: r.targets.map((t) => ({ connectorUuid: t.uuid, autoApprove: { enable, ...(tools ? { tools } : {}) } })),
+      }, CONNECTOR_WRITE_TIMEOUT_MS);
+    const parts = (res.results || []).map((x) => {
+      const label = r.targets.find((t) => t.uuid === x.connectorUuid)?.label || x.connectorUuid;
+      return x.error ? `"${label}": ${x.error}` : `"${label}": ${x.approved?.length ?? 0} tool(s)`;
+    });
     return ok(
-      `${enable ? 'Enabled' : 'Disabled'} auto-approval on connector "${r.label}" (${r.uuid}) for ${n} tool(s)` +
-        `${tools ? ` [${tools.join(', ')}]` : ' (all)'}. ` +
-        `${res.skipped?.length ? `Skipped ${res.skipped.length} (no always-approved key). ` : ''}` +
-        `${res.totalKeys ?? '?'} total settings preserved. Driven tool calls should no longer hit the approval ` +
-        'gate (use a fresh conversation to see it take effect).',
+      `${enable ? 'Enabled' : 'Disabled'} auto-approval${scope} on ${r.targets.length} connectors in one write — ${parts.join('; ')}. ` +
+        `${res.totalKeys ?? '?'} total settings preserved. Use a fresh conversation to see it take effect.`,
     );
   } catch (e) {
-    return err(e instanceof Error ? e.message : String(e));
+    return err(writeErrText(e));
   }
 }
 

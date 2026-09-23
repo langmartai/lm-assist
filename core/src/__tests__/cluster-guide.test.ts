@@ -1,6 +1,14 @@
 // Task 10: guide("clusters") topic + bootstrap/session_status cluster awareness
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the lm-assist imports: bootstrap serves the node-default profile's
+// playbooks (`basic` leaves out clusters), read from the profile file under getDataDir().
+// Never the developer's real ~/.lm-assist.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cluster-guide-'));
 import { GUIDE_HANDLERS, GUIDES_TEST_EXPORT } from '../mcp-server/tools/guide';
 import { SESSION_STATUS_HANDLERS } from '../mcp-server/mcp-session-resolver';
 import { stopSessionCache } from '../session-cache';

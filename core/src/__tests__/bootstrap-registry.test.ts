@@ -6,6 +6,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the lm-assist imports, like every bootstrap-marker suite: marker keys
+// depend on the node-default profile file under getDataDir(). This suite passes explicit
+// stores; the temp dir keeps anything that falls through off the real ~/.lm-assist.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bootstrap-registry-'));
 import { fleetBootstrappedAt, publishBootstrapToFleet, type FleetBootstrapStore } from '../mcp-server/bootstrap-registry';
 
 function fakeFleet(): { store: FleetBootstrapStore; rows: Map<string, { bootstrappedAt: number; node?: string }>; puts: string[] } {

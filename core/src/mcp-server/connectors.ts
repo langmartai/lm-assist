@@ -79,9 +79,35 @@ export interface Connector {
   name?: string;
   created_at?: string;
   enabled?: boolean;
-  /** Registered on claude.ai as a connected MCP server. */
+  /** Registered on claude.ai: at least one claude.ai server points at this node's MCP URL —
+   *  unpinned `/mcp` or a per-profile `/mcp/<profile>`. A gateway client carries no URL, so this is
+   *  per node, not per client; the per-connector detail is `claudeServers` on the list. */
   claudeRegistered?: boolean;
+  /** The preferred of those servers (unpinned, else admin, else the widest). */
   claudeServerName?: string;
+}
+
+/** One claude.ai server pointing at this node, with the profile its URL pins (null = unpinned). */
+export interface ClaudeServerRegistration {
+  uuid?: string;
+  name: string;
+  url: string;
+  profile: string | null;
+}
+
+/** Pure: this node's registrations in a claude.ai server list — per URL, so each per-profile
+ *  connector is reported on its own. Exported for tests. (Lazy require: profile-connectors
+ *  imports this module.) */
+export function summarizeClaudeRegistrations(
+  servers: Array<{ uuid?: string; name?: string; url?: string }>,
+  base: string,
+): { claudeServers: ClaudeServerRegistration[]; preferredName?: string } {
+  const { ourConnectors, preferredConnector } = require('./profile-connectors') as typeof import('./profile-connectors');
+  const mine = ourConnectors(servers, base);
+  return {
+    claudeServers: mine.map((s) => ({ uuid: s.uuid, name: s.name || '', url: s.url || '', profile: s.profile })),
+    preferredName: preferredConnector(mine)?.name || undefined,
+  };
 }
 
 async function gatewayFetch(path: string, init?: RequestInit): Promise<Response> {
@@ -96,22 +122,19 @@ async function gatewayFetch(path: string, init?: RequestInit): Promise<Response>
   });
 }
 
-/** Which claude.ai-connected MCP servers point at this node's MCP URL. */
-async function claudeRegistered(): Promise<string[]> {
+/** Which claude.ai servers point at this node's MCP URL — unpinned or per-profile. */
+async function claudeRegistrations(): Promise<{ claudeServers: ClaudeServerRegistration[]; preferredName?: string }> {
   const base = mcpPublicBase();
-  if (!base) return [];
-  const mcpUrl = `${base}/mcp`;
+  if (!base) return { claudeServers: [] };
   try {
-    const r = await fetch(`http://127.0.0.1:${localApiPort()}/claude-ai/org/mcp-bootstrap`, {
+    const r = await fetch(`http://127.0.0.1:${localApiPort()}/claude-ai/mcp/servers`, {
       headers: lmAuthHeaders(),
       signal: AbortSignal.timeout(15000),
     });
-    const j = (await r.json()) as { data?: { events?: Array<{ type: string; data?: { servers?: Array<{ url?: string; name?: string }> } }> } };
-    const ev = (j.data?.events || []).find((e) => e.type === 'server_list');
-    const servers = ev?.data?.servers || [];
-    return servers.filter((s) => s.url === mcpUrl).map((s) => s.name || '');
+    const j = (await r.json()) as { data?: { servers?: Array<{ uuid?: string; name?: string; url?: string }> } };
+    return summarizeClaudeRegistrations(j.data?.servers || [], base.replace(/\/+$/, ''));
   } catch {
-    return [];
+    return { claudeServers: [] };
   }
 }
 
@@ -119,6 +142,8 @@ export async function listConnectors(): Promise<{
   base: string | null;
   gatewayId: string | null;
   connectors: Connector[];
+  /** Every claude.ai server pointing at this node, each with its profile. */
+  claudeServers?: ClaudeServerRegistration[];
   error?: string;
 }> {
   const base = mcpPublicBase();
@@ -128,18 +153,16 @@ export async function listConnectors(): Promise<{
     if (!r.ok) return { base, gatewayId, connectors: [], error: `gateway ${r.status}` };
     const j = (await r.json()) as { connectors?: Connector[] };
     const list = j.connectors || [];
-    const registeredNames = await claudeRegistered();
-    // The MCP URL is shared across this node's connectors, so claude.ai
-    // registration is reported per-URL (registered if any server matches).
-    const registered = registeredNames.length > 0;
+    const regs = await claudeRegistrations();
     return {
       base,
       gatewayId,
+      claudeServers: regs.claudeServers,
       connectors: list.map((c) => ({
         ...c,
         enabled: c.enabled !== false,
-        claudeRegistered: registered,
-        claudeServerName: registeredNames[0] || undefined,
+        claudeRegistered: regs.claudeServers.length > 0,
+        claudeServerName: regs.preferredName,
       })),
     };
   } catch (e) {

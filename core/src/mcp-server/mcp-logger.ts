@@ -7,11 +7,15 @@
  * - Async, non-blocking (fire-and-forget writes)
  * - Auto-rotates when file exceeds MAX_LOG_SIZE (keeps one backup)
  * - Truncates large args/response text to keep entries readable
+ *
+ * logToolsList is the exception: it writes ONE console line (the Core log) per
+ * tools/list and never touches mcp-calls.jsonl — see its comment.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { getDataDir } from '../utils/path-utils';
+import type { EffectiveProfile } from './registry/profiles';
 
 const LOG_DIR = path.join(getDataDir(), 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'mcp-calls.jsonl');
@@ -109,6 +113,38 @@ export function logToolCall(
     });
   } catch {
     // Never let logging break MCP
+  }
+}
+
+/**
+ * One line to the CORE LOG per tools/list: which profile was served, why, and how many
+ * tools went out (spec 2026-09-23 §5.3). Nothing else records what a client was SHOWN,
+ * so without it a pinned connector that silently received the node default (an unknown
+ * pin, or an older node answering) is invisible.
+ *
+ *   [mcp] tools/list profile=basic source=pin pin="basic" advertised=42 3ms
+ *   [mcp] tools/list profile=admin source=node-default pin="basci" unknown-pin (served the node default) advertised=320 41ms
+ *
+ * 🔴 NOT to mcp-calls.jsonl (LOG_FILE above). That file is a tracked fleet dataset capped
+ * at 1,000 lines (data/system-datasets.ts, `log-mcp-calls`); a line per tools/list would
+ * push the tool-call history out of it. The console IS the Core log: core.sh and
+ * service-manager send Core's stdout and stderr there. In a stdio MCP server, index.ts
+ * has already pointed console.log at stderr, so the line lands in the client's MCP
+ * server log and can never corrupt the JSON-RPC stream on stdout.
+ *
+ * Hot path (docs/mcp-surfaces.md): one short console write, no fs call of its own, never
+ * throws. The pin is JSON-quoted, so no value — even one that bypassed
+ * resolveEffectiveProfile's bounding — can split the line.
+ */
+export function logToolsList(profile: EffectiveProfile, advertised: number, durationMs: number): void {
+  try {
+    let line = `[mcp] tools/list profile=${profile.name} source=${profile.source}`;
+    if (profile.pin !== undefined) line += ` pin=${JSON.stringify(profile.pin)}`;
+    if (profile.unknownPin) line += ' unknown-pin (served the node default)';
+    line += ` advertised=${advertised} ${Math.round(durationMs)}ms`;
+    console.log(line);
+  } catch {
+    // Never let logging break tools/list
   }
 }
 
