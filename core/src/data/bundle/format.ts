@@ -319,6 +319,14 @@ export async function writeBundleFile(
   opts: BundleLimits & { beforeWrite?: (m: BundleManifest) => void | Promise<void> } = {},
 ): Promise<WriteBundleResult> {
   const manifest = summarizeBundle(input, entries, opts);
+  // The READER caps every decompressed byte (manifest and end line included); the summary
+  // counts entry lines only. Refuse here what could never be read back — a restore point
+  // that fails verify with total-cap is worse than no bundle.
+  const maxTotal = opts.maxUncompressedBytes ?? MAX_UNCOMPRESSED_BYTES;
+  const overhead = serialize(manifest).length + serialize({ t: 'end', entries: entries.length, sha256: '0'.repeat(64) }).length;
+  if (manifest.totals.uncompressedBytes + overhead > maxTotal) {
+    throw new BundleError('BUNDLE_TOO_LARGE', `bundle exceeds ${maxTotal} uncompressed bytes (manifest and end line included)`, 'total-cap', { limit: maxTotal });
+  }
   if (opts.beforeWrite) await opts.beforeWrite(manifest);
 
   function* lines(): Generator<Buffer> {
@@ -387,8 +395,27 @@ function validateManifest(obj: unknown): BundleManifest {
   if (typeof m.bundleId !== 'string' || !Array.isArray(m.sections) || !m.totals || typeof m.totals !== 'object') {
     throw new BundleError('BUNDLE_FORMAT', 'manifest is missing bundleId/sections/totals', 'manifest-shape');
   }
+  const nonNegInt = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
+  if (!nonNegInt(m.totals.entries) || !nonNegInt(m.totals.uncompressedBytes)) {
+    throw new BundleError('BUNDLE_FORMAT', 'manifest totals must be non-negative integers', 'manifest-totals');
+  }
+  // Every declared section is shape-checked and unique, so a crafted manifest fails as a
+  // coded BUNDLE_FORMAT naming the check — never as a TypeError or a crypto error.
+  const keys = new Set<string>();
+  for (const sec of m.sections as unknown[]) {
+    const x = sec as Partial<SectionSummary> | null;
+    if (!x || typeof x !== 'object' || !SECTION_KINDS.has(x.kind as string) || typeof x.id !== 'string'
+      || !nonNegInt(x.count) || typeof x.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(x.sha256)) {
+      throw new BundleError('BUNDLE_FORMAT', 'manifest section is malformed (kind/id/count/sha256)', 'manifest-sections');
+    }
+    const k = sectionKey(x.kind as string, x.id);
+    if (keys.has(k)) throw new BundleError('BUNDLE_FORMAT', `manifest declares section ${k} twice`, 'manifest-sections');
+    keys.add(k);
+  }
   return m as BundleManifest;
 }
+
+const SECTION_KINDS: ReadonlySet<string> = new Set<SectionKind>(['dataset', 'config', 'files']);
 
 /**
  * Yield the decompressed stream line by line as raw Buffers (without the '\n'), plus a flag

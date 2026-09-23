@@ -38,6 +38,17 @@ export const MAX_UPLOAD_CHUNK_B64 = 700 * 1024;
 export const UPLOAD_STALE_MS = 60 * 60 * 1000;
 /** Free-space floor for an export (spec: max(512 MB, 3 × estimated size)). */
 export const DISK_FLOOR_BYTES = 512 * 1024 * 1024;
+/** Free-space margin for STORING an incoming bundle (upload / received / fetch): the spec's
+ *  512 MB floor is for exports, and a node short on disk is exactly where an operator is
+ *  restoring a small bundle. An import needs the tmp copy + the stored copy + this margin. */
+export const IMPORT_DISK_MARGIN_BYTES = 16 * 1024 * 1024;
+/** Decoded bytes one upload chunk can carry at most. */
+const MAX_UPLOAD_CHUNK_BYTES = Math.floor(MAX_UPLOAD_CHUNK_B64 / 4) * 3;
+/** Most chunks an upload can declare: enough for the 1 GiB cap, and no more. */
+export const MAX_UPLOAD_CHUNKS = Math.ceil(MAX_UNCOMPRESSED_BYTES / MAX_UPLOAD_CHUNK_BYTES);
+/** Plan/apply materialize every entry: refuse when the declared size × this would not fit
+ *  in the heap that is left (JS objects cost well over their serialized bytes). */
+const READ_HEAP_FACTOR = 3;
 export const RECEIVED_NAME_RE = /^[A-Za-z0-9._-]{1,128}$/;
 const UPLOAD_ID_RE = /^upl-[0-9a-f]{16}$/;
 const B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -198,6 +209,15 @@ export class BundleStore {
   private readonly now: () => number;
   /** Per-uploadId serialization so two concurrent final chunks cannot both assemble. */
   private readonly uploadLocks = new Map<string, Promise<unknown>>();
+  /** Stale tmp files / partial uploads are swept once per store, on first use — not only
+   *  when another upload happens to arrive. */
+  private swept = false;
+  /** Test seam: heap headroom in bytes (default: v8 heap_size_limit - used_heap_size). */
+  heapHeadroom: () => number = () => {
+    const v8 = require('v8') as typeof import('v8');
+    const h = v8.getHeapStatistics();
+    return h.heap_size_limit - h.used_heap_size;
+  };
 
   constructor(opts: BundleStoreOptions = {}) {
     this.baseDir = path.resolve(opts.dir ?? defaultBundlesDir());
@@ -212,6 +232,10 @@ export class BundleStore {
   dir(): string {
     fs.mkdirSync(this.baseDir, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(this.baseDir, 0o700); } catch { /* best effort */ }
+    if (!this.swept) {
+      this.swept = true;
+      try { this.sweepUploads(); } catch { /* best effort */ }
+    }
     return this.baseDir;
   }
 
@@ -258,6 +282,7 @@ export class BundleStore {
 
   /** Every stored bundle with its manifest summary. A corrupt file is listed with `error`. */
   async list(): Promise<StoredBundleInfo[]> {
+    if (fs.existsSync(this.baseDir)) this.dir(); // first use sweeps stale tmp files
     const out: StoredBundleInfo[] = [];
     for (const id of this.ids()) {
       const p = this.pathFor(id);
@@ -296,9 +321,23 @@ export class BundleStore {
     return verifyBundleFile(this.resolveExisting(bundleId));
   }
 
-  /** Read + verify, entries grouped by section. */
+  /**
+   * Read + verify, entries grouped by section. Every entry is materialized in the heap, so
+   * the manifest's declared size is checked against the heap that is left first: a large or
+   * highly compressible bundle is refused as BUNDLE_TOO_LARGE instead of crashing Core with
+   * an OOM mid-plan. (A manifest that under-declares is caught by the reader's total check.)
+   */
   async read(bundleId: string): Promise<ReadBundleResult> {
-    return readBundle(this.resolveExisting(bundleId));
+    const file = this.resolveExisting(bundleId);
+    const m = await readBundleManifest(file);
+    const need = m.totals.uncompressedBytes * READ_HEAP_FACTOR;
+    const room = this.heapHeadroom();
+    if (need > room) {
+      throw new BundleError('BUNDLE_TOO_LARGE',
+        `bundle ${bundleId} declares ${m.totals.uncompressedBytes} uncompressed bytes; reading it needs ~${need} bytes of heap and ${Math.max(0, room)} are free — import it on a node with more memory, or export fewer sections`,
+        'heap', { uncompressedBytes: m.totals.uncompressedBytes, heapFree: room });
+    }
+    return readBundle(file);
   }
 
   /** Delete a stored bundle (and its sidecar). false when it did not exist. */
@@ -312,33 +351,63 @@ export class BundleStore {
     return removed;
   }
 
-  /** Keep the newest `keep` bundles; delete the rest. Returns the deleted ids (oldest last). */
-  prune(keep: number = this.retention()): string[] {
+  /**
+   * Keep the newest `keep` bundles; delete the rest. Returns EXACTLY the deleted ids (oldest
+   * last). `protect` (the bundle just written or stored) is never deleted and holds one of
+   * the `keep` slots: ids order by their second-resolution timestamp, so a same-second
+   * sibling or a clock that stepped backwards could otherwise rank the new bundle oldest —
+   * it would be deleted while the caller was told it was stored.
+   */
+  prune(keep: number = this.retention(), protect?: string): string[] {
     const k = Number.isInteger(keep) && keep >= 1 ? keep : DEFAULT_BUNDLE_RETENTION;
-    const doomed = this.ids().slice(k);
+    const all = this.ids();
+    const protectedHere = !!protect && all.includes(protect);
+    const rest = protectedHere ? all.filter((id) => id !== protect) : all;
+    const doomed = rest.slice(protectedHere ? k - 1 : k);
     for (const id of doomed) this.delete(id);
     return doomed;
   }
 
   // ─── disk ──────────────────────────────────────────────────────────────
 
-  /** Free space vs `max(512 MB, 3 × estimatedBytes)` on the store's filesystem. */
-  checkDiskSpace(estimatedBytes: number): DiskCheck {
-    const requiredBytes = Math.max(DISK_FLOOR_BYTES, 3 * Math.max(0, estimatedBytes));
+  /**
+   * Free space on the store's filesystem vs what a bundle needs. Export (the default):
+   * `max(512 MB, 3 × estimatedBytes)`. Import (`kind: 'import'`): `2 × size + 16 MiB` — the
+   * tmp copy plus the stored copy — so a small restore works on a node short on disk.
+   */
+  checkDiskSpace(estimatedBytes: number, kind: 'export' | 'import' = 'export'): DiskCheck {
+    const est = Math.max(0, estimatedBytes);
+    const requiredBytes = kind === 'import'
+      ? 2 * est + IMPORT_DISK_MARGIN_BYTES
+      : Math.max(DISK_FLOOR_BYTES, 3 * est);
     const freeBytes = this.free(this.dir());
     return { ok: freeBytes === null || freeBytes >= requiredBytes, freeBytes, requiredBytes, estimatedBytes };
   }
 
   /** Throw DISK_LOW (with the numbers) when checkDiskSpace fails. */
-  assertDiskSpace(estimatedBytes: number): DiskCheck {
-    const c = this.checkDiskSpace(estimatedBytes);
+  assertDiskSpace(estimatedBytes: number, kind: 'export' | 'import' = 'export'): DiskCheck {
+    const c = this.checkDiskSpace(estimatedBytes, kind);
     if (!c.ok) {
+      const rule = kind === 'import' ? `2 × ~${estimatedBytes} + 16 MiB` : `max(512 MB, 3 × ~${estimatedBytes} estimated)`;
       throw new BundleError('DISK_LOW',
-        `not enough free disk for a bundle: ${c.freeBytes} bytes free, ${c.requiredBytes} required ` +
-        `(max(512 MB, 3 × ~${estimatedBytes} estimated))`,
+        `not enough free disk for a bundle: ${c.freeBytes} bytes free, ${c.requiredBytes} required (${rule})`,
         undefined, { freeBytes: c.freeBytes, requiredBytes: c.requiredBytes, estimatedBytes });
     }
     return c;
+  }
+
+  /** A bundle already fetched from `fromNode`'s `sourceBundleId` (a retried fetch whose
+   *  first reply was lost to a relay timeout), or null. */
+  findFetched(fromNode: string, sourceBundleId: string): StoredImportResult | null {
+    for (const id of this.ids()) {
+      const meta = readJson<ImportedMeta>(this.metaPathFor(id));
+      if (!meta || meta.via !== 'fetch' || meta.fromNode !== fromNode || meta.sourceBundleId !== sourceBundleId) continue;
+      const file = this.pathFor(id);
+      try {
+        return { bundleId: id, manifest: undefined as unknown as BundleManifest, sizeBytes: fs.statSync(file).size, sha256: sha256File(file), imported: meta };
+      } catch { return null; }
+    }
+    return null;
   }
 
   // ─── write ─────────────────────────────────────────────────────────────
@@ -367,7 +436,7 @@ export class BundleStore {
     const res = await writeBundleFile(file, full, entries, {
       beforeWrite: (m) => { this.assertDiskSpace(m.totals.uncompressedBytes); },
     });
-    const pruned = this.prune().filter((id) => id !== bundleId);
+    const pruned = this.prune(undefined, bundleId);
     return { ...res, bundleId, pruned };
   }
 
@@ -408,15 +477,20 @@ export class BundleStore {
       fs.renameSync(src, dest);
     } else {
       const tmp = `${dest}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-      fs.copyFileSync(src, tmp);
-      fs.renameSync(tmp, dest);
+      try {
+        fs.copyFileSync(src, tmp);
+        fs.renameSync(tmp, dest);
+      } catch (e) {
+        try { fs.unlinkSync(tmp); } catch { /* never created */ } // an ENOSPC mid-copy leaves no partial behind
+        throw e;
+      }
     }
     try { fs.chmodSync(dest, 0o600); } catch { /* best effort */ }
     const imported: ImportedMeta = { ...meta, importedFrom: manifest.bundleId, at: new Date(this.now()).toISOString() };
     writeJsonAtomic(this.metaPathFor(bundleId), imported);
     const sizeBytes = fs.statSync(dest).size;
     const sha256 = sha256File(dest);
-    this.prune();
+    this.prune(undefined, bundleId);
     return { bundleId, manifest, sizeBytes, sha256, imported };
   }
 
@@ -450,7 +524,7 @@ export class BundleStore {
       throw new BundleError('RECEIVED_NAME_INVALID', `received ${JSON.stringify(name)} is not a regular file`);
     }
     this.dir();
-    this.assertDiskSpace(st.size);
+    this.assertDiskSpace(st.size, 'import');
     return this.adopt(p, false, { via: 'received', name });
   }
 
@@ -505,8 +579,8 @@ export class BundleStore {
    */
   async uploadChunk(input: UploadChunkInput): Promise<UploadChunkResult> {
     const { index, total, dataB64 } = input;
-    if (!Number.isInteger(total) || total < 1 || total > 100_000) {
-      throw new BundleError('UPLOAD_INVALID', `total must be an integer 1..100000 (got ${total})`);
+    if (!Number.isInteger(total) || total < 1 || total > MAX_UPLOAD_CHUNKS) {
+      throw new BundleError('UPLOAD_INVALID', `total must be an integer 1..${MAX_UPLOAD_CHUNKS} (got ${total}) — ${MAX_UPLOAD_CHUNKS} full chunks already reach the ${MAX_UNCOMPRESSED_BYTES}-byte cap`);
     }
     if (!Number.isInteger(index) || index < 0 || index >= total) {
       throw new BundleError('UPLOAD_INVALID', `index must be an integer 0..${total - 1} (got ${index})`);
@@ -544,17 +618,15 @@ export class BundleStore {
 
     const dir = path.join(ups, uploadId);
     const metaFile = path.join(dir, 'upload.json');
-    type UploadMeta = { total: number; name?: string; sha256?: string; createdAt: string };
+    type UploadMeta = { total: number; name?: string; sha256?: string; createdAt: string; bytes?: number };
     let meta = readJson<UploadMeta>(metaFile);
     if (!meta) {
       if (input.uploadId !== undefined && input.index !== 0 && !fs.existsSync(dir)) {
         // A continuation of an upload we have never seen (or that was swept).
         throw new BundleError('UPLOAD_NOT_FOUND', `no upload ${uploadId} in progress (swept after 1 h idle?) — restart from index 0`);
       }
-      const data = Buffer.from(input.dataB64, 'base64');
-      this.assertDiskSpace(data.length * input.total);
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      meta = { total: input.total, createdAt: new Date(this.now()).toISOString() };
+      meta = { total: input.total, createdAt: new Date(this.now()).toISOString(), bytes: 0 };
     }
     if (meta.total !== input.total) {
       throw new BundleError('UPLOAD_CONFLICT', `upload ${uploadId} has total ${meta.total}, chunk says ${input.total}`);
@@ -565,18 +637,28 @@ export class BundleStore {
       if (meta.sha256 && meta.sha256 !== s) throw new BundleError('UPLOAD_CONFLICT', `upload ${uploadId} already declared a different sha256`);
       meta.sha256 = s;
     }
-    writeJsonAtomic(metaFile, meta); // also refreshes the idle clock the sweeper reads
-
     const data = Buffer.from(input.dataB64, 'base64');
     const part = path.join(dir, `${input.index}.part`);
     if (fs.existsSync(part)) {
       if (!fs.readFileSync(part).equals(data)) {
         throw new BundleError('UPLOAD_CONFLICT', `chunk ${input.index} of ${uploadId} was already received with different bytes`);
       }
+      writeJsonAtomic(metaFile, meta); // refreshes the idle clock the sweeper reads
     } else {
+      // Bound what a partial upload can put on disk: the 1 GiB cap is checked on the running
+      // total of stored parts, and free space on EVERY new part — not only an estimate taken
+      // from the first chunk (a 3-byte index 0 used to vouch for 100000 chunks of 700 KB).
+      const bytes = (meta.bytes ?? 0) + data.length;
+      if (bytes > MAX_UNCOMPRESSED_BYTES) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        throw new BundleError('BUNDLE_TOO_LARGE', `upload ${uploadId} exceeds ${MAX_UNCOMPRESSED_BYTES} bytes`);
+      }
+      this.assertDiskSpace(data.length, 'import');
       const tmp = `${part}.tmp`;
       fs.writeFileSync(tmp, data, { mode: 0o600 });
       fs.renameSync(tmp, part);
+      meta.bytes = bytes;
+      writeJsonAtomic(metaFile, meta); // also refreshes the idle clock the sweeper reads
     }
     try { fs.utimesSync(dir, new Date(this.now()), new Date(this.now())); } catch { /* sweeper falls back to meta mtime */ }
 

@@ -121,3 +121,18 @@ test('fetch: input validation and DISK_LOW before any byte is written', async ()
   await rejectsCode(fetchFromPeer(PEER, exp.bundleId, { store: tight, transport: t }), 'DISK_LOW');
   assert.deepEqual(leftovers(tight), []);
 });
+
+test('fetch is idempotent: a retried fetch of the same bundle from the same node returns the stored copy', async () => {
+  const { peer, exp } = await peerWithBundle();
+  const store = localStore();
+  const log: string[] = [];
+  const first = await fetchFromPeer(PEER, exp.bundleId, { store, transport: transportFor(peer.store, log), chunkBytes: 4096 });
+  const n = log.length;
+  const again = await fetchFromPeer(PEER, exp.bundleId, { store, transport: transportFor(peer.store, log), chunkBytes: 4096 });
+  assert.equal(again.bundleId, first.bundleId);
+  assert.equal(again.reused, true);
+  assert.equal(again.sha256, first.sha256);
+  assert.equal(again.manifest.bundleId, exp.bundleId);
+  assert.equal(log.length, n, 'nothing re-fetched');
+  assert.equal((await store.list()).length, 1, 'no duplicate to push a real restore point out of retention');
+});

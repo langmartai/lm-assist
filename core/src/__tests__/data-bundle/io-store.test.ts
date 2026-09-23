@@ -261,3 +261,72 @@ test('importReceived: confined to the inbox, verified, stored under a new id', a
   await rejectsCode(s.importReceived('junk.gz'), 'BUNDLE_FORMAT');
   assert.equal((await s.list()).length, 1);
 });
+
+test('retention never deletes the bundle just written: same-second siblings and a clock that stepped back', async () => {
+  // Every write in the same second: the random suffix alone orders them.
+  const fixed = Date.parse('2026-09-23T10:00:00Z');
+  for (let i = 0; i < 20; i++) {
+    const s = store({ retention: 1, now: () => fixed });
+    await s.writeBundle({ source }, entries(1));
+    const w = await s.writeBundle({ source }, entries(1));
+    assert.ok(s.exists(w.bundleId), 'the returned id exists');
+    assert.equal(w.pruned.length, 1);
+    assert.equal(s.exists(w.pruned[0]), false, 'pruned lists exactly what was deleted');
+  }
+  // Three bundles dated in the FUTURE (clock stepped back since), retention 3.
+  let t = Date.parse('2026-09-25T00:00:00Z');
+  const s = store({ retention: 3, now: () => t });
+  for (let i = 0; i < 3; i++) { t += 1000; await s.writeBundle({ source }, entries(1)); }
+  t = Date.parse('2026-09-23T00:00:00Z');
+  for (let i = 0; i < 3; i++) {
+    t += 1000;
+    const w = await s.writeBundle({ source }, entries(1));
+    assert.ok(s.exists(w.bundleId), `write ${i}: the new restore point is kept`);
+    assert.equal(w.pruned.length, 1);
+  }
+  assert.equal((await s.list()).length, 3);
+});
+
+test('disk: an IMPORT needs 2 × size + 16 MiB, not the 512 MB export floor', async () => {
+  const src = store();
+  const w = await src.writeBundle({ source }, entries(2));
+  const s = store({ freeBytes: () => 400 * 1024 * 1024 });
+  fs.copyFileSync(w.path, path.join((s as any).inbox, 'small.lmbundle.gz'));
+  const r = await s.importReceived('small.lmbundle.gz');
+  assert.ok(s.exists(r.bundleId), 'a small restore works on a node with 400 MB free');
+  const c = s.checkDiskSpace(1000, 'import');
+  assert.equal(c.requiredBytes, 2000 + 16 * 1024 * 1024);
+  assert.equal(store({ freeBytes: () => 1 }).checkDiskSpace(1000, 'import').ok, false);
+});
+
+test('upload: every new part is disk-checked and counted toward the 1 GiB cap; total is bounded', async () => {
+  let free = 1e15;
+  const s = store({ freeBytes: () => free });
+  await rejectsCode(s.uploadChunk({ index: 0, total: 100000, dataB64: 'AAAA' }), 'UPLOAD_INVALID');
+  const r0 = await s.uploadChunk({ index: 0, total: 3, dataB64: 'AAAA' });
+  free = 1;                                               // the disk filled up after chunk 0
+  await rejectsCode(s.uploadChunk({ uploadId: r0.uploadId, index: 1, total: 3, dataB64: 'A'.repeat(4096) }), 'DISK_LOW');
+  const meta = JSON.parse(fs.readFileSync(path.join(s.dir(), '.uploads', r0.uploadId, 'upload.json'), 'utf8'));
+  assert.equal(meta.bytes, 3, 'the running total of stored parts is kept');
+});
+
+test('first use of a store sweeps stale tmp files (not only when an upload arrives)', async () => {
+  const dir = path.join(tmp(), 'bundles');
+  fs.mkdirSync(dir, { recursive: true });
+  const stale = path.join(dir, 'lmb-20260101-000000-abcdef.lmbundle.gz.tmp-9-cafebabe');
+  fs.writeFileSync(stale, 'partial');
+  const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  fs.utimesSync(stale, old, old);
+  const s = new BundleStore({ dir, receivedDir: tmp(), retention: 20, freeBytes: BIG_DISK });
+  await s.list();
+  assert.equal(fs.existsSync(stale), false);
+});
+
+test('read refuses a bundle whose declared size would not fit in the heap that is left (no OOM)', async () => {
+  const s = store();
+  const w = await s.writeBundle({ source }, entries(5, 100));
+  s.heapHeadroom = () => 10;
+  await rejectsCode(s.read(w.bundleId), 'BUNDLE_TOO_LARGE');
+  s.heapHeadroom = () => 1e12;
+  assert.equal((await s.read(w.bundleId)).manifest.bundleId, w.bundleId);
+});

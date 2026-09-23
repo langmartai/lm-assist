@@ -27,6 +27,8 @@ export interface FetchResult extends StoredImportResult {
   /** The bundleId the peer stored it under (the one requested). */
   sourceBundleId: string;
   chunks: number;
+  /** True when this bundle had already been fetched from that node — nothing was re-fetched. */
+  reused?: boolean;
 }
 
 /** Node ids are hub gatewayIds (or machine ids); nothing path-like reaches the proxy URL. */
@@ -86,6 +88,15 @@ export async function fetchFromPeer(
   const transport = deps.transport ?? defaultTransport();
   const chunkBytes = Math.min(MAX_CHUNK_BYTES, Math.max(1, deps.chunkBytes ?? MAX_CHUNK_BYTES));
 
+  // Idempotent: a caller whose first reply was cut off by the relay's 25 s cap (the fetch
+  // itself kept going and stored the bundle) retries — it gets THAT copy back instead of a
+  // duplicate that retention then counts against the node's real restore points.
+  const prior = store.findFetched(fromNode, bundleId);
+  if (prior) {
+    const manifest = await store.getManifest(prior.bundleId);
+    return { ...prior, manifest, fromNode, sourceBundleId: bundleId, chunks: 0, reused: true };
+  }
+
   const tmp = path.join(store.dir(), `.fetch-${crypto.randomBytes(6).toString('hex')}.tmp`);
   let fd: number | null = null;
   try {
@@ -111,7 +122,7 @@ export async function fetchFromPeer(
           throw new BundleError('BUNDLE_TOO_LARGE', `the bundle on ${fromNode} is ${c.total} bytes; the cap is ${MAX_UNCOMPRESSED_BYTES}`);
         }
         total = c.total;
-        store.assertDiskSpace(total);
+        store.assertDiskSpace(total, 'import');
         fd = fs.openSync(tmp, 'w', 0o600);
       } else if (c.total !== total) {
         throw new BundleServiceError('FETCH_FAILED', `the bundle on ${fromNode} changed size mid-fetch (${total} → ${c.total})`);

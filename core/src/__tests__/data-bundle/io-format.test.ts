@@ -224,3 +224,29 @@ test('beforeWrite sees the manifest and can veto before a byte is written', asyn
   assert.equal(fs.existsSync(f), false);
   assert.deepEqual(fs.readdirSync(dir), []);
 });
+
+test('writer refuses a bundle the reader could never read back (manifest + end line count toward the cap)', async () => {
+  const dir = tmp();
+  const ents = entries();
+  const limit = summarizeBundle(input(), ents).totals.uncompressedBytes;
+  await rejectsCode(writeBundleFile(path.join(dir, 'edge.lmbundle.gz'), input(), ents, { maxUncompressedBytes: limit }), 'BUNDLE_TOO_LARGE', /total-cap/);
+  assert.deepEqual(fs.readdirSync(dir), [], 'nothing written');
+});
+
+test('manifest sections are shape-checked: a duplicate or null section is a coded BUNDLE_FORMAT', async () => {
+  const dir = tmp();
+  const reHash = (file: string, editManifest: (m: any) => any) => rewrite(file, (lines) => {
+    const body = lines.filter((l) => l && JSON.parse(l).t !== 'end');
+    body[0] = JSON.stringify(editManifest(JSON.parse(body[0])));
+    const h = crypto.createHash('sha256');
+    for (const l of body) h.update(l + '\n');
+    return [...body, JSON.stringify({ t: 'end', entries: body.length - 1, sha256: h.digest('hex') }), ''];
+  });
+  const a = await write(dir);
+  reHash(a.path, (m) => ({ ...m, sections: [...m.sections, m.sections[1]] }));
+  await rejectsCode(verifyBundleFile(a.path), 'BUNDLE_FORMAT', /^manifest-sections$/);
+  const dir2 = tmp();
+  const b = await write(dir2);
+  reHash(b.path, (m) => ({ ...m, sections: [...m.sections, null] }));
+  await rejectsCode(verifyBundleFile(b.path), 'BUNDLE_FORMAT', /^manifest-sections$/);
+});
