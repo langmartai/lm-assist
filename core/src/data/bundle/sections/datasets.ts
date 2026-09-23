@@ -30,7 +30,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { DataResult, CallCtx } from '../../data-service';
-import { planImportRecord, recordTooLarge, sameRecordContent } from '../../data-service';
+import { planImportRecord, recordTooLarge, sameRecordContent, RAW_UNSUPPORTED_BACKENDS } from '../../data-service';
 import { DATASET_ID_RE, RESERVED_DATASET_IDS, type PromoteReplicaPatch } from '../../dataset-registry';
 import type {
   BackendKind, DataRecord, DatasetDescriptor, ImportOutcome, ImportPolicy, NodeOrigin,
@@ -46,8 +46,9 @@ import { bump, emptyCounts, newSectionPlan, SAMPLE_CAP, type PlanBucket, type Se
  *  self-heal every reconcile, and bootstrap runtime state. */
 export const DATASET_EXPORT_DENY: ReadonlySet<string> = new Set(['node-clusters', 'mcp-bootstrap']);
 
-/** Backends a bundle cannot round-trip (derived stores / file adapters). */
-export const DATASET_UNSUPPORTED_BACKENDS: ReadonlySet<BackendKind> = new Set<BackendKind>(['knowledge', 'vectors', 'file']);
+/** Backends a bundle cannot round-trip (derived stores / file adapters) — the same set
+ *  DataService.exportRaw/importRaw refuse. */
+export const DATASET_UNSUPPORTED_BACKENDS: ReadonlySet<BackendKind> = RAW_UNSUPPORTED_BACKENDS;
 
 export const MISSIONS_DATASET = 'missions';
 /** Reserved runtime records in `missions` — controller session + engagement bookkeeping. */

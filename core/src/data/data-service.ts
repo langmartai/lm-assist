@@ -19,6 +19,7 @@ import { boundQuerySpec, MAX_QUERY_ROWS } from './backends/query-filter';
 import { ensureSystemDatasets, ensureTrackedFiles } from './system-datasets';
 import { getKeyStore } from './key-store';
 import { redactRecord, redactValueDeep, scrubValueDeep } from './redaction';
+import { canonicalJson } from './canonical';
 import { thisNodeId } from './paths';
 import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
@@ -56,17 +57,8 @@ export function recordTooLarge(record: DataRecord): string | undefined {
 /** Backends a bundle cannot round-trip: adapters over stores that are derived and rebuild
  *  themselves (knowledge, the system vectors index) or are not record stores at all (file).
  *  Their exportSince/importBatch throw SYNC_NOT_SUPPORTED. */
-const RAW_UNSUPPORTED_BACKENDS: ReadonlySet<BackendKind> = new Set<BackendKind>(['knowledge', 'vectors', 'file']);
+export const RAW_UNSUPPORTED_BACKENDS: ReadonlySet<BackendKind> = new Set<BackendKind>(['knowledge', 'vectors', 'file']);
 
-/** JSON with object keys sorted at every depth — equal content ⇒ equal string. */
-function canonicalJson(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
-  if (v && typeof v === 'object') {
-    const o = v as Record<string, unknown>;
-    return `{${Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(o[k])}`).join(',')}}`;
-  }
-  return JSON.stringify(v ?? null);
-}
 
 /** "Identical content" for import: equal fields, text, metadata and deleted under a
  *  canonical compare. Version, timestamps and origin are deliberately NOT content. */

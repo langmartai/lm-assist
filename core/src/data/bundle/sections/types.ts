@@ -9,8 +9,10 @@
 
 import type { BundleFile, FilesSectionId } from '../format';
 
-export type ImportPolicy = 'merge' | 'add-missing' | 'replace';
-export const IMPORT_POLICIES: readonly ImportPolicy[] = ['merge', 'add-missing', 'replace'];
+import { IMPORT_POLICIES, type ImportPolicy } from '../../types';
+import { SECRET_KEY_RE } from '../../redaction';
+export { IMPORT_POLICIES, SECRET_KEY_RE };
+export type { ImportPolicy };
 
 export function isImportPolicy(x: unknown): x is ImportPolicy {
   return typeof x === 'string' && (IMPORT_POLICIES as readonly string[]).includes(x);
@@ -99,32 +101,13 @@ export function asApplied(plan: SectionPlan): ApplyResult {
 
 // ─── canonical compare ──────────────────────────────────────────────────────
 
-/** JSON with object keys sorted at every depth — for "identical content" comparisons. */
-export function canonicalJson(v: unknown): string {
-  return JSON.stringify(sortDeep(v));
-}
-
-function sortDeep(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(sortDeep);
-  if (v && typeof v === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const k of Object.keys(v as Record<string, unknown>).sort()) {
-      const x = (v as Record<string, unknown>)[k];
-      if (x !== undefined) out[k] = sortDeep(x);
-    }
-    return out;
-  }
-  return v;
-}
-
-export function canonicalEqual(a: unknown, b: unknown): boolean {
-  return canonicalJson(a) === canonicalJson(b);
-}
+export { canonicalJson, canonicalEqual } from '../../canonical';
 
 // ─── secret-named keys ──────────────────────────────────────────────────────
 
-/** Key names that name a secret. Matching keys are DROPPED from config sections (spec §2). */
-export const SECRET_KEY_RE = /(token|secret|password|api[-_]?key|cookie|credential|authorization|private[-_]?key)/i;
+// SECRET_KEY_RE (re-exported above) is the data service's own redaction list: a key the data
+// service treats as secret is dropped from config sections too (spec §2), and one widening
+// there widens both.
 
 /**
  * Deep-copy `value` without secret-named keys. Returns the dotted paths of every dropped key
