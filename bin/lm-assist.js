@@ -115,7 +115,7 @@ const command = process.argv[2] || 'help';
 const args = process.argv.slice(3);
 
 // Test hatch: require() with LM_ASSIST_NO_RUN=1 exports helpers and skips CLI execution.
-if (process.env.LM_ASSIST_NO_RUN === '1') { module.exports = { isNpmGreater }; return; }
+if (process.env.LM_ASSIST_NO_RUN === '1') { module.exports = { isNpmGreater, missingProfileHelpers }; return; }
 
 const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'mcp', 'doctor', 'help'];
 
@@ -549,18 +549,61 @@ function readClaudeJson() {
     throw new Error(`${p} exists but is not valid JSON — refusing to overwrite it (Claude Code keeps its whole state there). Fix or move it, then re-run.`);
   }
 }
-// The file carries the node key in an Authorization header — owner-only. `mode` only applies
-// on create, so chmod afterward to also tighten a pre-existing (group/world-readable) file.
+// ATOMIC: a temp file in the SAME directory, fsync'd, then renamed over the real one. This runs
+// while Claude Code sessions are live (`lm-assist mcp add/remove`), and writeFileSync truncates
+// first — a session reading the file in that window saw empty or partial JSON and treated its
+// whole state file as corrupt, and a kill / crash / ENOSPC mid-write left it truncated for good.
+// realpath first, so a dotfiles symlink keeps pointing at the updated file instead of being
+// replaced by a plain one. The file carries the node key in an Authorization header, so the temp
+// file is created owner-only (0600, O_EXCL — never through a planted link), and a pre-existing
+// group/world-readable file is tightened too. The caller passes the whole read-modified config,
+// so every other key is kept.
 function writeClaudeJson(cfg) {
   const p = claudeJsonPath();
-  fs.writeFileSync(p, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-  try { fs.chmodSync(p, 0o600); } catch { /* best-effort */ }
+  let real = p;
+  try { real = fs.realpathSync(p); } catch (e) { if (!e || e.code !== 'ENOENT') throw e; }
+  const tmp = `${real}.lm-assist-${process.pid}.tmp`;
+  try { fs.unlinkSync(tmp); } catch { /* no stale temp file */ }
+  let fd = null;
+  try {
+    fd = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(fd, JSON.stringify(cfg, null, 2));
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tmp, real);
+  } catch (e) {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+    try { fs.unlinkSync(tmp); } catch { /* never created, or already renamed */ }
+    throw e;
+  }
+  try { fs.chmodSync(real, 0o600); } catch { /* best-effort */ }
 }
 // The helpers ship beside THIS bin (…/core/dist). projectRoot may resolve to a different,
 // globally installed build that predates them — the doctor/upgrade blocks avoid it the same way.
 function loadClaudeMcpConfig() {
   const own = path.join(path.dirname(path.dirname(__filename)), 'core', 'dist', 'utils', 'claude-mcp-config.js');
   return require(fs.existsSync(own) ? own : path.join(projectRoot, 'core', 'dist', 'utils', 'claude-mcp-config'));
+}
+// The `mcp` command and `login --mcp-profile` need the PROFILE helpers, which came with --profile.
+// loadClaudeMcpConfig's fallback can reach an OLDER build (from a repo checkout with no core build,
+// projectRoot is the global npm install) whose module predates them: calling one was an uncaught
+// "cfgMod.parseMcpCliArgs is not a function" instead of a message. Exported for the CLI test.
+function missingProfileHelpers(mod) {
+  const needed = ['parseMcpCliArgs', 'resolveEntryProfile', 'readFlagValue', 'profileRequiredMessage',
+    'upsertProfileMcpServer', 'removeProfileMcpServer', 'deriveHubMcpUrl'];
+  return needed.filter((n) => !mod || typeof mod[n] !== 'function');
+}
+function loadProfileMcpHelpers() {
+  let mod;
+  try { mod = loadClaudeMcpConfig(); } catch (e) {
+    throw new Error(`could not load the MCP config helpers (${e.message}). Is the core built?`);
+  }
+  const missing = missingProfileHelpers(mod);
+  if (missing.length) {
+    throw new Error(`this build's MCP config helpers predate --profile (missing: ${missing.join(', ')}) — build core (./core.sh build) or upgrade lm-assist`);
+  }
+  return mod;
 }
 // The local stdio MCP server — the same resolution as the Settings install
 // (claude-code.routes.ts findMcpServerPath): dev mode → the dev repo's build, else this install's.
@@ -829,8 +872,8 @@ if (command === 'login') {
     if (newNode) { console.error('--mcp-profile applies when enrolling THIS node (lm-assist login <keypack>), not with --new-node.'); process.exit(1); }
     if (args.includes('--no-mcp')) { console.error('--mcp-profile and --no-mcp contradict each other — drop one.'); process.exit(1); }
     let cfgMod;
-    try { cfgMod = loadClaudeMcpConfig(); } catch (e) {
-      console.error(`--mcp-profile: could not load the MCP config helpers (${e.message}). Is the core built?`);
+    try { cfgMod = loadProfileMcpHelpers(); } catch (e) {
+      console.error(`--mcp-profile: ${e.message}`);
       process.exit(1);
     }
     const r = cfgMod.resolveEntryProfile(cfgMod.readFlagValue(args, '--mcp-profile').value);
@@ -905,6 +948,10 @@ if (command === 'login') {
         } catch (e) {
           console.error(`  (note: hub MCP not registered for Claude Code: ${e.message})`);
         }
+      } else if (mcpProfile) {
+        // Asked for BY NAME, so never skipped silently. (--no-mcp with --mcp-profile is refused
+        // above, so this is the not-yet-authenticated case.)
+        console.error(`  (note: '--mcp-profile ${mcpProfile}' not written — the node is not authenticated yet; run 'lm-assist mcp add --profile ${mcpProfile}' once 'lm-assist status' shows it authenticated)`);
       }
       console.log(`\n  Web UI: http://localhost:${PROD_WEB_PORT}`);
       process.exit(0);
@@ -949,8 +996,8 @@ if (command === 'logout') {
 // the mission controller and its playbooks call mcp__lm-assist-hub__* and need the full surface.
 if (command === 'mcp') {
   let cfgMod;
-  try { cfgMod = loadClaudeMcpConfig(); } catch (e) {
-    console.error(`Error: could not load the MCP config helpers (${e.message}). Is the core built?`);
+  try { cfgMod = loadProfileMcpHelpers(); } catch (e) {
+    console.error(`Error: ${e.message}`);
     process.exit(1);
   }
   const parsed = cfgMod.parseMcpCliArgs(args);

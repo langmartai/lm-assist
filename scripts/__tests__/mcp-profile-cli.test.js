@@ -105,3 +105,114 @@ test('login --mcp-profile is validated BEFORE any enrollment work', () => {
   assert.strictEqual(clash.status, 1);
   assert.match(clash.stderr, /contradict/);
 });
+
+// ── ~/.claude.json is written atomically ────────────────────────────────────────────────────────
+// `mcp add/remove` runs while Claude Code sessions are live; a truncate-then-write left a window
+// of empty/partial JSON and, on a crash, a truncated file. tmp in the same dir + rename.
+
+const leftovers = (dir) => fs.readdirSync(dir).filter((n) => n.includes('.lm-assist-') && n.endsWith('.tmp'));
+
+test('mcp add writes ~/.claude.json atomically: owner-only, every other key kept, no temp file left', () => {
+  const home = sandbox();
+  const cc = path.join(home, '.claude.json');
+  fs.chmodSync(cc, 0o644); // a pre-existing, group/world-readable file
+  const before = fs.statSync(cc).ino;
+  const r = run(home, 'mcp', 'add', '--profile', 'basic');
+  assert.strictEqual(r.status, 0, r.stderr);
+  const after = fs.statSync(cc);
+  if (process.platform !== 'win32') {
+    assert.strictEqual(after.mode & 0o777, 0o600, 'the file carries the node key: owner-only');
+    assert.notStrictEqual(after.ino, before, 'replaced by rename, not truncated in place');
+  }
+  assert.deepStrictEqual(leftovers(home), []);
+  const cfg = readCc(home);
+  assert.strictEqual(cfg.userID, 'u1');
+  assert.deepStrictEqual(cfg.mcpServers['lm-assist-hub'], HUB_ENTRY);
+  assert.ok(cfg.mcpServers['lm-assist-basic']);
+  assert.strictEqual(run(home, 'mcp', 'remove', '--profile', 'basic').status, 0);
+  assert.deepStrictEqual(leftovers(home), []);
+  assert.deepStrictEqual(Object.keys(readCc(home).mcpServers), ['lm-assist-hub']);
+});
+
+test('a symlinked ~/.claude.json (dotfiles) stays a symlink; its target gets the update', { skip: process.platform === 'win32' }, () => {
+  const home = sandbox();
+  const dots = path.join(home, 'dotfiles');
+  fs.mkdirSync(dots);
+  const target = path.join(dots, 'claude.json');
+  fs.renameSync(path.join(home, '.claude.json'), target);
+  fs.symlinkSync(target, path.join(home, '.claude.json'));
+  const r = run(home, 'mcp', 'add', '--profile', 'basic');
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.ok(fs.lstatSync(path.join(home, '.claude.json')).isSymbolicLink(), 'the link survives');
+  assert.ok(JSON.parse(fs.readFileSync(target, 'utf8')).mcpServers['lm-assist-basic'], 'the target was written');
+  assert.deepStrictEqual(leftovers(dots), []);
+});
+
+// ── login --mcp-profile, against a stubbed Core (fetch preloaded — no port, no network) ─────────
+
+function loginStub(home, authenticated) {
+  const stub = path.join(home, 'fetch-stub.js');
+  fs.writeFileSync(stub, `
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (!u.startsWith('http://localhost:3100/')) throw new Error('unexpected network call in test: ' + u);
+      if (u.endsWith('/health')) return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      if (u.endsWith('/hub/login') && init.method === 'POST') {
+        return { ok: true, status: 200, json: async () => ({ success: true, data: { connected: true, authenticated: ${authenticated} } }) };
+      }
+      throw new Error('unexpected route in test: ' + u);
+    };`);
+  return stub;
+}
+function runWithStub(home, stub, ...argv) {
+  return cp.spawnSync(process.execPath, ['--require', stub, BIN, ...argv], {
+    env: { ...process.env, HOME: home, USERPROFILE: home, LM_ASSIST_DATA_DIR: path.join(home, '.lm-assist') },
+    encoding: 'utf8',
+    timeout: 20000,
+  });
+}
+
+test('login --mcp-profile while authentication is PENDING says the entry was not written, and how to add it', () => {
+  const home = sandbox();
+  const before = fs.readFileSync(path.join(home, '.claude.json'), 'utf8');
+  const r = runWithStub(home, loginStub(home, false), 'login', 'lmkp_test', '--mcp-profile', 'basic');
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /authentication pending/);
+  assert.match(r.stderr, /'--mcp-profile basic' not written — the node is not authenticated yet/);
+  assert.match(r.stderr, /lm-assist mcp add --profile basic/);
+  assert.strictEqual(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'), before, 'nothing written');
+});
+
+test('login --mcp-profile once authenticated writes lm-assist-hub AND lm-assist-<profile> in one atomic write', () => {
+  const home = sandbox();
+  const r = runWithStub(home, loginStub(home, true), 'login', 'lmkp_test', '--mcp-profile', 'basic');
+  assert.strictEqual(r.status, 0, r.stderr);
+  const cfg = readCc(home);
+  assert.deepStrictEqual(cfg.mcpServers['lm-assist-basic'], {
+    type: 'http', url: 'https://mcp.langmart.ai/mcp/basic', headers: { Authorization: 'Bearer sk-node' },
+  });
+  assert.strictEqual(cfg.mcpServers['lm-assist-hub'].url, 'https://mcp.langmart.ai/mcp', 'lm-assist-hub is never re-pinned');
+  assert.strictEqual(cfg.userID, 'u1');
+  assert.deepStrictEqual(leftovers(home), []);
+  assert.doesNotMatch(r.stderr, /not written/);
+});
+
+// ── an older fallback helper module is a message, not a TypeError ───────────────────────────────
+
+test('missingProfileHelpers: an old helper module (pre --profile) is named, the built one passes', () => {
+  const prev = process.env.LM_ASSIST_NO_RUN;
+  process.env.LM_ASSIST_NO_RUN = '1';
+  try {
+    delete require.cache[require.resolve(BIN)];
+    const { missingProfileHelpers } = require(BIN);
+    const old = { deriveHubMcpUrl: () => null, upsertHubMcpServer: () => ({}), HUB_MCP_SERVER_NAME: 'lm-assist-hub' };
+    assert.deepStrictEqual(missingProfileHelpers(old), [
+      'parseMcpCliArgs', 'resolveEntryProfile', 'readFlagValue', 'profileRequiredMessage',
+      'upsertProfileMcpServer', 'removeProfileMcpServer',
+    ]);
+    const built = require(path.join(__dirname, '..', '..', 'core', 'dist', 'utils', 'claude-mcp-config.js'));
+    assert.deepStrictEqual(missingProfileHelpers(built), []);
+  } finally {
+    if (prev === undefined) delete process.env.LM_ASSIST_NO_RUN; else process.env.LM_ASSIST_NO_RUN = prev;
+  }
+});
