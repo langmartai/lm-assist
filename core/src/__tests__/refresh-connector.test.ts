@@ -176,3 +176,52 @@ test('set_connector_tool_access: several targets go out as ONE batched write, ne
   assert.deepEqual(batch[0].body.updates.map((u: any) => u.connectorUuid).sort(), [U, BASIC.uuid].sort());
   for (const u of batch[0].body.updates) assert.deepEqual(u.access, { agent_execute: false });
 });
+
+// ── set_connector_auto_approve: an empty or malformed scope never widens to every tool ──────────
+// Always-approve removes the human approval gate, and with no connector argument the call fans
+// out to EVERY connector of this node — so `tools: []` ("none", to a model) must not mean "all".
+
+function recordingStub(servers: unknown[]): Array<{ url: string; body: any }> {
+  const bodies: Array<{ url: string; body: any }> = [];
+  // @ts-expect-error stub
+  global.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
+    calls.push({ method: opts?.method || 'GET', url: String(url) });
+    if (opts?.body) bodies.push({ url: String(url), body: JSON.parse(opts.body) });
+    const data = String(url).endsWith('/claude-ai/mcp/servers') ? { servers } : { totalKeys: 42, results: [], changed: [] };
+    const env = { success: true, data };
+    const text = JSON.stringify(env);
+    return { ok: true, status: 200, async text() { return text; }, async json() { return env; } };
+  };
+  return bodies;
+}
+
+test('set_connector_auto_approve: an empty or malformed `tools` is refused before any write', async () => {
+  for (const extra of [{}, { server_uuid: U }]) {
+    for (const tools of [[], [7], 'elevated_exec', null, { 0: 'search' }]) {
+      recordingStub(MULTI);
+      const res = await REFRESH_CONNECTOR_HANDLERS.set_connector_auto_approve({ enable: true, tools, ...extra });
+      const what = `tools=${JSON.stringify(tools)} ${JSON.stringify(extra)}`;
+      assert.equal(res.isError, true, `${what} was accepted: ${res.content[0].text}`);
+      assert.match(res.content[0].text, /`tools`/, what);
+      assert.ok(res.content[0].text.includes(JSON.stringify(tools)), `${what}: the refusal echoes what was sent`);
+      assert.ok(!calls.some((c) => c.method === 'POST'), `${what}: nothing was written`);
+      calls.length = 0;
+    }
+  }
+});
+
+test('set_connector_auto_approve: omitted `tools` = every tool; a named list is passed through as-is', async () => {
+  let bodies = recordingStub(MULTI);
+  let res = await REFRESH_CONNECTOR_HANDLERS.set_connector_auto_approve({ enable: true });
+  assert.notEqual(res.isError, true, res.content[0].text);
+  let batch = bodies.filter((b) => b.url.endsWith('/claude-ai/mcp/tool-settings/batch'));
+  assert.equal(batch.length, 1);
+  for (const u of batch[0].body.updates) assert.deepEqual(u.autoApprove, { enable: true });
+
+  calls.length = 0;
+  bodies = recordingStub(MULTI);
+  res = await REFRESH_CONNECTOR_HANDLERS.set_connector_auto_approve({ enable: true, tools: ['search', 7] });
+  assert.notEqual(res.isError, true, res.content[0].text);
+  batch = bodies.filter((b) => b.url.endsWith('/claude-ai/mcp/tool-settings/batch'));
+  for (const u of batch[0].body.updates) assert.deepEqual(u.autoApprove, { enable: true, tools: ['search'] });
+});

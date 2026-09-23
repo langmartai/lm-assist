@@ -15,6 +15,7 @@
  */
 import { ok, err, workerGet, workerPost, type McpToolResult } from './_passthrough';
 import { mcpBase, ourConnectors } from '../profile-connectors';
+import { parseAutoApproveTools } from '../../utils/claudeai-session';
 
 export const listClaudeaiConnectorsToolDef = {
   name: 'list_claudeai_connectors',
@@ -100,7 +101,7 @@ export const setConnectorAutoApproveToolDef = {
     type: 'object' as const,
     properties: {
       enable: { type: 'boolean', description: 'true (default) = auto-approve the tools; false = remove always-approved.' },
-      tools: { type: 'array', items: { type: 'string' }, description: 'Tool names to scope to (default: ALL the connector\'s tools).' },
+      tools: { type: 'array', items: { type: 'string' }, description: 'Tool names to scope to; omit for ALL the connector\'s tools (an empty list is refused).' },
       server_uuid: { type: 'string', description: 'Connector UUID (from list_claudeai_connectors).' },
       connector: { type: 'string', description: 'Connector uuid, name, profile name, or name/url substring (alternative to server_uuid).' },
     },
@@ -275,7 +276,11 @@ async function handleSetConnectorToolAccess(args: Record<string, unknown>): Prom
 
 async function handleSetConnectorAutoApprove(args: Record<string, unknown>): Promise<McpToolResult> {
   const enable = typeof args.enable === 'boolean' ? args.enable : (args.enable === 'false' ? false : true);
-  const tools = Array.isArray(args.tools) ? (args.tools as unknown[]).filter((t): t is string => typeof t === 'string') : undefined;
+  // Refused BEFORE resolving targets: with no connector argument this fans out to every connector
+  // of the node, and always-approve removes the approval gate — `tools: []` must never mean "all".
+  const parsed = parseAutoApproveTools(args.tools);
+  if ('error' in parsed) return err(`\`tools\` ${parsed.error}. Nothing was changed.`);
+  const tools = parsed.tools;
   const r = await resolveConnectors(String(args.server_uuid || ''), String(args.connector || ''));
   if ('error' in r) return err(r.error);
   const scope = tools ? ` [${tools.join(', ')}]` : ' (all)';

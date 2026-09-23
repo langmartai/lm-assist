@@ -176,3 +176,45 @@ test('validateConnectorToolUpdates refuses loudly and keeps only known fields', 
   assert.ok('updates' in good);
   assert.deepEqual(good.updates, [{ connectorUuid: A, access: { a: true }, autoApprove: { enable: true, tools: ['a'] } }]);
 });
+
+// ── an empty auto-approve scope must never widen to "every tool" ─────────────
+// Always-approve removes the human approval gate: `tools: []` (or a list whose entries were all
+// dropped as non-strings) reads as "none" or is refused — never as the omitted-list "all".
+
+test('validateConnectorToolUpdates refuses an autoApprove.tools list that names no tool', () => {
+  for (const tools of [[], [7], [null, {}]]) {
+    const v = validateConnectorToolUpdates({ updates: [{ connectorUuid: A, autoApprove: { enable: true, tools } }] });
+    assert.ok('error' in v, `tools=${JSON.stringify(tools)} was accepted`);
+    assert.equal(v.error.code, 'INVALID_INPUT');
+    assert.match(v.error.message, /updates\[0\]\.autoApprove\.tools/);
+    assert.ok(v.error.message.includes(JSON.stringify(tools)), 'the refusal echoes what was sent');
+  }
+});
+
+test('{enable:true, tools:[]} approves NOTHING in the pure apply — plain and carryForward alike', () => {
+  const objs = {
+    [A]: [
+      { name: 'search', enabled_key: `${A}:search`, always_approved_key: `${A}:search-${H1}` },
+      { name: 'elevated_exec', enabled_key: `${A}:elevated_exec`, always_approved_key: `${A}:elevated_exec-${H2}` },
+    ],
+  };
+  for (const carryForward of [false, true]) {
+    const current = { [`${A}:search-${OLD}`]: true, 'X:y': true };
+    const { map, results } = applyConnectorToolUpdatesToMap(
+      [{ connectorUuid: A, autoApprove: { enable: true, tools: [], ...(carryForward ? { carryForward: true } : {}) } }],
+      objs, current);
+    assert.deepEqual(results[0].approved, [], `carryForward=${carryForward}`);
+    assert.deepEqual(map, current, `carryForward=${carryForward}: the map is unchanged`);
+  }
+});
+
+test('applyConnectorToolUpdates with {enable:true, tools:[]} writes nothing', async () => {
+  stubSession();
+  const acct = fakeAccount({ 'OTHER:keep': true }, {
+    [A]: [{ name: 'elevated_exec', enabled_key: `${A}:elevated_exec`, always_approved_key: `${A}:elevated_exec-${H1}` }],
+  });
+  const r = await applyConnectorToolUpdates([{ connectorUuid: A, autoApprove: { enable: true, tools: [] } }]);
+  assert.equal(acct.patches, 0);
+  assert.equal(r.body.patched, false);
+  assert.equal(acct.map[`${A}:elevated_exec-${H1}`], undefined);
+});

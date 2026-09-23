@@ -1324,14 +1324,16 @@ export type McpToolObj = { name: string; enabled_key?: string; always_approved_k
 
 /** Pure: merge the connector tools' always_approved_key (+ enabled_key) into the current
  *  enabled_mcp_tools map. `enable` true = auto-approve; false = clear it. Tools without an
- *  always_approved_key are skipped. Never mutates the input map. Exported for tests. */
+ *  always_approved_key are skipped. Never mutates the input map. Exported for tests.
+ *  `toolNames` OMITTED = every tool the connector lists; an EMPTY list = no tool. Always-approve
+ *  removes the human approval gate, so an empty scope must never widen to "all". */
 export function buildAutoApproveMap(
   toolObjs: Array<{ name: string; enabled_key?: string; always_approved_key?: string }>,
   currentMap: Record<string, boolean>,
   enable: boolean,
   toolNames?: string[],
 ): { map: Record<string, boolean>; changed: string[]; skipped: string[] } {
-  const want = toolNames && toolNames.length ? new Set(toolNames) : null;
+  const want = toolNames ? new Set(toolNames) : null;
   const map: Record<string, boolean> = { ...currentMap };
   const changed: string[] = [];
   const skipped: string[] = [];
@@ -1390,9 +1392,10 @@ export interface ConnectorToolUpdate {
   connectorUuid: string;
   /** tool name → true (enabled) / false (blocked); written as `<uuid>:<tool>`. */
   access?: Record<string, boolean>;
-  /** Always-approve. `tools` omitted = every tool the connector lists. `carryForward` = only the
-   *  tools that already hold an always-approved key under an OLDER version hash — it re-keys prior
-   *  approvals after a refetch and never approves anything new. */
+  /** Always-approve. `tools` omitted = every tool the connector lists; an empty list = no tool
+   *  (the validator refuses one). `carryForward` = only the tools that already hold an
+   *  always-approved key under an OLDER version hash — it re-keys prior approvals after a refetch
+   *  and never approves anything new. */
   autoApprove?: { enable: boolean; tools?: string[]; carryForward?: boolean };
 }
 
@@ -1407,6 +1410,28 @@ export interface ConnectorToolUpdateResult {
 
 const MCP_SERVER_UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const MAX_BATCH_CONNECTORS = 50;
+/** A refused value, as sent, bounded so a huge body cannot bloat the error. */
+const echo = (v: unknown): string => {
+  const j = JSON.stringify(v);
+  return j === undefined ? String(v) : j.length > 200 ? `${j.slice(0, 200)}…` : j;
+};
+
+/**
+ * Pure: parse a caller's always-approve `tools` scope. OMITTED (undefined) = every tool the
+ * connector lists. Anything else must be an array that still names a tool once non-strings are
+ * dropped. Always-approve removes the human approval gate, so an empty or malformed scope (`[]`,
+ * `[7]`, `"x"`, `null`) is refused, echoing what was sent — never read as "every tool".
+ * `error` completes a sentence that starts with the field's name.
+ */
+export function parseAutoApproveTools(raw: unknown): { tools?: string[] } | { error: string } {
+  if (raw === undefined) return {};
+  if (!Array.isArray(raw)) return { error: `must be an array of tool names, got ${echo(raw)}` };
+  const tools = raw.filter((t): t is string => typeof t === 'string');
+  if (tools.length === 0) {
+    return { error: `names no tool (got ${echo(raw)}); omit it to mean every tool the connector lists` };
+  }
+  return { tools };
+}
 
 /** Pure: validate a raw batch body. Refuses loudly (naming the bad field) and keeps only known fields. */
 export function validateConnectorToolUpdates(
@@ -1444,13 +1469,11 @@ export function validateConnectorToolUpdates(
       if (!a || typeof a !== 'object' || typeof a.enable !== 'boolean') {
         return invalid(`updates[${i}].autoApprove.enable must be a boolean`);
       }
-      if (a.tools !== undefined && !Array.isArray(a.tools)) {
-        return invalid(`updates[${i}].autoApprove.tools must be an array of tool names`);
-      }
-      const tools = Array.isArray(a.tools) ? a.tools.filter((t): t is string => typeof t === 'string') : undefined;
+      const scope = parseAutoApproveTools(a.tools);
+      if ('error' in scope) return invalid(`updates[${i}].autoApprove.tools ${scope.error}`);
       out.autoApprove = {
         enable: a.enable,
-        ...(tools ? { tools } : {}),
+        ...(scope.tools ? { tools: scope.tools } : {}),
         ...(a.carryForward === true ? { carryForward: true } : {}),
       };
     }
@@ -1494,9 +1517,10 @@ export function applyConnectorToolUpdatesToMap(
         r.error = `connector ${u.connectorUuid} lists no tools in the live bootstrap (not connected?)`;
       } else if (u.autoApprove.carryForward) {
         const prior = priorApprovedTools(map, u.connectorUuid);
-        const want = u.autoApprove.tools && u.autoApprove.tools.length ? new Set(u.autoApprove.tools) : null;
+        // `tools` omitted = no extra filter; an empty list = no tool (it never means "all").
+        const want = u.autoApprove.tools ? new Set(u.autoApprove.tools) : null;
         const names = objs.map((t) => t.name).filter((n) => prior.has(n) && (!want || want.has(n)));
-        // Empty means "nothing was approved": buildAutoApproveMap would read [] as ALL tools.
+        // Empty = nothing in scope was approved before, so there is nothing to re-key.
         if (names.length) {
           const built = buildAutoApproveMap(objs, map, u.autoApprove.enable, names);
           map = built.map;
@@ -1504,6 +1528,7 @@ export function applyConnectorToolUpdatesToMap(
           r.skipped = built.skipped;
         }
       } else {
+        // `tools: []` approves nothing: buildAutoApproveMap reads only an OMITTED list as every tool.
         const built = buildAutoApproveMap(objs, map, u.autoApprove.enable, u.autoApprove.tools);
         map = built.map;
         r.approved = built.changed;

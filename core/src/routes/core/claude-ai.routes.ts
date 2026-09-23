@@ -77,6 +77,7 @@ import {
   listMcpRemoteServers,
   applyConnectorToolUpdates,
   validateConnectorToolUpdates,
+  parseAutoApproveTools,
   listOrgStyles,
   getModelConfig,
   getMemorySettings,
@@ -979,7 +980,9 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
 
     // POST /claude-ai/mcp/servers/:uuid/auto-approve — turn ON/off "always approve" auto-approval
     //   for a connector's tools so driven tool calls don't hit the per-call approval gate. Body:
-    //   { enable?: bool (default true), tools?: string[] (default ALL the connector's tools) }.
+    //   { enable?: bool (default true), tools?: string[] (OMITTED = ALL the connector's tools) }.
+    //   A `tools` that is not an array, or names no tool once non-strings are dropped, is REFUSED:
+    //   always-approve removes the human approval gate, so a malformed scope must never widen it.
     //   Read-modify-write on enabled_mcp_tools using the live bootstrap's always_approved_key.
     { method: 'POST', pattern: /^\/claude-ai\/mcp\/servers\/(?<uuid>[^/?]+)\/auto-approve$/,
       handler: async (req) => {
@@ -989,9 +992,10 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         const b = req.body || {};
         const enable = typeof b.enable === 'boolean' ? b.enable : true;
-        const tools = Array.isArray(b.tools) ? b.tools.filter((t: unknown): t is string => typeof t === 'string') : undefined;
+        const scope = parseAutoApproveTools(b.tools);
+        if ('error' in scope) return { success: false, error: { code: 'INVALID_INPUT', message: `tools ${scope.error}` } };
         try {
-          return upstreamWrap(await setMcpToolsAutoApprove(uuid, enable, tools));
+          return upstreamWrap(await setMcpToolsAutoApprove(uuid, enable, scope.tools));
         } catch (err) {
           return catchOAuth(err);
         }
