@@ -2,9 +2,9 @@
  * MCP tool loading PROFILES — how many tools this node advertises.
  *
  * WHY: `tools/list` is a fixed tax every conversation pays before calling anything.
- * This node advertises 286 built-in tools ≈ 300 KB ≈ 75 K tokens, and a coding session
+ * This node advertises 288 built-in tools ≈ 307 KB ≈ 77 K tokens, and a coding session
  * never touches most of it. A profile names a subset, so a session can pay for what it
- * will actually use. `basic` is ~41 tools ≈ 12 K tokens — about 63 K tokens back.
+ * will actually use. `basic` is ~42 tools ≈ 47 KB ≈ 12 K tokens — about 65 K tokens back.
  *
  * It is also an ACCURACY feature, not only a cost one: tool-choice degrades once a
  * model is carrying more than roughly 30–50 tools, so a narrower surface picks better.
@@ -65,7 +65,7 @@ export interface ProfileDefinition {
 export const PROFILE_DEFINITIONS: Record<string, ProfileDefinition> = {
   basic: {
     description:
-      'Orientation and the node\'s own data: search, sessions, memory, backlog. ~41 tools. ' +
+      'Orientation and the node\'s own data: search, sessions, memory, backlog. ~42 tools. ' +
       'The smallest surface that can still find things and tell you where they live.',
     // `list_nodes` is pulled in BY NAME even though its category (fleet) is not here.
     // Every tool carries a `node` selector whose description tells the caller to "check
@@ -85,7 +85,7 @@ export const PROFILE_DEFINITIONS: Record<string, ProfileDefinition> = {
   extended: {
     description:
       'basic + the working surface: missions, agents, terminals, CCR, data, fleet, ' +
-      'transfer, clusters, auth, GitHub. ~167 tools. Everything except the connectors.',
+      'transfer, clusters, auth, GitHub. ~168 tools. Everything except the connectors.',
     selectors: [
       'core', 'session', 'memory', 'backlog', 'list_nodes',
       'mission', 'agent', 'worker', 'terminal', 'data', 'fleet', 'cluster',

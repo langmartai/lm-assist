@@ -215,6 +215,9 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 // mcp-profiles.test.ts (basic < 25% of admin, saving > 200 KB) — not as an absolute
 // number; that file is the load-bearing budget test for the profiled surface.
 // ("basic costs a fraction of admin"), which is now the load-bearing budget test.
+//
+//   288 tools after merging feat/mcp-profile-connectors, catalogue   306,568 B
+//   (23,432 B headroom under 330,000)
 const CATALOG_BUDGET_BYTES = 330_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
