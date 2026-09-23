@@ -41,6 +41,12 @@ export interface OwnerInfo {
   status: string;
   updatedAt: string;
   version: string;
+  /** Claude Code's own display name for the session (`-n` / derived), when recorded. */
+  name?: string;
+  /** The NATIVE remote-control bridge id (`session_…`) Claude Code records once the
+   *  session is `/remote-control`-connected — i.e. the claude.ai/code URL tail. null
+   *  when the session is not remote-controlled. */
+  bridgeSessionId?: string | null;
 }
 
 /** A pane entry from `tmux list-panes -a`. */
@@ -171,6 +177,8 @@ function readLiveRegistry(): Map<string, { sessionId: string } & OwnerInfo> {
       status: typeof rec.status === 'string' ? rec.status : '',
       updatedAt: typeof rec.updatedAt === 'string' ? rec.updatedAt : '',
       version: typeof rec.version === 'string' ? rec.version : '',
+      name: typeof rec.name === 'string' ? rec.name : undefined,
+      bridgeSessionId: typeof rec.bridgeSessionId === 'string' && rec.bridgeSessionId ? rec.bridgeSessionId : null,
     });
   }
   return out;
@@ -242,6 +250,8 @@ export function listLiveSessions(): LiveSession[] {
         status: owner.status,
         updatedAt: owner.updatedAt,
         version: owner.version,
+        name: owner.name,
+        bridgeSessionId: owner.bridgeSessionId ?? null,
       },
       inTmux: pane !== null,
       tmuxSession: pane?.session ?? null,
@@ -288,6 +298,8 @@ export function sessionVerdict(sessionId: string): Verdict {
     status: owner.status,
     updatedAt: owner.updatedAt,
     version: owner.version,
+    name: owner.name,
+    bridgeSessionId: owner.bridgeSessionId ?? null,
   };
 
   const pane = findPaneForPid(owner.pid, panes);
