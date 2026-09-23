@@ -19,11 +19,11 @@ import { getToolCatalog, handlerSourceFor, CATEGORY_ORDER, type ToolCatalogEntry
 import { overlayFromDocs } from '../../mcp-server/registry/overlay';
 import { invalidateOverlayCache } from '../../mcp-server/registry/overlay-live';
 import { currentToolsRev } from '../../mcp-server/registry/tools-rev';
-import { bumpToolsRev } from '../../mcp-server/registry/tools-rev';
 import {
-  PROFILE_DEFINITIONS, activeProfileName, setActiveProfile, readProfileState,
+  PROFILE_DEFINITIONS, activeProfileName, readProfileState,
   resolveProfileTools, unmatchedSelectors, knownSelectors,
 } from '../../mcp-server/registry/profiles';
+import { profileReport, setNodeDefaultProfile } from '../../mcp-server/registry/profile-report';
 import { sharedLiveOverlay, overlayDigest } from '../../mcp-server/registry/overlay-live';
 import { createHash } from 'crypto';
 import type { ToolRegistryDoc } from '../../mcp-server/registry/model';
@@ -211,8 +211,14 @@ function toApi(e: Envelope, start: number) {
     : wrapError(e.error?.code ?? 'ERROR', e.error?.message ?? 'error', start);
 }
 
-/** GET /mcp-tools/profile — the active profile, what else is available, and what each costs. */
-async function handleProfileGet(): Promise<Envelope> {
+/** GET /mcp-tools/profile — the node default, what else is available, what each costs, and this
+ *  fleet's connector URL per profile.
+ *
+ *  REST carries no pin (it is the node's management surface), so `effective` === `nodeDefault`
+ *  and `source` is always 'node-default' here. The fields exist so the UI, `mcp_profile` and
+ *  GET /mcp-tools/profile-connectors share one vocabulary. `active` STAYS: deployed panes and
+ *  older UIs read it, and it is — and always was — the node default. */
+export async function handleProfileGet(): Promise<Envelope> {
   // Built-ins AND the ext plugin tools. getToolCatalog() covers only the built-ins, so
   // counting from it alone made every `ext__*` selector match nothing — `platform`
   // (then named `langmart`) reported the same size as `basic` and the plugin list came
@@ -225,10 +231,16 @@ async function handleProfileGet(): Promise<Envelope> {
   }
   const advertised = [...getToolCatalog().keys(), ...extNames];
   const active = activeProfileName();
+  const report = profileReport();
   return ok({
     active,
     setAt: readProfileState().setAt ?? null,
     setBy: readProfileState().setBy ?? null,
+    effective: report.effective,
+    source: report.source,
+    pin: report.pin,
+    nodeDefault: report.nodeDefault,
+    connectors: report.connectors,
     selectors: knownSelectors(advertised),
     profiles: Object.entries(PROFILE_DEFINITIONS).map(([name, def]) => ({
       name,
@@ -240,26 +252,27 @@ async function handleProfileGet(): Promise<Envelope> {
   });
 }
 
-/** POST /mcp-tools/profile {profile} — set it.
+/** POST /mcp-tools/profile {profile} — set the NODE DEFAULT (unpinned clients only).
  *
  *  Deliberately NOT origin-anchored, unlike the per-tool set/rollback above. Those write
  *  a fleet-synced dataset and must land on its origin; this is NODE-LOCAL state, and a
  *  node must be able to change its own context budget even when every other machine is
  *  down. Anchoring it would also be wrong on the merits: dataset scope is cluster/fleet,
- *  so a shared doc would flip every node's tool surface at once. */
-async function handleProfileSet(body: Record<string, unknown>, actor?: string): Promise<Envelope> {
+ *  so a shared doc would flip every node's tool surface at once.
+ *
+ *  The write, the tools-rev bump and the background refresh of UNPINNED claude.ai connectors
+ *  all go through setNodeDefaultProfile — the same path `mcp_profile set` takes. */
+export async function handleProfileSet(body: Record<string, unknown>, actor?: string): Promise<Envelope> {
   const name = typeof body.profile === 'string' ? body.profile.trim() : '';
   if (!name) return fail('INVALID_PROFILE', 'body.profile is required');
+  let note: string;
   try {
-    setActiveProfile(name, actor || 'rest');
+    note = setNodeDefaultProfile(name, actor || 'rest').note;
   } catch (e) {
     return fail('UNKNOWN_PROFILE', e instanceof Error ? e.message : String(e));
   }
-  // Same staleness stamp the overlay uses, so the MCP processes' watcher notices and
-  // emits notifications/tools/list_changed. A claude.ai connector caches tools/list and
-  // needs refresh_connector_tools — reported, not silently assumed.
-  bumpToolsRev();
-  return (await handleProfileGet()) as Envelope;
+  const got = await handleProfileGet();
+  return got.success ? ok({ ...(got.data as Record<string, unknown>), note }) : got;
 }
 
 export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
