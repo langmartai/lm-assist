@@ -182,3 +182,36 @@ export async function refreshUnpinnedConnectors(): Promise<void> {
     console.warn(`${LOG} unpinned refresh failed: ${errText(e)}`);
   }
 }
+
+// ── node-default change → refresh the unpinned connectors ──────────────────────
+
+type UnpinnedRefresher = () => Promise<void> | void;
+let testRefresher: UnpinnedRefresher | null = null;
+
+/** Test seam: install a stand-in for the refresh; `null` restores the default. */
+export function _setUnpinnedRefresherForTests(fn: UnpinnedRefresher | null): void {
+  testRefresher = fn;
+}
+
+/**
+ * The node default just changed. THE one hook for that: registry/profile-report.ts's
+ * setNodeDefaultProfile (behind `mcp_profile set` and POST /mcp-tools/profile) calls it after the
+ * file write and the tools-rev bump. The UNPINNED connectors now advertise a different surface and
+ * claude.ai caches tools/list, so refresh them. Fire-and-forget: the profile write has already
+ * succeeded and must not wait on, or fail with, claude.ai. Pinned connectors do not follow the
+ * node default and are left alone.
+ *
+ * Under `node --test` (NODE_TEST_CONTEXT is set in every test-file child) the REAL refresh never
+ * runs unless a test installed a refresher: a unit test that sets a profile must not clear the
+ * cache of the operator's live claude.ai connector. (The plugin routes follow the same rule by
+ * skipping the connector sync when a test injects its own `stateFile`.)
+ */
+export function onNodeDefaultProfileChanged(setBy?: string): void {
+  const run = testRefresher ?? (process.env.NODE_TEST_CONTEXT ? null : refreshUnpinnedConnectors);
+  if (!run) return;
+  void Promise.resolve()
+    .then(() => run())
+    .catch((e) =>
+      console.warn(`${LOG} unpinned refresh after a node-default change${setBy ? ` (by ${setBy})` : ''} failed: ${errText(e)}`),
+    );
+}
