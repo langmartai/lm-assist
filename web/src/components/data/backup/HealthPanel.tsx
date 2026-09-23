@@ -171,6 +171,12 @@ export function HealthPanel({ api, inventory, loading, error, onRefresh }: {
         </div>
       </Panel>
 
+      {!!inv.malformedDescriptors && (
+        <Notice tone="warn">
+          {inv.malformedDescriptors} malformed {inv.malformedDescriptors === 1 ? 'entry' : 'entries'} in this node&apos;s dataset registry (no usable id) — skipped, never exported.
+        </Notice>
+      )}
+
       {inv.orphans.length > 0 && (
         <Panel title={`Orphan stores (${inv.orphans.length})`} icon={<TriangleAlert size={14} style={{ color: 'var(--color-status-orange)' }} />}>
           <div style={{ ...muted, marginBottom: 6 }}>Storage directories with no dataset descriptor. They are never exported and are left on disk untouched.</div>

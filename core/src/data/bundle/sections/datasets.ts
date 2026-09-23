@@ -117,6 +117,21 @@ export interface CollectedDatasets {
   unknown: string[];
 }
 
+/** Split the registry into descriptors a bundle can address and ones it cannot. A real node's
+ *  datasets.json was found holding a descriptor with NO `id` (written by an older build) — sorting
+ *  on `id` threw, and inventory/export 500'd for the whole node. A malformed entry is never
+ *  exported (it names nothing to restore into); callers report the count instead of failing. */
+export function wellFormedDescriptors<T extends { id?: unknown }>(list: readonly T[]): { valid: Array<T & { id: string }>; malformed: number } {
+  const valid: Array<T & { id: string }> = [];
+  let malformed = 0;
+  for (const d of list) {
+    if (d && typeof d.id === 'string' && DATASET_ID_RE.test(d.id)) valid.push(d as T & { id: string });
+    else malformed++;
+  }
+  valid.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { valid, malformed };
+}
+
 /** Collect the dataset sections of an export. Fails (never silently shortens) when a dataset
  *  cannot be read completely — the caller surfaces the code; the operator can deselect it. */
 export async function collectDatasets(
@@ -126,7 +141,7 @@ export async function collectDatasets(
   const entries: BundleEntry[] = [];
   const sections: SectionSummaryInput[] = [];
   const excluded: ExcludedDataset[] = [];
-  const all = deps.registry.list().sort((a, b) => a.id.localeCompare(b.id));
+  const all = wellFormedDescriptors(deps.registry.list()).valid;
   for (const d of all) {
     const c = classifyForExport(d, sel);
     if (!c.included) {

@@ -239,6 +239,8 @@ export interface Inventory {
   roster: { queried: boolean; available?: boolean; reason?: string; onlinePeers?: number };
   datasets: InventoryDataset[];
   orphans: OrphanStore[];
+  /** Registry entries with no usable id — skipped, never exported. */
+  malformedDescriptors?: number;
   sections: {
     config: Array<{ id: string; title: string; default: true }>;
     files: Array<{ id: string; title: string; default: false; option: 'includeKnowledge' | 'includeClaudeMemory' }>;

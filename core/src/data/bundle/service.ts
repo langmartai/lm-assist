@@ -25,7 +25,7 @@ import { BundleStore, getBundleStore, type StoredBundleInfo, type ChunkResult, t
 import type { PeerRoster, RosterSnapshot } from './roster';
 import { defaultRoster, isOnline, ownerProbe } from './roster';
 import {
-  classifyForExport, collectDatasets, datasetDiskBytes, findOrphans, importDatasetSection, neverExportReason,
+  classifyForExport, collectDatasets, datasetDiskBytes, findOrphans, importDatasetSection, neverExportReason, wellFormedDescriptors,
   MISSIONS_DATASET, MISSIONS_RESERVED_IDS,
   type DatasetSectionPlan, type OrphanStore, type RawDataPort, type RegistryPort,
 } from './sections/datasets';
@@ -165,6 +165,8 @@ export interface Inventory {
   roster: { queried: boolean; available?: boolean; reason?: string; onlinePeers?: number };
   datasets: InventoryDataset[];
   orphans: OrphanStore[];
+  /** Registry entries with no usable `id` — never exported; counted so they are not invisible. */
+  malformedDescriptors?: number;
   sections: {
     config: Array<{ id: string; title: string; default: true }>;
     files: Array<{ id: string; title: string; default: false; option: 'includeKnowledge' | 'includeClaudeMemory' }>;
@@ -330,7 +332,7 @@ export class BundleService {
     const registry = this.d.registry();
     const data = this.d.data();
     const root = this.d.dataRoot();
-    const all = registry.list().sort((a, b) => a.id.localeCompare(b.id));
+    const { valid: all, malformed } = wellFormedDescriptors(registry.list());
     const anyReplica = all.some((x) => !!x.origin);
     const snap: RosterSnapshot | null = anyReplica ? await this.roster().snapshot() : null;
 
@@ -381,6 +383,7 @@ export class BundleService {
         : { queried: false },
       datasets,
       orphans: findOrphans(root, new Set(all.map((x) => x.id))),
+      ...(malformed ? { malformedDescriptors: malformed } : {}),
       sections: {
         config: this.d.configProviders().map((p) => ({ id: p.id, title: p.title, default: true as const })),
         files: this.d.filesProviders().map((p) => ({

@@ -469,6 +469,10 @@ export function renderInventory(inv: InventoryView): string {
     if (orphans.length > MAX_ORPHANS) out.push(`  … ${orphans.length - MAX_ORPHANS} more orphan(s)`);
   }
 
+  if (inv.malformedDescriptors) {
+    out.push('', `${inv.malformedDescriptors} malformed registry entr${inv.malformedDescriptors === 1 ? 'y' : 'ies'} in datasets.json (no usable id) — skipped, never exported.`);
+  }
+
   const cfg = inv.sections?.config ?? [];
   const files = inv.sections?.files ?? [];
   out.push('', `Config sections (in every export): ${cfg.length ? clamp(cfg.map((c) => c.id).join(', '), 400) : '—'}`);

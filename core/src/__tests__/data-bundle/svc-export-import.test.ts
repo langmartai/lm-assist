@@ -365,3 +365,18 @@ test('export: a config/files source that throws is left out and named — it nev
   const m = await a.store.getManifest(res.bundleId);
   assert.deepEqual(m.options.collectErrors, ['scheduled-jobs: scheduler not loaded']);
 });
+
+test('a registry entry with NO id (seen on a real node) is skipped and counted, never a 500', async () => {
+  const n = makeNode();
+  await ownedDataset(n, 'ds', [rec('r1', 1, { a: 1 })]);
+  // Append a descriptor without `id` straight into the registry file, the way an old build left one.
+  const file = (n.datasets as unknown as { file: string }).file;
+  const arr = JSON.parse(fs.readFileSync(file, 'utf8'));
+  arr.push({ backend: 'cache', ownerNode: SELF, visibility: 'local-only', syncMode: 'none', scope: 'cluster', config: { kind: 'cache' }, acl: [], createdAt: 'x', updatedAt: 'x' });
+  fs.writeFileSync(file, JSON.stringify(arr));
+  const inv = await n.svc.inventory();
+  assert.deepEqual(inv.datasets.map((d) => d.id), ['ds']);
+  assert.equal(inv.malformedDescriptors, 1);
+  const exp = await n.svc.createExport();
+  assert.deepEqual(exp.sections.filter((s) => s.kind === 'dataset').map((s) => s.id), ['ds']);
+});
