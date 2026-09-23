@@ -42,7 +42,8 @@ import { categoryOf, CATEGORY_ORDER } from './categories';
 
 /** A selector names a group of tools. Three forms, checked in this order:
  *   - an exact tool name            → that one tool          (`list_nodes`)
- *   - `ext__<plugin>`               → every tool of a plugin (`ext__langmart`)
+ *   - `ext__<plugin>`               → every tool of a plugin (`ext__langmart`), including
+ *                                     the names it shipped under before (PLUGIN_SUPERSEDES)
  *   - a category from CATEGORY_ORDER → every tool in it      (`memory`)
  */
 export type Selector = string;
@@ -109,10 +110,35 @@ export const PROFILE_ALIASES: Record<string, string> = { langmart: 'platform' };
 
 const EXT_PREFIX = 'ext__';
 
+/**
+ * Bundled-plugin renames: a plugin → the names it has SHIPPED under before. An
+ * `ext__<plugin>` selector also takes the tools of every name listed here.
+ *
+ * WHY: the predecessor does not always go away. Since 985e53b it is retired only once the
+ * successor's saved state is enabled, so a node whose grants cannot be derived, or whose
+ * tree was installed by hand, keeps `langmart-design` on indefinitely. Peers still on
+ * 0.2.4 also keep advertising `ext__langmart-design__*` into this node's tools/list
+ * through the fleet fan-out. Matching only the new name would leave `platform` — and its
+ * per-profile connector — with none of the LangMart tools on such a node or fleet.
+ *
+ * Kept in step with SUPERSEDES in core/scripts/gen-bundled-plugins.js and the
+ * `supersedes` field it writes into core/data/mcp-plugins/bundled.json. Entries are
+ * permanent, like theirs: a peer on an old release can still be advertising the old name.
+ */
+const PLUGIN_SUPERSEDES: Record<string, string[]> = {
+  langmart: ['langmart-design'],
+};
+
 /** True when `name` is advertised under `selector`. */
 function matches(selector: Selector, name: string): boolean {
   if (selector === name) return true;
-  if (selector.startsWith(EXT_PREFIX)) return name.startsWith(`${selector}__`);
+  if (selector.startsWith(EXT_PREFIX)) {
+    // Exact plugin SEGMENT, never a bare prefix: `ext__langmart` must not take
+    // `ext__langmart-admin__*`.
+    const plugin = selector.slice(EXT_PREFIX.length);
+    const aliases = Object.hasOwn(PLUGIN_SUPERSEDES, plugin) ? PLUGIN_SUPERSEDES[plugin] : [];
+    return [plugin, ...aliases].some((p) => name.startsWith(`${EXT_PREFIX}${p}__`));
+  }
   return categoryOf(name) === selector;
 }
 

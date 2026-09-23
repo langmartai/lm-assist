@@ -81,6 +81,41 @@ test('a plugin selector does not match a plugin whose name merely starts the sam
   assert.ok(!keep.has('ext__langmart-admin__b'), 'ext__langmart must not swallow ext__langmart-admin');
 });
 
+test('platform keeps the superseded `langmart-design` tools and still drops `langmart-admin`', () => {
+  // The predecessor can stay enabled indefinitely (it is retired only once `langmart` is
+  // enabled), and 0.2.4 peers keep advertising it through the fleet fan-out. Matching
+  // only the new name would leave `platform` with none of the LangMart tools there.
+  const names = [
+    ...AVAILABLE,
+    'ext__langmart-design__models_list', 'ext__langmart-admin__x', 'ext__langmart-designer__y',
+  ];
+  const keep = resolveProfileTools(PROFILE_DEFINITIONS.platform, names);
+  assert.ok(keep.has('ext__langmart-design__models_list'), 'the superseded name is the same plugin');
+  assert.ok(!keep.has('ext__langmart-admin__x'), 'a different plugin must not be pulled in');
+  assert.ok(!keep.has('ext__langmart-designer__y'), 'a superseded name is matched by exact segment too');
+  // …and the connector-sync / tools/list path, which goes through applyProfileToToolDefs.
+  const kept = applyProfileToToolDefs(names.map((name) => ({ name })), 'platform').map((d) => d.name);
+  assert.ok(kept.includes('ext__langmart-design__models_list'));
+  assert.ok(!kept.includes('ext__langmart-admin__x'));
+  // A node with ONLY the predecessor does not report `ext__langmart` as unmatched.
+  assert.deepEqual(unmatchedSelectors(PROFILE_DEFINITIONS.platform, names), []);
+});
+
+test('every rename in bundled.json is honoured by the ext__ selector of its successor', () => {
+  // PLUGIN_SUPERSEDES in profiles.ts must stay in step with the index the generator writes.
+  const ROOT = path.resolve(__dirname, '..', '..');
+  const index = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'mcp-plugins', 'bundled.json'), 'utf-8'));
+  let checked = 0;
+  for (const p of index.plugins as Array<{ name: string; supersedes?: string[] }>) {
+    for (const old of p.supersedes ?? []) {
+      const keep = resolveProfileTools({ description: '', selectors: [`ext__${p.name}`] }, [`ext__${old}__t`]);
+      assert.ok(keep.has(`ext__${old}__t`), `ext__${p.name} does not take its predecessor "${old}"`);
+      checked++;
+    }
+  }
+  assert.ok(checked > 0, 'bundled.json lists no rename — was this test pointed at the wrong file?');
+});
+
 test('extended is a superset of basic, and admin of extended', () => {
   const basic = resolveProfileTools(PROFILE_DEFINITIONS.basic, AVAILABLE);
   const ext = resolveProfileTools(PROFILE_DEFINITIONS.extended, AVAILABLE);
