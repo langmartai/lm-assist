@@ -271,3 +271,21 @@ arrive disabled; credentials are re-established the normal way.
   `project-settings.json`, the knowledge dir and `received/`.
 - A bundle holds unredacted user data. It never holds secrets, so a restored node still needs
   its hub enrolment, API token and connector credentials.
+
+## Known limits (v1)
+
+- **Synchronous over the relay.** `create`, `fetch` and the final `upload` chunk run inside the
+  request. The hub relay cuts a request off at 25–30 s, so a very large bundle can report a
+  failure while the work finishes. `fetch` and `upload` are idempotent, so retrying them is
+  safe. A retried `create` writes a second bundle, which retention then counts. At current sizes
+  this does not bite: about 900 records export in roughly 0.5 s.
+- **Auto-demotion reads the peer's copy in one request**, capped at 50k records. A larger
+  dataset stays dual-owner, with an honest `status.errors` line, rather than demoting on a
+  partial view.
+- **`supersedes` markers are never cleared.** Ownership is unaffected because the newest
+  marker wins. An old marker still makes the node do a full pull from that peer while the peer
+  lists the dataset as owned.
+- **A rebuilt origin only warns.** Records it restores verbatim can sit below the versions a
+  surviving replica holds. It does not pull those newer versions back. To restore everything,
+  restore from the freshest bundle, which is usually one exported from the surviving replica
+  with `includeReplicas`.
