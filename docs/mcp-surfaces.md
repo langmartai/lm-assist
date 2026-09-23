@@ -205,9 +205,16 @@ the fleet-shared `mcp-bootstrap` dataset with no schema change.
 Check the banner or the footer, never just that the call succeeded. Deploying the hub first is
 safe, because an older node ignores the query.
 
-**Internal consumers stay unpinned.** The mission controller calls the local `/mcp`, and its
-playbooks use `mcp__lm-assist-hub__*`; both need the `mission` and `worker` categories. Do not
-pin either of them, and never rename the `lm-assist-hub` Claude Code entry.
+**Internal consumers: never pinned narrower than `admin`.** The mission controller and its
+playbooks (`mcp__lm-assist-hub__*`) need the `mission` and `worker` categories.
+- The controller's local URL is pinned to `admin`: `http://127.0.0.1:<port>/mcp?profile=admin`
+  (`controllerLocalMcpUrl` in `mission-controller.ts`). An unpinned URL follows the node
+  default, so narrowing the default would strip the controller's mission tools. `admin` hides
+  nothing, so its bootstrap gate key stays the bare id. A Core that predates pins ignores the
+  query.
+- `lm-assist-hub` (the hub keystone, `https://mcp.<domain>/mcp`) stays unpinned: an older hub
+  answers `/mcp/<profile>` with a 500. It follows the default of whichever node answers.
+- Never rename the `lm-assist-hub` Claude Code entry.
 
 ### Caller-identity resolution is ON THE HOT PATH of every connector MCP call
 

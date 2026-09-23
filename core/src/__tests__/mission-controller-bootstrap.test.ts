@@ -8,7 +8,9 @@ import * as path from 'path';
 // modules, the hub config and the data dir under getDataDir(). Never the developer's real
 // ~/.lm-assist.
 process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-bootstrap-'));
-import { CONTROLLER_SYSTEM_PROMPT, buildControllerLaunchExtras } from '../mission/mission-controller';
+import { CONTROLLER_SYSTEM_PROMPT, buildControllerLaunchExtras, controllerLocalMcpUrl } from '../mission/mission-controller';
+import { resolveEffectiveProfile, isNarrowedProfile, getProfile, resolveProfileTools } from '../mcp-server/registry/profiles';
+import { toolsInCategory } from '../mcp-server/registry/categories';
 
 test('CONTROLLER_SYSTEM_PROMPT names the role + heartbeat marker + scope', () => {
   assert.match(CONTROLLER_SYSTEM_PROMPT, /Mission Controller/);
@@ -46,18 +48,31 @@ test('buildControllerLaunchExtras: garbage hubUrl + key → no mcp config (canno
   assert.equal(bad.mcpConfigPath, undefined, 'no mcp file when url cannot be derived');
 });
 
+test('controllerLocalMcpUrl pins the local /mcp to admin — a narrowed node default cannot strip mission/worker tools', () => {
+  assert.equal(controllerLocalMcpUrl(3100), 'http://127.0.0.1:3100/mcp?profile=admin');
+  assert.equal(controllerLocalMcpUrl('3200'), 'http://127.0.0.1:3200/mcp?profile=admin');
+  const pin = new URL(controllerLocalMcpUrl(3100)).searchParams.get('profile');
+  const ep = resolveEffectiveProfile(pin);
+  assert.equal(ep.source, 'pin', 'a known pin, so the node default is never consulted');
+  assert.equal(ep.name, 'admin');
+  assert.equal(isNarrowedProfile(ep.name), false, 'admin hides nothing ⇒ the bare bootstrap gate key');
+  const tools = [...toolsInCategory('mission'), ...toolsInCategory('worker')];
+  assert.ok(tools.length > 0);
+  assert.equal(resolveProfileTools(getProfile(ep.name)!, tools).size, tools.length, 'every mission/worker tool advertised');
+});
+
 test('buildControllerLaunchExtras: localMcp PREFERRED over hub keystone, same server name, x-api-key header', () => {
   const written: Record<string, string> = {};
   const wf = (n: string, b: string): string => { const p = '/tmp/' + n; written[p] = b; return p; };
   const r = buildControllerLaunchExtras({
     hubUrl: 'wss://assist-api.langmart.ai', apiKey: 'sk-x', writeFile: wf,
-    localMcp: { url: 'http://127.0.0.1:3100/mcp', token: 'tok-1' },
+    localMcp: { url: controllerLocalMcpUrl(3100), token: 'tok-1' },
   });
   assert.ok(r.mcpConfigPath);
   const mcp = JSON.parse(written[r.mcpConfigPath!]);
   const entry = mcp.mcpServers['lm-assist-hub'];
   assert.ok(entry, 'same server name so tool prefix mcp__lm-assist-hub__* is unchanged');
-  assert.equal(entry.url, 'http://127.0.0.1:3100/mcp');
+  assert.equal(entry.url, 'http://127.0.0.1:3100/mcp?profile=admin');
   assert.equal(entry.headers['x-api-key'], 'tok-1');
   assert.equal(entry.headers.Authorization, undefined, 'no hub bearer on the local shape');
 });

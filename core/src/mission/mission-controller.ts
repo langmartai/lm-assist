@@ -624,13 +624,28 @@ export function pickStrayControllers(
   return tmuxNames.filter((n) => n.startsWith(`${prefix}-`) && !!n && n !== recordedTmux);
 }
 
+/** The profile the controller's LOCAL MCP endpoint is pinned to. The controller needs the
+ *  `mission` and `worker` categories; an unpinned URL follows the NODE DEFAULT, and narrowing
+ *  that (the MCP Tools page, `mcp_profile set`) would drop every mission_* tool from the
+ *  controller's tools/list — Claude Code only offers the model advertised tools. `admin` hides
+ *  nothing, so its bootstrap gate key stays the bare id. A Core that predates pins ignores the
+ *  query and serves its own default, exactly as before. The hub keystone URL is NOT pinned: an
+ *  older hub 500s `/mcp/<profile>`. */
+export const CONTROLLER_MCP_PROFILE = 'admin';
+
+/** This node's own MCP endpoint for the controller, pinned to CONTROLLER_MCP_PROFILE. */
+export function controllerLocalMcpUrl(port: string | number): string {
+  return `http://127.0.0.1:${port}/mcp?profile=${CONTROLLER_MCP_PROFILE}`;
+}
+
 /**
  * Pure builder for the controller launch extras (system-prompt file + optional
  * hub-MCP keystone config file). `writeFile(name, body)` persists a file and
  * returns its path — injected so this stays unit-testable (no fs).
  *
  * Always writes the system-prompt file. MCP config preference order:
- *   1. localMcp (this node's own /mcp + worker token) — the controller is launched BY a
+ *   1. localMcp (this node's own /mcp, pinned to `admin` — controllerLocalMcpUrl — + worker
+ *      token) — the controller is launched BY a
  *      running Core, so unlike login-time sessions there is no startup-ordering problem,
  *      and local tools are CLUSTER-CORRECT by construction: every mission_* call leader-
  *      anchors within THIS node's cluster. The hub keystone routes by account, which
@@ -2338,7 +2353,9 @@ export function registerMissionController(
             const { localApiToken } = require('../auth/api-token') as typeof import('../auth/api-token');
             const token = localApiToken();
             const port = process.env.API_PORT || (__dirname.includes('node_modules') ? '3100' : '3200');
-            if (token) localMcp = { url: `http://127.0.0.1:${port}/mcp`, token };
+            // Pinned to `admin` so a narrowed node default cannot strip the controller's
+            // mission/worker tools (controllerLocalMcpUrl).
+            if (token) localMcp = { url: controllerLocalMcpUrl(port), token };
           } catch { /* no local token — hub keystone fallback below */ }
           extras = buildControllerLaunchExtras({ hubUrl: hub.hubUrl || null, apiKey: hub.apiKey || null, writeFile, localMcp });
         } catch (e) {
