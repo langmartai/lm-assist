@@ -16,7 +16,7 @@ function makeEngine(localRecords: Array<{ id: string; updatedAt: string }>) {
     importBatch: async () => ({ applied: 0, skipped: 0 }),
   };
   const deps = {
-    datasets: { upsertReplica: () => {} },
+    datasets: { upsertReplica: () => {}, get: () => undefined }, // get: pullOne asks whether it superseded the peer
     backends: { get: () => backend },
     peers: {
       exportFrom: async (_node: string, _id: string, since?: string) => {
