@@ -151,7 +151,10 @@ doc-store and mission-store do. The ROUTE is the auth boundary (see Surfaces).
 | `replace` | write verbatim | write **as a new version** | write **as a new version** unless identical content |
 
 - *Verbatim* keeps `version`, `createdAt`, `updatedAt` and `deleted`, and sets `origin`
-  to `undefined`: the record becomes locally owned.
+  to `undefined`: the record becomes locally owned. Into a SYNCED dataset the write is
+  stamped `updatedAt = now` (version, createdAt and deleted stay verbatim): replicas pull by
+  an updatedAt watermark, and a record carrying the bundle's old updatedAt would sort below
+  every replica's watermark and never reach them. Plans compare the bundle as-is.
 - *As a new version* keeps the bundle's fields but sets
   `version = max(local.version, bundle.version) + 1` and `updatedAt = now`, so the restored
   state out-LWWs every replica.
@@ -176,6 +179,15 @@ doc-store and mission-store do. The ROUTE is the auth boundary (see Surfaces).
 | absent locally, synced, and `bundleOwner` is this node OR not currently online | create an OWNED dataset from the bundle descriptor, then import. This is the rebuilt-origin and new-fleet path. |
 | absent locally, synced, and `bundleOwner` is ONLINE and not this node | `OWNER_ONLINE`, refused, because it would mint a second owner (split brain). The plan says to import on `<hostname>` or wait for replication. |
 | system / denied id in the bundle | skip, with a warning |
+
+Both the takeover path and the two synced-create rows ALSO ask every online peer's sync
+manifest whether it already advertises the dataset as its own (a node that took it over
+while this node's replica still points at the old origin). If one does: `OWNER_ONLINE`.
+A manifest that cannot be read is treated like `ROSTER_UNAVAILABLE`. A cluster-scoped
+dataset owned in another cluster is not a competitor. A dataset created because the
+bundle's owner is offline is stamped `supersedes: <that owner>`, so the owner demotes
+itself if it returns; the rebuilt-origin row warns `rebuilt-origin` (replicas may hold
+newer versions).
 
 For a created dataset, the new descriptor keeps `id`, `backend`, `title`, `scope`,
 `syncMode`, `config` and `sensitive` from the bundle. `visibility` and `acl` come from the
@@ -255,6 +267,16 @@ During `reconcile`, suppose a peer P's manifest entry for dataset X names
    still imports from a peer that lists the dataset.
 3. Otherwise demote: `DatasetRegistry.demoteToReplica(X, originOf(P))` sets `origin`,
    `ownerNode = P`, `visibility: 'local-only'`, `acl: []`, and a log line.
+
+For step 2's "P pulls them" to hold, P's `pullOne` from a node its own `supersedes` names
+is a FULL pull (no watermark — P's post-takeover writes would otherwise hide the returning
+origin's partition-time writes), and every record that pull wins is re-stamped
+(`version+1`, `updatedAt = now`) so P's own replicas' watermark pulls see it too.
+The manifest also carries `supersedesAt` (the marker's `at`): when two takeovers point in
+opposite directions, the node holding the NEWER one keeps ownership and only pulls, so the
+two can never both demote. A partial replica cannot be taken over (`NOT_SUPPORTED`), and a
+peer copy that hits the export cap or comes back empty keeps the origin dual-owner with a
+message that says so.
 
 This runs only on an explicit `supersedes` marker naming THIS node. It never infers a
 takeover from timing, so the existing dual-owner behaviour for any other cause is unchanged.

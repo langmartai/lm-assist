@@ -37,6 +37,15 @@ export const MAX_RECORD_BYTES = 1_048_576; // 1 MiB — a single data record's s
  *  (still honest — the caller's next offset reaches the remainder). 10 × the requested
  *  page covers any realistic tombstone density between 14-day GC sweeps. */
 export const TOMBSTONE_REFILL_MAX_PAGES = 10;
+/** Most ids a change-notify carries. The bus refuses a payload over its cap (64 KiB) and
+ *  notifyChange swallows that throw, so an unbounded id list (a big import) would silently
+ *  send NO notify at all. The listener pulls the whole dataset regardless of ids, so past
+ *  the bound an empty list ("something changed") is exactly as useful. */
+export const MAX_NOTIFY_IDS = 500;
+export function boundNotifyIds(ids: string[]): string[] {
+  return ids.length > MAX_NOTIFY_IDS ? [] : ids;
+}
+
 /** Returns a reason string if the record exceeds the size cap, else undefined. */
 export function recordTooLarge(record: DataRecord): string | undefined {
   let n = 0;
@@ -311,7 +320,7 @@ export class DataService {
   private notifyChange(d: DatasetDescriptor, type: 'changed' | 'deleted', ids: string[]): void {
     if ((d as any).sensitive) return;
     if (!d.syncMode || d.syncMode === 'none') return;
-    try { this.deps.notify?.(d.id, type, ids); } catch { /* bus off / not ready — reconcile heals */ }
+    try { this.deps.notify?.(d.id, type, boundNotifyIds(ids)); } catch { /* bus off / not ready — reconcile heals */ }
   }
 
   async put(ctx: CallCtx, datasetId: string, record: DataRecord, opts?: PutOptions): Promise<DataResult<{ id: string }>> {
@@ -326,6 +335,10 @@ export class DataService {
     // unit per key. Route ALL puts to this key (CAS and non-CAS alike) through the mutex, so a
     // plain put can never slip between a concurrent CAS put's read and write.
     return this.withKeyLock(`${datasetId}:${record.id}`, async () => {
+      // Re-check ownership INSIDE the lock: an auto-demotion (SyncEngine.resolveSuperseded)
+      // can land between the entry check and here, and a write acknowledged onto a replica
+      // never reaches the fleet (the new owner does not pull from replicas).
+      if (this.deps.datasets.get(datasetId)?.origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" became a remote replica (read-only)` };
       const existing = await backend.get(datasetId, record.id);
       // A tombstoned record is logically ABSENT for CAS (ifVersion:0 = create-if-absent must
       // work after a delete) — but its version still seeds the counter below, so the
@@ -378,6 +391,7 @@ export class DataService {
     // under the same per-key lock as put() so a concurrent put can't interleave with the
     // read-bump-write below. Payload is dropped: a tombstone carries no data.
     return this.withKeyLock(`${datasetId}:${id}`, async () => {
+      if (this.deps.datasets.get(datasetId)?.origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" became a remote replica (read-only)` };
       const existing = await backend.get(datasetId, id);
       if (!existing || existing.deleted) return { ok: true, value: false }; // idempotent: already gone
       const now = new Date().toISOString();
@@ -425,8 +439,13 @@ export class DataService {
     if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'dataset creation is local-only' };
     // Callers (route body / MCP args) must never mint a system dataset or stamp a replica
     // origin — those are reserved for internal registration (ensureSystemDatasets / replica upsert).
-    const { system, origin, ...safe } = input as import('./dataset-registry').CreateDatasetInput & { origin?: unknown };
-    void system; void origin;
+    const { system, origin, supersedes, ...safe } = input as import('./dataset-registry').CreateDatasetInput & { origin?: unknown };
+    void system; void origin; void supersedes;
+    return this.allocateDataset(ctx, safe);
+  }
+
+  /** Registry create + backend allocation, rolled back when the allocation fails. */
+  private async allocateDataset(ctx: CallCtx, safe: import('./dataset-registry').CreateDatasetInput): Promise<DataResult<import('./types').DatasetDescriptor>> {
     let d: import('./types').DatasetDescriptor;
     try {
       d = this.deps.datasets.create(safe);
@@ -550,23 +569,51 @@ export class DataService {
       if (samples[bucket].length < IMPORT_SAMPLE_MAX && typeof id === 'string' && id) samples[bucket].push(id);
     };
     const written: string[] = [];
+    // A SYNCED dataset's replicas pull by an updatedAt watermark (sync-engine pullOne:
+    // `since` = the newest updatedAt they hold). A record written with the bundle's OLD
+    // updatedAt sorts below every replica's watermark and would never reach them — the
+    // import would report `add` while the fleet never converges. So every write into a
+    // synced dataset is stamped updatedAt=now; version, createdAt and deleted stay verbatim
+    // (isNewer compares version first, so LWW only changes on a same-version tie-break).
+    // Stamped HERE, not in the pure planImportRecord, so plans compare the bundle as-is.
+    const synced = !d.sensitive && !!d.syncMode && d.syncMode !== 'none';
+    let failed: { code: string; reason: string } | undefined;
 
     for (const incoming of records) {
       if (!isImportableRecord(incoming)) { note('invalid', (incoming as { id?: unknown } | null)?.id); continue; }
       if (recordTooLarge(incoming)) { note('tooLarge', incoming.id); continue; }
-      const step = async (): Promise<ImportBucket> => {
+      const step = async (): Promise<ImportBucket | 'demoted'> => {
+        // Re-check ownership inside the lock: an auto-demotion can land mid-import.
+        if (!dryRun && this.deps.datasets.get(datasetId)?.origin) return 'demoted';
         const local = await backend.get(datasetId, incoming.id);
-        const plan = planImportRecord(incoming, local, policy, new Date().toISOString());
-        if (plan.write && !dryRun) await backend.put(datasetId, plan.write);
+        const nowIso = new Date().toISOString();
+        const plan = planImportRecord(incoming, local, policy, nowIso);
+        if (plan.write && !dryRun) {
+          const write = synced ? { ...plan.write, updatedAt: nowIso } : plan.write;
+          await backend.put(datasetId, write);
+        }
         return plan.bucket;
       };
-      const bucket = dryRun ? await step() : await this.withKeyLock(`${datasetId}:${incoming.id}`, step);
+      let bucket: ImportBucket | 'demoted';
+      try {
+        bucket = dryRun ? await step() : await this.withKeyLock(`${datasetId}:${incoming.id}`, step);
+      } catch (e) {
+        // A backend write error (MDB_MAP_FULL, a sql worker failure) mid-import: stop, but
+        // still notify what WAS written and report the partial counts — never a raw throw
+        // that loses both.
+        failed = { code: 'IMPORT_FAILED', reason: `record "${incoming.id}": ${e instanceof Error ? e.message : String(e)}` };
+        break;
+      }
+      if (bucket === 'demoted') {
+        failed = { code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" became a replica during the import — the rest was not written` };
+        break;
+      }
       note(bucket, incoming.id);
       if (!dryRun && (bucket === 'add' || bucket === 'update')) written.push(incoming.id);
     }
 
     if (written.length) this.notifyChange(d, 'changed', written);
-    return { ok: true, value: { dataset: datasetId, policy, dryRun, total: records.length, counts, samples } };
+    return { ok: true, value: { dataset: datasetId, policy, dryRun, total: records.length, counts, samples, ...(failed ? { failed } : {}) } };
   }
 
   /** Create an OWNED dataset from a bundle's descriptor (the rebuilt-origin / new-fleet path)
@@ -576,7 +623,7 @@ export class DataService {
   async createDatasetFromBundle(
     ctx: CallCtx,
     descriptor: DatasetDescriptor,
-    opts: { replicaOf?: NodeOrigin | null } = {},
+    opts: { replicaOf?: NodeOrigin | null; supersedes?: import('./types').SupersedesMarker } = {},
   ): Promise<DataResult<DatasetDescriptor>> {
     if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'dataset creation is local-only' };
     if (!descriptor || typeof descriptor !== 'object' || typeof descriptor.id !== 'string') {
@@ -586,7 +633,8 @@ export class DataService {
     if (RAW_UNSUPPORTED_BACKENDS.has(descriptor.backend)) {
       return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${descriptor.backend}" is derived or file-backed and is not imported` };
     }
-    return this.createDataset(ctx, bundleDescriptorToCreateInput(descriptor, opts.replicaOf));
+    const input = bundleDescriptorToCreateInput(descriptor, opts.replicaOf);
+    return this.allocateDataset(ctx, opts.supersedes?.machineId ? { ...input, supersedes: opts.supersedes } : input);
   }
 
   // M5 sync helpers ----------------------------------------------------------------
@@ -617,7 +665,7 @@ export class DataService {
   }
 
   /** Returns descriptor stubs for datasets this node advertises as syncable (syncMode !== 'none'). */
-  syncManifest(p: Principal): Array<{ id: string; syncMode: SyncMode; ownerNode: string; backend: BackendKind; scope: 'cluster' | 'fleet'; supersedes?: string }> {
+  syncManifest(p: Principal): Array<{ id: string; syncMode: SyncMode; ownerNode: string; backend: BackendKind; scope: 'cluster' | 'fleet'; supersedes?: string; supersedesAt?: string }> {
     const readActions: DataAction[] = ['read'];
     const out = [];
     for (const d of this.deps.datasets.list()) {
@@ -629,7 +677,7 @@ export class DataService {
       out.push({
         id: d.id, syncMode, ownerNode: d.ownerNode, backend: d.backend, scope: (d.scope ?? 'cluster'),
         // A takeover's marker, so the superseded origin can demote itself (SyncEngine).
-        ...(d.supersedes?.machineId ? { supersedes: d.supersedes.machineId } : {}),
+        ...(d.supersedes?.machineId ? { supersedes: d.supersedes.machineId, ...(d.supersedes.at ? { supersedesAt: d.supersedes.at } : {}) } : {}),
       });
     }
     return out;

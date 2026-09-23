@@ -103,7 +103,8 @@ test('round trip into a fresh node: verbatim versions/timestamps, tombstones car
     const d = dst.get(id)!;
     assert.equal(d.version, r.version, id);
     assert.equal(d.createdAt, r.createdAt, id);
-    assert.equal(d.updatedAt, r.updatedAt, id);
+    // backlog is SYNCED: updatedAt is re-stamped to now so replicas' watermark pulls see it.
+    assert.ok(d.updatedAt > r.updatedAt, `${id}: synced write stamped updatedAt=now`);
     assert.equal(d.deleted, r.deleted, id);
     assert.deepEqual(d.fields, r.fields, id);
   }
@@ -121,6 +122,8 @@ test('round trip into a fresh node: verbatim versions/timestamps, tombstones car
   assert.equal(wfDesc.origin, undefined, 'a replica in the bundle is created OWNED here (its owner is not online)');
   assert.equal(wfDesc.visibility, 'cross-node-readable', "a replica's local-only visibility is not carried over");
   assert.equal(b.datasets.get('notes-local')!.syncMode, 'none');
+  const srcNotes = await all(a, 'notes-local');
+  for (const [nid, r] of await all(b, 'notes-local')) assert.equal(r.updatedAt, srcNotes.get(nid)!.updatedAt, 'an unsynced dataset keeps updatedAt verbatim');
   assert.ok(!(await all(b, 'missions')).has('__controller__'));
 
   // Caches that shadow written datasets are dropped once, with the touched ids.

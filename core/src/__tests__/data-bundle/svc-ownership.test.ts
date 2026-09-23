@@ -213,11 +213,12 @@ test('takeover: NOT_FOUND / NOT_A_REPLICA / ORIGIN_ONLINE / ROSTER_UNAVAILABLE /
 
 // ─── missions ───────────────────────────────────────────────────────────────
 
-function liveMission(id: string, status: string, version = 3) {
+function liveMission(id: string, status: string, version = 3, over: Record<string, unknown> = {}) {
   return rec(id, version, {
     id, title: id, status, rev: 4, history: [],
     binding: { sessionId: 's1', node: 'gw-x', kind: 'worker' },
     control: { nudgeCount: 1, backoffStep: 0, spawnInFlight: { node: 'gw-x', requestId: 'r', at: 1 }, lastSpawnRequest: 'req-1' },
+    ...over,
   });
 }
 
@@ -269,11 +270,53 @@ test('missions under replace: the neutralization is recorded in the mission hist
   assert.equal(m.version, 6, 'replace: max(5,3)+1');
   const f = m.fields as any;
   assert.equal(f.status, 'paused');
-  assert.equal(f.rev, 5);
-  assert.equal(f.history.length, 1);
-  assert.deepEqual(f.history[0].changes.status, { from: 'active', to: 'paused' });
-  assert.equal(f.history[0].changes.binding.to, null);
-  assert.equal(f.history[0].actor.label, 'bundle import (neutralized)');
+  // The local mission was at rev 9: the bundle's rev 3 is REBASED (import = rev 10), then the
+  // neutralization is rev 11 — an import never lowers rev (durable history keys on it).
+  assert.equal(f.rev, 11);
+  assert.equal(f.history.length, 2);
+  assert.equal(f.history[0].rev, 10);
+  assert.equal(f.history[0].actor.label, 'bundle import (replace)');
+  assert.deepEqual(f.history[0].changes.status, { from: 'done', to: 'active' });
+  assert.deepEqual(f.history[1].changes.status, { from: 'active', to: 'paused' });
+  assert.equal(f.history[1].changes.binding.to, null);
+  assert.equal(f.history[1].actor.label, 'bundle import (neutralized)');
+});
+
+test('missions under replace: an IDENTICAL live mission is left alone (not paused/unbound), and re-apply is a no-op', async () => {
+  const b = makeNode();
+  const live = liveMission('mission_run', 'active', 4);
+  await ownedDataset(b, 'missions', [live], { scope: 'cluster' });
+  const id = await craftBundle(b.store, [{ descriptor: descriptor('missions', { scope: 'cluster' }), records: [live] }]);
+  const r = await b.svc.apply(id, { confirm: true, policy: 'replace' });
+  assert.equal(r.sections[0].applied!.neutralized, 0);
+  assert.equal(r.sections[0].counts.skipIdentical, 1);
+  const m = (await all(b, 'missions')).get('mission_run')!;
+  assert.equal((m.fields as any).status, 'active', 'a running mission keeps running');
+  assert.deepEqual((m.fields as any).binding, (live.fields as any).binding);
+  assert.equal(m.version, live.version);
+
+  // A DIFFERENT older copy is neutralized once; applying it again is a no-op.
+  const older = liveMission('mission_run', 'active', 2, { title: 'older title' });
+  const id2 = await craftBundle(b.store, [{ descriptor: descriptor('missions', { scope: 'cluster' }), records: [older] }]);
+  const r1 = await b.svc.apply(id2, { confirm: true, policy: 'replace' });
+  assert.equal(r1.sections[0].applied!.update, 1);
+  assert.equal(r1.sections[0].applied!.neutralized, 1);
+  const v1 = (await all(b, 'missions')).get('mission_run')!;
+  assert.equal((v1.fields as any).status, 'paused');
+  const r2 = await b.svc.apply(id2, { confirm: true, policy: 'replace' });
+  assert.equal(r2.sections[0].applied!.update, 0, 're-apply writes nothing');
+  assert.equal(r2.sections[0].counts.skipIdentical, 1);
+  assert.equal((await all(b, 'missions')).get('mission_run')!.version, v1.version);
+});
+
+test('missions under merge: an identical record is skipIdentical, not skipOlder', async () => {
+  const b = makeNode();
+  const live = liveMission('mission_m', 'active', 4);
+  await ownedDataset(b, 'missions', [live], { scope: 'cluster' });
+  const id = await craftBundle(b.store, [{ descriptor: descriptor('missions', { scope: 'cluster' }), records: [live] }]);
+  const p = await b.svc.plan(id);
+  assert.equal(p.sections[0].counts.skipIdentical, 1);
+  assert.equal(p.sections[0].counts.skipOlder, 0);
 });
 
 test('neutralizeMission is a no-op for tombstones, finished missions and non-mission shapes', () => {
@@ -286,4 +329,105 @@ test('neutralizeMission is a no-op for tombstones, finished missions and non-mis
   assert.equal(n.fields.status, 'paused');
   assert.equal(n.fields.binding, null);
   assert.equal('control' in n.fields, false, 'no control object is invented');
+});
+
+// ─── another online node ALREADY owns it (not just "is the recorded origin online") ─────
+
+const owns = (node: string, id: string, extra: Record<string, unknown> = {}) =>
+  [{ id, syncMode: 'full' as const, ownerNode: node, backend: 'cache' as const, scope: 'fleet' as const, ...extra }];
+
+test('takeover: refused OWNER_ONLINE when another online node already took the dataset over', async () => {
+  const b = makeNode();
+  await replicaDataset(b, 'backlog', ORIGIN, [rec('a', 1, {})]);
+  b.roster.online('gw-taker');                        // ORIGIN is gone, but gw-taker owns it now
+  b.roster.manifests['gw-taker'] = owns('gw-taker', 'backlog', { supersedes: ORIGIN.machineId });
+  const e = await rejectsCode(b.svc.takeover('backlog'), 'OWNER_ONLINE');
+  assert.match(e.message, /host-gw-taker/);
+  await rejectsCode(b.svc.takeover('backlog', { force: true }), 'OWNER_ONLINE');
+  assert.ok(b.datasets.get('backlog')!.origin, 'still a replica');
+  // An unreadable manifest is not "nobody": ROSTER_UNAVAILABLE unless force.
+  b.roster.manifests['gw-taker'] = new Error('proxy timeout');
+  await rejectsCode(b.svc.takeover('backlog'), 'ROSTER_UNAVAILABLE');
+  const forced = await b.svc.takeover('backlog', { force: true });
+  assert.equal(forced.forced, true);
+});
+
+test('takeover: a PARTIAL replica is refused NOT_SUPPORTED (it is a read-through cache, not a copy)', async () => {
+  const b = makeNode();
+  b.datasets.upsertReplica({ id: 'part', backend: 'cache', ownerNode: ORIGIN.machineId, syncMode: 'partial', config: { kind: 'cache' }, origin: ORIGIN });
+  await rejectsCode(b.svc.takeover('part', { force: true }), 'NOT_SUPPORTED');
+});
+
+test('takeOwnership import: refused OWNER_ONLINE when another online node owns it', async () => {
+  const b = makeNode();
+  await replicaDataset(b, 'backlog', ORIGIN, []);
+  b.roster.online('gw-taker');
+  b.roster.manifests['gw-taker'] = owns('gw-taker', 'backlog');
+  const id = await craftBundle(b.store, [{ descriptor: descriptor('backlog', { ownerNode: ORIGIN.machineId }), records: [rec('x', 1, {})] }]);
+  const r = await b.svc.apply(id, { confirm: true, takeOwnership: true, force: true });
+  assert.equal(r.sections[0].refused!.code, 'OWNER_ONLINE');
+  assert.ok(b.datasets.get('backlog')!.origin);
+});
+
+test('import-create: refused when an online node already owns it; an offline owner gets a supersedes marker', async () => {
+  const b = makeNode();
+  b.roster.online('gw-taker');
+  b.roster.manifests['gw-taker'] = owns('gw-taker', 'backlog');
+  const id = await craftBundle(b.store, [{ descriptor: descriptor('backlog', { ownerNode: OTHER }), records: [rec('bl', 1, {})] }]);
+  const refused = await b.svc.apply(id, { confirm: true });
+  assert.equal(refused.sections[0].refused!.code, 'OWNER_ONLINE');
+  assert.equal(b.datasets.get('backlog'), undefined);
+
+  b.roster.manifests['gw-taker'] = [];
+  const ok = await b.svc.apply(id, { confirm: true });
+  assert.equal(ok.sections[0].refused, undefined);
+  const d = b.datasets.get('backlog')!;
+  assert.equal(d.supersedes?.machineId, OTHER, 'the returning owner will find a marker naming it and demote');
+  assert.ok(d.supersedes?.at);
+});
+
+test('import-create on the rebuilt origin: warns that replicas may be newer; refused if a taker owns it now', async () => {
+  const b = makeNode();
+  b.roster.online('gw-rep');
+  const id = await craftBundle(b.store, [{ descriptor: descriptor('backlog', { ownerNode: SELF }), records: [rec('bl', 1, {})] }]);
+  const p = await b.svc.plan(id);
+  assert.ok(p.sections[0].warnings.some((w) => w.startsWith('rebuilt-origin:')));
+  b.roster.manifests['gw-rep'] = owns('gw-rep', 'backlog', { supersedes: SELF });
+  const r = await b.svc.plan(id);
+  assert.equal(r.sections[0].refused!.code, 'OWNER_ONLINE');
+});
+
+test('cluster-scoped: an owner in ANOTHER cluster is that cluster\'s copy, not a competing owner', async () => {
+  const b = makeNode();
+  b.roster.online('gw-far');
+  b.roster.manifests['gw-far'] = [{ id: 'missions', syncMode: 'full', ownerNode: 'gw-far', backend: 'cache', scope: 'cluster' }];
+  (b.roster as any).sameCluster = async () => false;
+  const id = await craftBundle(b.store, [{ descriptor: descriptor('missions', { ownerNode: OTHER, scope: 'cluster' }), records: [] }]);
+  const r = await b.svc.plan(id);
+  assert.equal(r.sections[0].refused, undefined);
+});
+
+test('a datasets import on a node with the data service OFF warns that nothing will serve it yet', async () => {
+  const b = makeNode();
+  (b.data as any).enabledOverride = false;
+  const id = await craftBundle(b.store, [{ descriptor: descriptor('notes', { syncMode: 'none' }), records: [rec('n', 1, {})] }]);
+  const r = await b.svc.plan(id);
+  assert.ok(r.warnings.some((w) => w.startsWith('data-service-disabled:')));
+  (b.data as any).enabledOverride = true;
+  assert.ok(!(await b.svc.plan(id)).warnings.some((w) => w.startsWith('data-service-disabled:')));
+});
+
+test('a backend write error mid-apply refuses the section IMPORT_FAILED with partial counts; caches still invalidated', async () => {
+  const b = makeNode();
+  await ownedDataset(b, 'backlog', []);
+  const realPut = b.backend.put.bind(b.backend);
+  let n = 0;
+  (b.backend as any).put = async (ds: string, r: any) => { if (ds === 'backlog' && ++n === 2) throw new Error('MDB_MAP_FULL'); return realPut(ds, r); };
+  const id = await craftBundle(b.store, [{ descriptor: descriptor('backlog'), records: [rec('a', 1, {}), rec('b', 1, {}), rec('c', 1, {})] }]);
+  const r = await b.svc.apply(id, { confirm: true });
+  const s = r.sections[0];
+  assert.equal(s.refused!.code, 'IMPORT_FAILED');
+  assert.match(s.refused!.reason, /MDB_MAP_FULL/);
+  assert.equal(s.applied!.add, 1, 'what WAS written is reported');
+  assert.deepEqual(b.invalidated, [['backlog']], 'the part-written dataset\'s caches are dropped');
 });

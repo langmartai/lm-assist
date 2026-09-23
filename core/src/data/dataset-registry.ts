@@ -23,6 +23,10 @@ export interface CreateDatasetInput {
   config: BackendConfig;
   acl?: AclRule[];
   system?: boolean;
+  /** Takeover marker for a dataset created from ANOTHER node's bundle while that owner was
+   *  offline: the returning owner then demotes itself (SyncEngine auto-demotion) instead of
+   *  staying a second owner forever. Internal — DataService.createDataset strips it. */
+  supersedes?: import('./types').SupersedesMarker;
 }
 
 export interface UpsertReplicaInput {
@@ -162,6 +166,7 @@ export class DatasetRegistry {
       scope: input.scope ?? 'cluster',
       config: input.config,
       acl: input.acl ?? [],
+      ...(input.supersedes?.machineId ? { supersedes: { ...input.supersedes } } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -245,6 +250,12 @@ export class DatasetRegistry {
     if (idx < 0) throw registryError('NOT_FOUND', `dataset "${id}" not found`);
     const cur = arr[idx];
     if (!cur.origin) throw registryError('NOT_A_REPLICA', `dataset "${id}" is not a replica — it is already owned by this node`);
+    if (cur.syncMode !== 'full') {
+      // A partial replica caches only what was read — it is not a copy of the dataset, and a
+      // returning origin could never auto-demote onto it (reconcile handles partial entries
+      // before the supersedes check), so the two would stay owners forever.
+      throw registryError('NOT_SUPPORTED', `dataset "${id}" is a ${cur.syncMode ?? 'non-full'} replica — it caches only what was read and is not a copy of the dataset; restore from a bundle on the origin, or convert it to full sync first`);
+    }
     const now = new Date().toISOString();
     const { origin, ...owned } = cur;
     const promoted: DatasetDescriptor = {

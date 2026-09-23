@@ -30,13 +30,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { DataResult, CallCtx } from '../../data-service';
-import { planImportRecord, recordTooLarge } from '../../data-service';
+import { planImportRecord, recordTooLarge, sameRecordContent } from '../../data-service';
 import { DATASET_ID_RE, RESERVED_DATASET_IDS, type PromoteReplicaPatch } from '../../dataset-registry';
 import type {
   BackendKind, DataRecord, DatasetDescriptor, ImportOutcome, ImportPolicy, NodeOrigin,
 } from '../../types';
 import type { BundleEntry, ReadSection, SectionSummaryInput } from '../format';
-import type { RosterSnapshot } from '../roster';
+import type { OwnerProbe, RosterSnapshot } from '../roster';
+import { diffMission } from '../../../mission/mission-history';
 import { bump, emptyCounts, newSectionPlan, SAMPLE_CAP, type PlanBucket, type SectionPlan } from './types';
 
 // ─── constants ──────────────────────────────────────────────────────────────
@@ -64,7 +65,9 @@ const LOCAL: CallCtx = { principal: { type: 'local' } };
 export interface RawDataPort {
   exportRaw(ctx: CallCtx, datasetId: string): Promise<DataResult<DataRecord[]>>;
   importRaw(ctx: CallCtx, datasetId: string, records: DataRecord[], opts: { policy: ImportPolicy; dryRun: boolean }): Promise<DataResult<ImportOutcome>>;
-  createDatasetFromBundle(ctx: CallCtx, descriptor: DatasetDescriptor, opts?: { replicaOf?: NodeOrigin | null }): Promise<DataResult<DatasetDescriptor>>;
+  createDatasetFromBundle(ctx: CallCtx, descriptor: DatasetDescriptor, opts?: { replicaOf?: NodeOrigin | null; supersedes?: import('../../types').SupersedesMarker }): Promise<DataResult<DatasetDescriptor>>;
+  /** Whether the data service is on (off ⇒ imported datasets are stored but not served). */
+  isEnabled?(): boolean;
 }
 
 /** The DatasetRegistry surface this section uses. */
@@ -273,6 +276,8 @@ export interface DatasetImportContext {
   roster: () => Promise<RosterSnapshot>;
   /** Promote a replica (apply only). The caller has already checked the guard. */
   promote: (id: string, patch: PromoteReplicaPatch) => Promise<void>;
+  /** Which ONLINE peer already owns a dataset (memoized per operation). Absent ⇒ nobody. */
+  onlineOwner?: (id: string, scope?: 'cluster' | 'fleet') => Promise<OwnerProbe>;
   now: () => number;
 }
 
@@ -331,7 +336,8 @@ export async function importDatasetSection(sec: ReadSection, ctx: DatasetImportC
     return refuse(plan, 'BAD_DATASET_ID', `dataset id "${id}" is invalid or reserved on this node`);
   }
 
-  // Records: missions never carries its runtime ids, and live missions are neutralized.
+  // Records: missions never carries its runtime ids (live missions are neutralized below,
+  // once the local copy is known).
   let records = sec.records;
   const neutralizedIds = new Set<string>();
   if (id === MISSIONS_DATASET) {
@@ -340,14 +346,7 @@ export async function importDatasetSection(sec: ReadSection, ctx: DatasetImportC
       plan.counts.skipped += records.length - kept.length;
       plan.warnings.push(`reserved: ${records.length - kept.length} runtime record(s) (__controller__/__engagement__) are never imported`);
     }
-    const nowMs = ctx.now();
-    records = kept.map((r) => {
-      if (!isImportableRecord(r)) return r;
-      const n = neutralizeMission(r, { recordHistory: ctx.policy === 'replace', nowMs, node: ctx.selfNode });
-      if (!n) return r;
-      neutralizedIds.add(r.id);
-      return n;
-    });
+    records = kept;
   }
 
   const scope = bundleDesc.scope ?? 'cluster';
@@ -372,12 +371,22 @@ export async function importDatasetSection(sec: ReadSection, ctx: DatasetImportC
           `"${id}" is a read-only replica here; its origin is ${host}. Import on the origin ${local.origin.hostname || local.origin.machineId}, `
           + 'or pass takeOwnership:true to take it over first (refused while the origin is online)');
       }
+      if (local.syncMode !== 'full') {
+        return refuse(plan, 'NOT_SUPPORTED', `cannot take over "${id}": it is a ${local.syncMode ?? 'non-full'} replica — it caches only what was read and is not a copy of the dataset; import on the origin ${host}, or convert it to full sync first`);
+      }
       const snap = await ctx.roster();
       if (snap.available && snap.peers.has(local.origin.machineId)) {
         return refuse(plan, 'ORIGIN_ONLINE', `cannot take over "${id}": its origin ${host} is online — import there instead`);
       }
       if (!snap.available && !ctx.force) {
         return refuse(plan, 'ROSTER_UNAVAILABLE', `cannot tell whether the origin ${host} is online (${snap.reason}); pass force:true to take over anyway`);
+      }
+      const owner = await probeOwner(ctx, id, local.scope);
+      if (owner.kind === 'owner') {
+        return refuse(plan, 'OWNER_ONLINE', `cannot take over "${id}": ${owner.peer.hostname || owner.peer.node} (${owner.peer.node}) already owns it and is online — this replica just has not re-pointed yet. Import there instead`);
+      }
+      if (owner.kind === 'unknown' && !ctx.force) {
+        return refuse(plan, 'ROSTER_UNAVAILABLE', `cannot tell whether another online node already owns "${id}" (${owner.reason}); pass force:true to take over anyway`);
       }
       plan.action = 'takeover';
       // The bundle's visibility/ACL only when the bundle side OWNED it — a replica's
@@ -401,6 +410,7 @@ export async function importDatasetSection(sec: ReadSection, ctx: DatasetImportC
     }
   } else {
     const synced = !!bundleDesc.syncMode && bundleDesc.syncMode !== 'none';
+    let supersedes: import('../../types').SupersedesMarker | undefined;
     if (synced && bundleOwner !== ctx.selfNode) {
       const snap = await ctx.roster();
       const ownerInfo = snap.available ? snap.peers.get(bundleOwner) : undefined;
@@ -413,11 +423,32 @@ export async function importDatasetSection(sec: ReadSection, ctx: DatasetImportC
         return refuse(plan, 'ROSTER_UNAVAILABLE',
           `cannot tell whether the owner ${bundleOwner} of "${id}" is online (${snap.reason}); pass force:true to create an owned copy anyway`);
       }
-      plan.warnings.push(`owner-offline: ${bundleOwner} is ${snap.available ? 'not online' : 'of unknown state (forced)'} — this node creates the owned copy`);
+      const owner = await probeOwner(ctx, id, bundleDesc.scope);
+      if (owner.kind === 'owner') {
+        return refuse(plan, 'OWNER_ONLINE',
+          `"${id}" is already owned by ${owner.peer.hostname || owner.peer.node} (${owner.peer.node}), which is online — importing here would mint a second owner. `
+          + `Let it replicate here, or import on ${owner.peer.hostname || owner.peer.node}`);
+      }
+      if (owner.kind === 'unknown' && !ctx.force) {
+        return refuse(plan, 'ROSTER_UNAVAILABLE',
+          `cannot tell whether another online node already owns "${id}" (${owner.reason}); pass force:true to create an owned copy anyway`);
+      }
+      plan.warnings.push(`owner-offline: ${bundleOwner} is ${snap.available ? 'not online' : 'of unknown state (forced)'} — this node creates the owned copy; if ${bundleOwner} returns it demotes itself to a replica of this node`);
+      // The returning owner must find a marker naming it, or it stays a second owner forever.
+      supersedes = { machineId: bundleOwner, hostname: replicaOf?.hostname ?? '', at: new Date(ctx.now()).toISOString() };
+    } else if (synced) {
+      // Rebuilt origin: this node's own dataset, restored. A node that TOOK IT OVER while
+      // this one was gone is the owner now — creating here would split the brain.
+      const owner = await probeOwner(ctx, id, bundleDesc.scope);
+      if (owner.kind === 'owner') {
+        return refuse(plan, 'OWNER_ONLINE',
+          `"${id}" was taken over by ${owner.peer.hostname || owner.peer.node} (${owner.peer.node}), which is online and owns it now — let it replicate here instead of restoring a second owner`);
+      }
+      plan.warnings.push(`rebuilt-origin: replicas on other nodes may hold versions newer than this bundle; this node's later writes to those records lose LWW there until its version overtakes. If a replica is online and current, prefer a takeover on that replica and export from there`);
     }
     plan.action = 'create';
     if (ctx.apply) {
-      const c = await ctx.data.createDatasetFromBundle(LOCAL, bundleDesc, { replicaOf });
+      const c = await ctx.data.createDatasetFromBundle(LOCAL, bundleDesc, { replicaOf, ...(supersedes ? { supersedes } : {}) });
       if (!c.ok) return refuse(plan, c.code, c.reason);
       exists = true;
       plan.warnings.push(`create: "${id}" was created from the bundle descriptor`);
@@ -434,6 +465,15 @@ export async function importDatasetSection(sec: ReadSection, ctx: DatasetImportC
     for (const rec of r.value) localMap.set(rec.id, rec);
   }
   const nowIso = new Date(ctx.now()).toISOString();
+  if (id === MISSIONS_DATASET) {
+    const nowMs = ctx.now();
+    records = records.map((r) => {
+      if (!isImportableRecord(r)) return r;
+      const p = prepareMission(r, localMap.get(r.id) ?? null, ctx.policy, { nowIso, nowMs, node: ctx.selfNode });
+      if (p.neutralized) neutralizedIds.add(r.id);
+      return p.record;
+    });
+  }
   const neutralizedWrites: string[] = [];
   let invalid = 0;
   for (const rec of records) {
@@ -455,7 +495,12 @@ export async function importDatasetSection(sec: ReadSection, ctx: DatasetImportC
     return plan;
   }
 
-  const out = await ctx.data.importRaw(LOCAL, id, records, { policy: ctx.policy, dryRun: false });
+  let out: Awaited<ReturnType<RawDataPort['importRaw']>>;
+  try {
+    out = await ctx.data.importRaw(LOCAL, id, records, { policy: ctx.policy, dryRun: false });
+  } catch (e) {
+    return refuse(plan, 'IMPORT_FAILED', e instanceof Error ? e.message : String(e));
+  }
   if (!out.ok) return refuse(plan, out.code, out.reason);
   const applied = emptyCounts();
   for (const [b, n] of Object.entries(out.value.counts)) {
@@ -469,9 +514,78 @@ export async function importDatasetSection(sec: ReadSection, ctx: DatasetImportC
   if (out.value.counts.invalid) plan.warnings.push(`invalid: ${out.value.counts.invalid} record(s) were not well-formed and were skipped`);
   applied.add = out.value.counts.add;
   applied.update = out.value.counts.update;
-  for (const nid of neutralizedWrites) bump(plan, 'neutralized', nid);
-  applied.neutralized = neutralizedWrites.length;
+  // A stopped import counts only the neutralized missions it actually got to.
+  const done = new Set([...(out.value.samples.add ?? []), ...(out.value.samples.update ?? [])]);
+  const neutralizedDone = out.value.failed ? neutralizedWrites.filter((n) => done.has(n)) : neutralizedWrites;
+  for (const nid of neutralizedDone) bump(plan, 'neutralized', nid);
+  applied.neutralized = neutralizedDone.length;
   plan.applied = applied;
   plan.errors = [];
+  if (out.value.failed) {
+    plan.errors.push(out.value.failed.reason);
+    plan.refused = { code: out.value.failed.code, reason: `stopped part-way — ${out.value.failed.reason}. ${applied.add + applied.update} record(s) were written before the stop; re-running the apply is safe` };
+    plan.action = 'refuse';
+  }
   return plan;
+}
+
+async function probeOwner(ctx: DatasetImportContext, id: string, scope?: 'cluster' | 'fleet'): Promise<OwnerProbe> {
+  if (!ctx.onlineOwner) return { kind: 'none' };
+  try { return await ctx.onlineOwner(id, scope); } catch (e) { return { kind: 'unknown', reason: e instanceof Error ? e.message : String(e) }; }
+}
+
+/** Mission fields that are bookkeeping, not content: a record that differs only here is the
+ *  same mission state (re-applying a bundle must be a no-op). */
+const MISSION_BOOKKEEPING = ['history', 'rev', 'updatedAt', 'lastUpdatedBy'] as const;
+
+function missionContentEqual(a: DataRecord, b: DataRecord): boolean {
+  const strip = (r: DataRecord): DataRecord => {
+    const f: Record<string, unknown> = { ...(r.fields ?? {}) };
+    for (const k of MISSION_BOOKKEEPING) delete f[k];
+    return { ...r, fields: f };
+  };
+  return sameRecordContent(strip(a), strip(b));
+}
+
+/**
+ * The record a mission import actually hands importRaw, decided against the LOCAL copy:
+ *  - a record the policy would SKIP is passed raw — never neutralized — so it buckets as
+ *    skipIdentical / skipOlder / skipExists exactly as any other dataset's record would, and
+ *    an identical copy of a running mission does not pause and unbind it;
+ *  - a record that would be written onto a present mission never LOWERS its `rev`: the
+ *    durable mission-history keys entries `<id>:<rev>`, so a regressed rev makes later edits
+ *    silently overwrite real history. It is rebased onto the local rev + 1 with the local
+ *    inline history plus one "bundle import" entry;
+ *  - live statuses are then neutralized (paused, unbound, no in-flight spawn);
+ *  - a result whose mission content already equals the local copy (a re-apply) is replaced
+ *    by the local record itself, so importRaw counts it skipIdentical instead of re-writing.
+ */
+export function prepareMission(
+  raw: DataRecord,
+  local: DataRecord | null,
+  policy: ImportPolicy,
+  o: { nowIso: string; nowMs: number; node: string },
+): { record: DataRecord; neutralized: boolean } {
+  const decision = planImportRecord(raw, local, policy, o.nowIso);
+  if (!decision.write) return { record: raw, neutralized: false };
+  let base = raw;
+  let rebased = false;
+  if (local && isObj(local.fields) && isObj(raw.fields) && local.deleted !== true && raw.deleted !== true) {
+    const localRev = typeof local.fields.rev === 'number' ? local.fields.rev : 0;
+    const bundleRev = typeof raw.fields.rev === 'number' ? raw.fields.rev : 0;
+    if (bundleRev <= localRev) {
+      const rev = localRev + 1;
+      const changes = diffMission(local.fields as never, raw.fields as never);
+      const history = [...(Array.isArray(local.fields.history) ? local.fields.history : []), {
+        rev, at: o.nowMs, changes,
+        actor: { kind: 'user', channel: 'api', node: o.node, label: `bundle import (${policy})`, at: o.nowMs },
+      }];
+      base = { ...raw, fields: { ...raw.fields, rev, history: history.slice(-MISSION_HISTORY_INLINE_CAP), updatedAt: o.nowMs } };
+      rebased = true;
+    }
+  }
+  const n = neutralizeMission(base, { recordHistory: policy === 'replace' || rebased, nowMs: o.nowMs, node: o.node });
+  const record = n ?? base;
+  if (local && missionContentEqual(record, local)) return { record: local, neutralized: false };
+  return { record, neutralized: !!n };
 }

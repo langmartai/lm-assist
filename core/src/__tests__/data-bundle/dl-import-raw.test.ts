@@ -68,6 +68,7 @@ const BUNDLE = () => [
 test('merge: absent → add verbatim, local older → update verbatim, newer/identical → skip', async () => {
   const { s, backend, notes } = svc();
   await seed(backend, LOCAL_STATE());
+  const before = Date.now();
   const out = ok(await s.importRaw(LOCAL, 'ds', BUNDLE(), { policy: 'merge', dryRun: false }));
   assert.equal(out.counts.add, 1);
   assert.equal(out.counts.update, 1);
@@ -79,7 +80,9 @@ test('merge: absent → add verbatim, local older → update verbatim, newer/ide
   assert.deepEqual(out.samples.skipIdentical, ['c']);
   const a = (await backend.get('ds', 'a'))!;
   assert.equal(a.version, 5, 'verbatim keeps the bundle version');
-  assert.equal(a.updatedAt, '2026-01-05T00:00:00.000Z', 'verbatim keeps updatedAt');
+  // ds is SYNCED: updatedAt is re-stamped to now so the write sorts above every replica's
+  // pull watermark (version/createdAt stay verbatim). An unsynced dataset keeps it — below.
+  assert.ok(Date.parse(a.updatedAt) >= before - 1000, 'a synced write is stamped updatedAt=now');
   assert.equal(a.origin, undefined, 'the imported record becomes locally owned');
   assert.equal((await backend.get('ds', 'b'))!.fields.t, 'local-b', 'a newer local record is never rolled back');
   const d = (await backend.get('ds', 'd'))!;
@@ -228,4 +231,68 @@ test('importRaw writes under the SAME per-key lock as put(): a concurrent put is
   assert.ok(final.version === 50 || final.version === 51, `version ${final.version}`);
   if (final.version === 51) assert.equal(final.fields.from, 'put', 'put ran after the import and bumped it');
   else assert.equal(final.fields.from, 'bundle', 'import ran after the put and won LWW');
+});
+
+test('synced vs local-only: updatedAt is stamped now only where replicas pull by watermark', async () => {
+  const { s, datasets, backend } = svc();
+  datasets.create({ id: 'lo', backend: 'cache', visibility: 'local-only', syncMode: 'none', config: { kind: 'cache' } });
+  ok(await s.importRaw(LOCAL, 'lo', [rec('x', 4, { v: 1 })], { policy: 'merge', dryRun: false }));
+  const lo = (await backend.get('lo', 'x'))!;
+  assert.equal(lo.updatedAt, '2026-01-04T00:00:00.000Z', 'a local-only dataset keeps updatedAt verbatim');
+  assert.equal(lo.version, 4);
+  const before = Date.now();
+  ok(await s.importRaw(LOCAL, 'ds', [rec('x', 4, { v: 1 })], { policy: 'merge', dryRun: false }));
+  const ds = (await backend.get('ds', 'x'))!;
+  assert.equal(ds.version, 4, 'version stays verbatim');
+  assert.equal(ds.createdAt, '2026-01-01T00:00:00.000Z', 'createdAt stays verbatim');
+  assert.ok(Date.parse(ds.updatedAt) >= before - 1000);
+});
+
+test('an import into a synced dataset reaches a replica that already pulled (watermark pull)', async () => {
+  const { s, backend } = svc();
+  // The replica already holds r1 @01-10 → its watermark is 01-10.
+  await seed(backend, [rec('r1', 1, { v: 1 }, { updatedAt: '2026-01-10T00:00:00.000Z' })]);
+  const watermark = '2026-01-10T00:00:00.000Z';
+  // Import an OLDER record (01-05) the owner did not have.
+  ok(await s.importRaw(LOCAL, 'ds', [rec('r0', 1, { v: 0 }, { updatedAt: '2026-01-05T00:00:00.000Z' })], { policy: 'merge', dryRun: false }));
+  const pulled = await backend.exportSince('ds', watermark);
+  assert.ok(pulled.some((r) => r.id === 'r0'), 'the replica\'s next watermark pull sees the imported record');
+  // Re-applying the same bundle is still a no-op (idempotent).
+  const again = ok(await s.importRaw(LOCAL, 'ds', [rec('r0', 1, { v: 0 }, { updatedAt: '2026-01-05T00:00:00.000Z' })], { policy: 'merge', dryRun: false }));
+  assert.equal(again.counts.skipIdentical, 1);
+});
+
+test('a big import still notifies: the id list is bounded so the bus payload cap never drops it', async () => {
+  const { s, notes } = svc();
+  const many = Array.from({ length: 600 }, (_, i) => rec(`n${i}`, 1, {}));
+  ok(await s.importRaw(LOCAL, 'ds', many, { policy: 'merge', dryRun: false }));
+  assert.equal(notes.length, 1, 'one notify');
+  assert.deepEqual(notes[0][2], [], 'past MAX_NOTIFY_IDS the notify carries no ids (the listener pulls the whole dataset)');
+});
+
+test('a backend write error mid-import stops with partial counts + a notify for what was written', async () => {
+  const { s, backend, notes } = svc();
+  const realPut = backend.put.bind(backend);
+  let n = 0;
+  (backend as any).put = async (ds: string, r: DataRecord) => { if (++n === 2) throw new Error('MDB_MAP_FULL'); return realPut(ds, r); };
+  const out = ok(await s.importRaw(LOCAL, 'ds', [rec('a', 1, {}), rec('b', 1, {}), rec('c', 1, {})], { policy: 'merge', dryRun: false }));
+  assert.equal(out.failed?.code, 'IMPORT_FAILED');
+  assert.match(out.failed!.reason, /"b".*MDB_MAP_FULL/);
+  assert.equal(out.counts.add, 1, 'only a was written');
+  assert.deepEqual(notes, [['ds', 'changed', ['a']]], 'what was written is still change-notified');
+});
+
+test('a dataset demoted to a replica mid-import stops the import (owner re-checked under the lock)', async () => {
+  const { s, datasets, backend } = svc();
+  const realGet = backend.get.bind(backend);
+  let demoted = false;
+  (backend as any).get = async (ds: string, id: string) => {
+    if (id === 'b' && !demoted) { demoted = true; datasets.demoteToReplica('ds', { machineId: 'gw-n', hostname: 'n', os: 'linux' }, 'gw-n'); }
+    return realGet(ds, id);
+  };
+  const out = ok(await s.importRaw(LOCAL, 'ds', [rec('a', 1, {}), rec('b', 1, {}), rec('c', 1, {})], { policy: 'merge', dryRun: false }));
+  assert.equal(out.failed?.code, 'READ_ONLY_REPLICA');
+  assert.equal(await realGet('ds', 'c'), null, 'nothing is written onto the replica');
+  const put = await s.put(LOCAL, 'ds', { id: 'z', version: 0, fields: {}, createdAt: '', updatedAt: '' });
+  assert.equal(put.ok, false);
 });

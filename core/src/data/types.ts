@@ -175,6 +175,9 @@ export interface ManifestEntry {
   /** machineId this owner took the dataset over from (descriptor `supersedes`). Old
    *  builds ignore the unknown field; the named node demotes itself when safe. */
   supersedes?: string;
+  /** When that takeover happened (the marker's `at`). Orders two takeovers in opposite
+   *  directions: the NEWER one wins, so two nodes can never both demote in one round. */
+  supersedesAt?: string;
 }
 
 export interface PeerClient {
@@ -241,4 +244,8 @@ export interface ImportOutcome {
   counts: Record<ImportBucket, number>;
   /** Up to IMPORT_SAMPLE_MAX record ids per bucket, in input order. */
   samples: Record<ImportBucket, string[]>;
+  /** Set when the apply STOPPED part-way (a backend write error, or the dataset was demoted
+   *  to a replica mid-import). counts/samples then describe what was done before the stop,
+   *  and the rows already written were change-notified. */
+  failed?: { code: string; reason: string };
 }

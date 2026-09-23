@@ -25,7 +25,7 @@ import { BundleStore } from '../../data/bundle/store';
 import { BundleService, type BundleServiceDeps } from '../../data/bundle/service';
 import type { PeerRoster, RosterSnapshot } from '../../data/bundle/roster';
 import type { BundleEntry, BundleSource } from '../../data/bundle/format';
-import type { DataRecord, DatasetDescriptor, NodeInfo, NodeOrigin, SyncStatus } from '../../data/types';
+import type { DataRecord, DatasetDescriptor, ManifestEntry, NodeInfo, NodeOrigin, SyncStatus } from '../../data/types';
 
 export const tmp = (p = 'svc-') => fs.mkdtempSync(path.join(os.tmpdir(), p));
 export const SELF = thisNodeId();
@@ -43,6 +43,13 @@ export class FakeRoster implements PeerRoster {
     return { available: true, peers: new Map(this.peers.map((p) => [p.node, p])), fetchedAt };
   }
   online(...nodes: string[]): this { this.peers = nodes.map((n) => ({ node: n, hostname: `host-${n}`, platform: 'linux' })); return this; }
+  /** Per-node sync manifests (the "does another online node already OWN it" probe). */
+  manifests: Record<string, ManifestEntry[] | Error> = {};
+  async manifest(node: string): Promise<ManifestEntry[]> {
+    const m = this.manifests[node];
+    if (m instanceof Error) throw m;
+    return m ?? [];
+  }
 }
 
 export interface TestNode {

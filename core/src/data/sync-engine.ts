@@ -7,6 +7,7 @@ import type { BackendRegistry } from './backend-registry';
 import type {
   PeerClient, SyncStatus, ManifestEntry, NodeInfo, NodeOrigin, BackendConfig, DataRecord, StorageBackend,
 } from './types';
+import { isNewer } from './types';
 import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
 import { KeyedLocks } from './key-lock';
 
@@ -160,7 +161,19 @@ export class SyncEngine {
     return { ...this._status, errors: [...this._status.errors] };
   }
 
-  async reconcile(): Promise<SyncStatus> {
+  /** The run in flight. reconcile() is single-flight: the 300 s interval, the boot run and a
+   *  manual /data/sync share one pass instead of racing each other through
+   *  resolveSuperseded's check-then-demote window. */
+  private inflight: Promise<SyncStatus> | null = null;
+
+  reconcile(): Promise<SyncStatus> {
+    if (this.inflight) return this.inflight;
+    const run = this.reconcileOnce().finally(() => { if (this.inflight === run) this.inflight = null; });
+    this.inflight = run;
+    return run;
+  }
+
+  private async reconcileOnce(): Promise<SyncStatus> {
     const s: SyncStatus = {
       lastRun: new Date().toISOString(),
       peersChecked: 0,
@@ -225,7 +238,14 @@ export class SyncEngine {
         // triggers it; any other dual-owner cause keeps today's LWW merge below.
         if (m.supersedes && m.supersedes === selfId) {
           const localDesc = this.deps.datasets.get(m.id);
-          if (localDesc && !localDesc.origin) {
+          // Two takeovers in OPPOSITE directions (this node took it back from the peer after
+          // the peer took it from us): each side's manifest names the other. The NEWER
+          // takeover wins deterministically — the side holding it keeps ownership and merely
+          // pulls — so the two can never both demote in one round and leave zero owners. A
+          // peer marker without a time (old build) never out-ranks our own marker.
+          const ourTakeoverWins = !!localDesc?.supersedes && localDesc.supersedes.machineId === peer.node
+            && (!m.supersedesAt || (localDesc.supersedes.at || '') >= m.supersedesAt);
+          if (localDesc && !localDesc.origin && !ourTakeoverWins) {
             try {
               const r = await this.resolveSuperseded(peer, m, s);
               s.datasetsReplicated++;
@@ -354,8 +374,18 @@ export class SyncEngine {
     const backend = this.deps.backends.get(m.backend);
     if (!backend) return { applied: 0, skipped: 0 };
 
+    const who = peerLabel(peer);
     const peerRecords = await this.deps.peers.exportFrom(peer.node, m.id);
     const applied = await backend.importBatch(m.id, peerRecords, origin);
+
+    // The peer copy must be COMPLETE for the stranded count to mean anything. One export is
+    // capped (sql LIMIT / cache maxScan, in key order — not pageable from here), and a peer
+    // client answers [] on any transport error. Either way: stay dual-owner, and say why
+    // instead of reporting a misleading "N records not yet on P".
+    if (peerRecords.length >= EXPORT_PAGE_CAP) {
+      s.errors.push(`takeover ${m.id} by ${who}: cannot read ${who}'s full copy (${peerRecords.length} rows hit the ${EXPORT_PAGE_CAP}-row export cap) — staying dual-owner`);
+      return applied;
+    }
 
     const local = await exportAllRecords(backend, m.id);
     const theirs = new Map(peerRecords.map((r) => [r.id, r]));
@@ -365,14 +395,14 @@ export class SyncEngine {
       if (!peerCopy) { if (rec.deleted !== true) stranded++; continue; }
       if (strictlyNewer(rec, peerCopy)) stranded++;
     }
-    const who = peerLabel(peer);
     if (!local.complete) {
       // Cannot prove nothing would be stranded — staying an owner is the safe side.
       s.errors.push(`takeover ${m.id} by ${who}: local export incomplete (${local.reason}) — staying dual-owner`);
       return applied;
     }
     if (stranded > 0) {
-      s.errors.push(`takeover ${m.id} by ${who}: ${stranded} local records not yet on ${who} — staying dual-owner until ${who} pulls them`);
+      const empty = peerRecords.length === 0 ? ` (${who} returned no records — unreachable, or its copy is empty)` : '';
+      s.errors.push(`takeover ${m.id} by ${who}: ${stranded} local records not yet on ${who}${empty} — staying dual-owner until ${who} pulls them`);
       return applied;
     }
     this.deps.datasets.demoteToReplica(m.id, origin, peer.node);
@@ -404,6 +434,14 @@ export class SyncEngine {
     const backend = this.deps.backends.get(m.backend);
     if (!backend) return { applied: 0, skipped: 0 };
 
+    // This node TOOK OVER the dataset from `peer`, which is back and still an owner: it may
+    // hold records written while it was partitioned (or ones our replica never pulled
+    // before the takeover). Those sort BELOW our watermark — our own post-takeover writes
+    // advanced it — so a watermark pull would never fetch them, the peer would count them
+    // stranded forever, and neither side would ever converge. Pull its FULL copy instead.
+    const localDesc = this.deps.datasets.get(m.id);
+    const fromSuperseded = !!localDesc && !localDesc.origin && localDesc.supersedes?.machineId === peer.node;
+
     // Compute watermark = max updatedAt of records already in local replica.
     // EXCEPTION: fleet-scoped metadata datasets (node-clusters, cluster-meta) are tiny
     // and MULTI-WRITER — every node writes its OWN record. A single global per-dataset
@@ -412,7 +450,7 @@ export class SyncEngine {
     // hostname→gatewayId resolution for cluster_assign breaks). They're cheap to re-pull
     // whole, so always full-sync them (since=undefined) and let importBatch LWW reconcile.
     const local = await backend.exportSince(m.id);
-    const since = m.scope === 'fleet'
+    const since = m.scope === 'fleet' || fromSuperseded
       ? undefined
       : local.length
         ? local.reduce(
@@ -423,6 +461,45 @@ export class SyncEngine {
 
     // Fetch records newer than the watermark (or ALL records for fleet datasets)
     const peerRecords = await this.deps.peers.exportFrom(peer.node, m.id, since);
-    return backend.importBatch(m.id, peerRecords, origin);
+    if (!fromSuperseded) return backend.importBatch(m.id, peerRecords, origin);
+    return this.adoptFromSuperseded(backend, m.id, peerRecords, local, origin, peer);
+  }
+
+  /**
+   * LWW-merge the superseded origin's full copy, then RE-STAMP every record it actually
+   * won (version+1, updatedAt=now, owned): our downstream replicas pull by an updatedAt
+   * watermark too, and the adopted records carry the peer's OLD updatedAt — without the
+   * re-stamp they would reach this node and stop here. A record this node deleted and whose
+   * tombstone the retention GC already purged comes back here — the LWW outcome, and far
+   * better than a permanent divergence — so the count is logged.
+   */
+  private async adoptFromSuperseded(
+    backend: StorageBackend,
+    dataset: string,
+    peerRecords: DataRecord[],
+    local: DataRecord[],
+    origin: NodeOrigin,
+    peer: NodeInfo,
+  ): Promise<{ applied: number; skipped: number }> {
+    const mine = new Map(local.map((r) => [r.id, r]));
+    const wins = peerRecords.filter((r) => isNewer({ ...r, origin }, mine.get(r.id) ?? null));
+    const res = await backend.importBatch(dataset, peerRecords, origin);
+    let restamped = 0;
+    let resurrected = 0;
+    for (const w of wins) {
+      await this.locks.withLock(`${dataset}:${w.id}`, async () => {
+        const cur = await backend.get(dataset, w.id);
+        // Only the exact copy importBatch just landed — a concurrent local write wins as is.
+        if (!cur || cur.version !== w.version || cur.updatedAt !== w.updatedAt || cur.origin?.machineId !== origin.machineId) return;
+        await backend.put(dataset, { ...cur, version: cur.version + 1, updatedAt: new Date().toISOString(), origin: undefined });
+        restamped++;
+        if (!mine.has(w.id) && w.deleted !== true) resurrected++;
+      });
+    }
+    if (restamped) {
+      console.log(`[sync-engine] ${dataset}: adopted ${restamped} record(s) from ${peerLabel(peer)} (the node this one took it over from)`
+        + (resurrected ? `; ${resurrected} were absent here — new on ${peerLabel(peer)}, or deleted here with the tombstone already purged` : ''));
+    }
+    return res;
   }
 }

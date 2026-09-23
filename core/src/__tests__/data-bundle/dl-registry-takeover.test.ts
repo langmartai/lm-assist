@@ -153,5 +153,19 @@ test('syncManifest advertises supersedes (a machineId) only on descriptors that 
   datasets.create({ id: 'plain', backend: 'cache', visibility: 'cross-node-readable', syncMode: 'full', config: { kind: 'cache' } });
   const m = s.syncManifest({ type: 'local' });
   assert.equal(m.find((e) => e.id === 'backlog')?.supersedes, 'gw-old');
+  assert.equal(m.find((e) => e.id === 'backlog')?.supersedesAt, datasets.get('backlog')!.supersedes!.at, 'the takeover time orders opposite takeovers');
   assert.equal('supersedes' in m.find((e) => e.id === 'plain')!, false, 'no marker ⇒ no field (old builds ignore it anyway)');
+});
+
+test('promoteReplica refuses a PARTIAL replica (a read-through cache is not a copy; the origin could never demote onto it)', () => {
+  const r = new DatasetRegistry(tmpFile());
+  r.upsertReplica({ id: 'part', backend: 'cache', ownerNode: 'gw-old', syncMode: 'partial', config: { kind: 'cache' }, origin: ORIGIN });
+  assert.throws(() => r.promoteReplica('part'), (e: any) => e.code === 'NOT_SUPPORTED' && /partial replica/.test(e.message));
+  assert.equal(r.get('part')!.origin?.machineId, 'gw-old', 'still a replica');
+});
+
+test('create() can carry a supersedes marker (import-create of an offline owner\'s bundle)', () => {
+  const r = new DatasetRegistry(tmpFile());
+  const d = r.create({ id: 'x', backend: 'cache', config: { kind: 'cache' }, syncMode: 'full', supersedes: { machineId: 'gw-old', hostname: 'old-host', at: '2026-01-01T00:00:00.000Z' } });
+  assert.equal(d.supersedes?.machineId, 'gw-old');
 });

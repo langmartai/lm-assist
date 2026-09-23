@@ -23,7 +23,7 @@ import type { BundleSource, BundleEntry, BundleManifest, SectionSummary, Section
 import { isBundleId } from './format';
 import { BundleStore, getBundleStore, type StoredBundleInfo, type ChunkResult, type UploadChunkInput, type UploadChunkResult, type StoredImportResult } from './store';
 import type { PeerRoster, RosterSnapshot } from './roster';
-import { defaultRoster, isOnline } from './roster';
+import { defaultRoster, isOnline, ownerProbe } from './roster';
 import {
   classifyForExport, collectDatasets, datasetDiskBytes, findOrphans, importDatasetSection, neverExportReason,
   MISSIONS_DATASET, MISSIONS_RESERVED_IDS,
@@ -226,13 +226,20 @@ function defaultSelf(): BundleSelf {
   return { nodeId: thisNodeId(), hostname, platform: os.platform(), version, mode: isDevRepo() ? 'dev' : 'prod', cluster };
 }
 
+const DATA_SERVICE_OFF_WARNING = 'data-service-disabled: dataServiceEnabled is off on this node — imported datasets are stored but not served or replicated until it is enabled';
+
+function dataServiceOff(data: RawDataPort): boolean {
+  try { return typeof data.isEnabled === 'function' && data.isEnabled() === false; } catch { return false; }
+}
+
 function defaultNotify(d: DatasetDescriptor, ids: string[]): void {
   // Same guard DataService.notifyChange applies: only synced, non-sensitive datasets
   // travel, and a disabled bus is a silent no-op (the 300 s reconcile heals).
   if (d.sensitive || !d.syncMode || d.syncMode === 'none') return;
   try {
     const { getBus } = require('../../bus') as typeof import('../../bus');
-    getBus().publish(`data:${d.id}`, 'changed', { ids });
+    const { boundNotifyIds } = require('../data-service') as typeof import('../data-service');
+    getBus().publish(`data:${d.id}`, 'changed', { ids: boundNotifyIds(ids) });
   } catch { /* bus off / not ready */ }
 }
 
@@ -556,6 +563,7 @@ export class BundleService {
     const registry = this.d.registry();
     const data = this.d.data();
     const roster = this.memoRoster();
+    const owners = ownerProbe(this.roster(), roster);
     const configs = new Map(this.d.configProviders().map((p) => [p.id as string, p]));
     const files = new Map(this.d.filesProviders().map((p) => [p.id as string, p]));
 
@@ -564,6 +572,9 @@ export class BundleService {
     const warnings: string[] = [];
     if (bundle.manifest.source?.nodeId && bundle.manifest.source.nodeId !== self.nodeId) {
       warnings.push(`source: exported on ${bundle.manifest.source.hostname || bundle.manifest.source.nodeId} (${bundle.manifest.source.nodeId}), not this node`);
+    }
+    if (groups.has('datasets') && bundle.sections.some((x) => x.kind === 'dataset') && dataServiceOff(data)) {
+      warnings.push(DATA_SERVICE_OFF_WARNING);
     }
 
     for (const sec of bundle.sections) {
@@ -580,10 +591,12 @@ export class BundleService {
           sourceCluster: bundle.manifest.source?.cluster,
           roster,
           promote: async (id, patch) => { await this.promote(id, patch); },
+          onlineOwner: owners,
           now: this.d.now,
         });
         sections.push(p);
-        if (apply && !p.refused && (p.action === 'create' || p.action === 'takeover' || (p.applied && (p.applied.add || p.applied.update)))) {
+        // A section that stopped part-way still wrote rows: its caches must drop too.
+        if (apply && (p.action === 'create' || p.action === 'takeover' || (p.applied && (p.applied.add || p.applied.update)))) {
           touched.push(sec.id);
         }
         continue;
@@ -664,17 +677,37 @@ export class BundleService {
     }
     const origin = d.origin;
     const host = origin.hostname ? `${origin.hostname} (${origin.machineId})` : origin.machineId;
+    if (d.syncMode !== 'full') {
+      throw new BundleServiceError('NOT_SUPPORTED',
+        `"${datasetId}" is a ${d.syncMode ?? 'non-full'} replica — it caches only what was read and is not a copy of the dataset; restore from a bundle on the origin ${host}, or convert it to full sync first`);
+    }
     const snap = await this.roster().snapshot();
     if (snap.available && snap.peers.has(origin.machineId)) {
       throw new BundleServiceError('ORIGIN_ONLINE',
         `the origin of "${datasetId}", ${host}, is online — write there; a takeover is only for an origin that is gone`,
         { machineId: origin.machineId, hostname: origin.hostname });
     }
-    const forced = !snap.available;
-    if (forced && opts.force !== true) {
+    let forced = !snap.available;
+    if (!snap.available && opts.force !== true) {
       throw new BundleServiceError('ROSTER_UNAVAILABLE',
         `cannot tell whether the origin ${host} is online: ${snap.reason}. Pass force:true only if you know it is gone`,
         { machineId: origin.machineId, hostname: origin.hostname });
+    }
+    // The recorded origin being gone is not enough: another node may ALREADY have taken it
+    // over (or restored it) while this replica still points at the old origin.
+    const owner = await ownerProbe(this.roster(), async () => snap)(datasetId, d.scope);
+    if (owner.kind === 'owner') {
+      throw new BundleServiceError('OWNER_ONLINE',
+        `"${datasetId}" is already owned by ${owner.peer.hostname || owner.peer.node} (${owner.peer.node}), which is online — this replica has not re-pointed yet. Write there; a second owner would split the brain`,
+        { machineId: owner.peer.node, hostname: owner.peer.hostname });
+    }
+    if (owner.kind === 'unknown' && snap.available) {
+      if (opts.force !== true) {
+        throw new BundleServiceError('ROSTER_UNAVAILABLE',
+          `cannot tell whether another online node already owns "${datasetId}": ${owner.reason}. Pass force:true only if you know none does`,
+          { machineId: origin.machineId, hostname: origin.hostname });
+      }
+      forced = true;
     }
     const promoted = await this.promote(datasetId);
     try { this.d.invalidate([datasetId]); } catch { /* a cache hook must never fail the takeover */ }
