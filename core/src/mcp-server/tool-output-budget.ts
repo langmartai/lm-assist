@@ -331,6 +331,16 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
       'slice(offset, offset+limit) CONCATENATE (10 + "50" = "1050" -> 1,040 rows). ' +
       'Remeasure after deploy; datasets are user-extensible so this budget bounds the TOOL, not the data.',
   },
+  data_export: {
+    measuredBytes: 0, budgetBytes: 24000, bound: 'HARD_LIMIT', verdict: 'SAFE',
+    write: true,
+    note: 'Called with no arguments it is the INVENTORY — a pure read (one raw record count per ' +
+      'dataset, plus a hub roster read when a replica exists), which is what the guard measures. ' +
+      'Marked write because create writes a bundle file and delete removes one. Every list the ' +
+      'renderer prints is capped by rows AND bytes (60 datasets / 11 KB, 10 orphans, 6 hints) and ' +
+      'says what it dropped; worst cases (400 datasets, 500 orphans) are asserted under this budget ' +
+      'by data-bundle/mcp-output-size.test.ts. Never prints records — counts and ids only.',
+  },
 };
 
 /**
@@ -398,6 +408,12 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
   ].map((n) => [n, 'collector-only read; page-bounded, size asserted by backup-output-size.test.ts']),
   ...['backup_run', 'backup_remove',
   ].map((n) => [n, 'write: starts a capture or deletes backed-up data (repacking an archive)']),
+  // Data bundles. plan is a read, but apply/fetch/takeover write (and a received:<name>
+  // plan copies a file into the store), so the tool classifies by its worst action. Its
+  // renderer caps section rows (40 / 9 KB) and detail blocks (7 KB), and says what it
+  // dropped; worst cases are asserted by data-bundle/mcp-output-size.test.ts.
+  ...['data_import',
+  ].map((n) => [n, 'write: imports a bundle into the data service, fetches one from a peer, or takes over a dataset']),
   // Desktop automation writes. desktop_input can also return a screenshot IMAGE
   // block (not byte-counted by design), but it synthesizes real pointer/keyboard
   // events, so it is a write and never auto-invoked by the guard.

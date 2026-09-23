@@ -245,6 +245,13 @@ SINGLE-NODE
 CROSS-NODE: pass \`node=B\` to catalog/get/query/search/put/delete. **Request the key ON node B** (\`data_request_access(node=B)\`) — keys are per-node (else KEY_WRONG_NODE). \`synced\` datasets replicate A↔B; \`cross-node-readable\` allows the read. MANAGEMENT (create/drop/keys/sync/admin, raw SQL) is LOCAL-ONLY — run it from a Claude Code session on that host, not over the connector.
 GOTCHAS: request a key before reading; binary → read a byte range; big records are summarized → use field/grep/lines.
 
+BACKUP / MOVE / RESTORE (bundles; works over the connector) — replication is NOT a backup: a replica takes a bad write within one reconcile.
+1. \`data_export\` (no args) = inventory: owned vs replica datasets, origin online, record counts, sync errors — "is my data safe".
+2. \`data_export({action:"create"})\` writes \`lmb-…\` on that node: owned datasets + sanitized config (opt in includeReplicas / includeKnowledge / includeClaudeMemory). Secrets never travel.
+3. Move it: on the TARGET, \`data_import({action:"fetch", fromNode, bundle, node:<target>})\`.
+4. \`data_import({action:"plan", bundle})\` ALWAYS first (dry run; each refused section names its fix), then \`action:"apply"\` with confirm:true — without it nothing is written. Import never deletes; policy merge (default) | add-missing | replace.
+Import a dataset on its ORIGIN or its one intended owner: a node without it creates a second owner. Origin gone for good? \`data_import({action:"takeover", dataset})\` promotes the local replica (refused while the origin is online; force:true only when the roster is unreadable); a returning old origin demotes itself.
+
 FLOW
 \`\`\`mermaid
 flowchart LR

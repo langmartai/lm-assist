@@ -318,6 +318,11 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   data_revoke_key: 'write',
   data_sync: 'write',
   data_sync_status: 'read',
+  // data bundles (spec 2026-09-23): export reads the data service and writes or deletes
+  // bundle FILES on the node, never data; import writes data and takeover changes a
+  // dataset's owner, so data_import is admin (approval + audit)
+  data_export: 'read',
+  data_import: 'admin',
   // worker role
   set_role: 'write',
   report_status: 'write',

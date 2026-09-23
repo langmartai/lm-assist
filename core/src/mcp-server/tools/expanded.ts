@@ -42,6 +42,7 @@ import { FS_INSPECT_TOOL_DEFS, FS_INSPECT_HANDLERS } from './fs-inspect';
 import { UI_PAGES_TOOL_DEFS, UI_PAGES_HANDLERS } from './ui-pages';
 import { SESSION_MESSAGING_TOOL_DEFS, SESSION_MESSAGING_HANDLERS } from './session-messaging';
 import { DATA_TOOL_DEFS, DATA_HANDLERS } from './data-tools';
+import { DATA_BUNDLE_TOOL_DEFS, DATA_BUNDLE_HANDLERS } from './data-bundle';
 import { AUTH_STATUS_TOOL_DEFS, AUTH_STATUS_HANDLERS } from './auth-status';
 import { resolveCallerCandidates } from '../mcp-session-resolver';
 import { CLAUDE_CODE_ACCOUNT_TOOL_DEFS, CLAUDE_CODE_ACCOUNT_HANDLERS } from './claude-code-account';
@@ -1274,6 +1275,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...SESSION_MESSAGING_TOOL_DEFS,
   // data service (read: catalog/request_access/get/query; write: put/delete)
   ...DATA_TOOL_DEFS,
+  // data bundles — export (read) / import + takeover (admin)
+  ...DATA_BUNDLE_TOOL_DEFS,
   // credential health — claude.ai cookie + Claude Code OAuth (read, no secrets)
   ...AUTH_STATUS_TOOL_DEFS,
   ...CLAUDE_CODE_ACCOUNT_TOOL_DEFS,
@@ -2577,6 +2580,8 @@ export const EXPANDED_HANDLERS: Record<
   ...SESSION_MESSAGING_HANDLERS,
   // data service
   ...DATA_HANDLERS,
+  // data bundles — export / import / fetch / takeover
+  ...DATA_BUNDLE_HANDLERS,
   ...AUTH_STATUS_HANDLERS,
   ...CLAUDE_CODE_ACCOUNT_HANDLERS,
   ...CLAUDEAI_ACCOUNT_HANDLERS,
