@@ -117,7 +117,7 @@ const args = process.argv.slice(3);
 // Test hatch: require() with LM_ASSIST_NO_RUN=1 exports helpers and skips CLI execution.
 if (process.env.LM_ASSIST_NO_RUN === '1') { module.exports = { isNpmGreater }; return; }
 
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'doctor', 'help'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'mcp', 'doctor', 'help'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -142,7 +142,14 @@ Commands:
                      or 'login --new-node' on an authed node to mint one.
                      On enroll, registers the hub MCP in Claude Code so new
                      sessions get the worker-role tools (--no-mcp to skip).
+                     --mcp-profile P also writes 'lm-assist-P', pinned to that
+                     tool loading profile ('lm-assist-hub' is unchanged).
   logout             Remove the hub key and disconnect this node
+  mcp add --profile P [--stdio]
+                     Add Claude Code entry 'lm-assist-P' pinned to profile P:
+                     HTTP via the hub by default, --stdio for the local server.
+  mcp remove --profile P
+                     Remove that entry.
   upgrade [--from S]  Upgrade lm-assist (npm + plugin + restart).
                      --from S installs a specific build instead of npm latest:
                        a local .tgz, an unpacked dir, a bare version, or any
@@ -154,6 +161,9 @@ Examples:
   lm-assist login --new-node          # on an authed node: print a keypack
   lm-assist login lmkp_...            # on a fresh node: enroll with the keypack
   lm-assist logout
+  lm-assist mcp add --profile basic   # Claude Code entry 'lm-assist-basic' (HTTP via the hub)
+  lm-assist mcp add --profile basic --stdio
+  lm-assist mcp remove --profile basic
   lm-assist start
   lm-assist stop
   lm-assist status
@@ -521,6 +531,57 @@ function writeHubConfig(config) {
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
 }
 
+// ─── Helpers: Claude Code's ~/.claude.json (user-scope MCP servers) ───
+function claudeJsonPath() {
+  return path.join(os.homedir(), '.claude.json');
+}
+// Missing (or empty) → start fresh. Present but not JSON → REFUSE: Claude Code keeps its whole
+// state in this file (projects, account), and "start fresh" would overwrite all of it.
+function readClaudeJson() {
+  const p = claudeJsonPath();
+  let raw;
+  try { raw = fs.readFileSync(p, 'utf8'); } catch (e) {
+    if (e && e.code === 'ENOENT') return {};
+    throw e;
+  }
+  if (!raw.trim()) return {};
+  try { return JSON.parse(raw); } catch {
+    throw new Error(`${p} exists but is not valid JSON — refusing to overwrite it (Claude Code keeps its whole state there). Fix or move it, then re-run.`);
+  }
+}
+// The file carries the node key in an Authorization header — owner-only. `mode` only applies
+// on create, so chmod afterward to also tighten a pre-existing (group/world-readable) file.
+function writeClaudeJson(cfg) {
+  const p = claudeJsonPath();
+  fs.writeFileSync(p, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(p, 0o600); } catch { /* best-effort */ }
+}
+// The helpers ship beside THIS bin (…/core/dist). projectRoot may resolve to a different,
+// globally installed build that predates them — the doctor/upgrade blocks avoid it the same way.
+function loadClaudeMcpConfig() {
+  const own = path.join(path.dirname(path.dirname(__filename)), 'core', 'dist', 'utils', 'claude-mcp-config.js');
+  return require(fs.existsSync(own) ? own : path.join(projectRoot, 'core', 'dist', 'utils', 'claude-mcp-config'));
+}
+// The local stdio MCP server — the same resolution as the Settings install
+// (claude-code.routes.ts findMcpServerPath): dev mode → the dev repo's build, else this install's.
+function localMcpServerPath() {
+  const dev = getDevConfig();
+  if (dev.enabled && dev.repoPath) {
+    const p = path.join(dev.repoPath, 'core', 'dist', 'mcp-server', 'index.js');
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join(projectRoot, 'core', 'dist', 'mcp-server', 'index.js');
+}
+// The server a PINNED stdio entry runs: THIS bin's own build first, exactly as
+// loadClaudeMcpConfig picks its helpers. The CLI that understands --profile ships the server that
+// honours LM_MCP_PROFILE; projectRoot can instead resolve to a globally installed npm build
+// (getProjectRoot → findNpmPackage) whose server predates LM_MCP_PROFILE, and the pinned entry
+// would then silently serve the full surface. Falls back to the Settings-install resolution.
+function stdioMcpServerPath() {
+  const own = path.join(path.dirname(path.dirname(__filename)), 'core', 'dist', 'mcp-server', 'index.js');
+  return fs.existsSync(own) ? own : localMcpServerPath();
+}
+
 // ─── Helper: check if API is healthy ───
 async function isApiHealthy(port) {
   try {
@@ -759,6 +820,23 @@ if (command === 'login') {
     console.error('--ttl requires a positive integer (minutes), e.g. --ttl 15');
     process.exit(1);
   }
+  // --mcp-profile P: ALSO write 'lm-assist-P' pinned to that tool loading profile. Validated
+  // HERE, before anything touches the hub: a keypack is one-time, and finding a typo after
+  // redeeming it would burn it. 'lm-assist-hub' is written exactly as before and never re-pinned
+  // — the mission controller's mcp__lm-assist-hub__* surface needs every category.
+  let mcpProfile = null;
+  if (args.some(a => a === '--mcp-profile' || a.startsWith('--mcp-profile='))) {
+    if (newNode) { console.error('--mcp-profile applies when enrolling THIS node (lm-assist login <keypack>), not with --new-node.'); process.exit(1); }
+    if (args.includes('--no-mcp')) { console.error('--mcp-profile and --no-mcp contradict each other — drop one.'); process.exit(1); }
+    let cfgMod;
+    try { cfgMod = loadClaudeMcpConfig(); } catch (e) {
+      console.error(`--mcp-profile: could not load the MCP config helpers (${e.message}). Is the core built?`);
+      process.exit(1);
+    }
+    const r = cfgMod.resolveEntryProfile(cfgMod.readFlagValue(args, '--mcp-profile').value);
+    if (r.error) { console.error(`--mcp-profile: ${r.error}`); process.exit(1); }
+    mcpProfile = r.profile;
+  }
   const code = args.find(a => a.startsWith('lmkp_'));
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   (async () => {
@@ -805,21 +883,24 @@ if (command === 'login') {
       // local-Core startup-ordering problem. Opt out with --no-mcp.
       if (json.data.authenticated && !args.includes('--no-mcp')) {
         try {
-          const { deriveHubMcpUrl, upsertHubMcpServer, HUB_MCP_SERVER_NAME } =
-            require(path.join(projectRoot, 'core', 'dist', 'utils', 'claude-mcp-config'));
+          const { deriveHubMcpUrl, upsertHubMcpServer, upsertProfileMcpServer, HUB_MCP_SERVER_NAME } = loadClaudeMcpConfig();
           const hub = readHubConfig();
           const mcpUrl = deriveHubMcpUrl(hub.hubUrl);
           if (mcpUrl && hub.apiKey) {
-            const ccPath = path.join(os.homedir(), '.claude.json');
-            let cc = {};
-            try { cc = JSON.parse(fs.readFileSync(ccPath, 'utf8')); } catch { /* missing/non-JSON → start fresh */ }
-            // This file now carries the sk-key in an Authorization header — write
-            // it owner-only. `mode` only applies on create, so chmod afterward to
-            // also tighten a pre-existing (possibly group/world-readable) file.
-            const ccData = JSON.stringify(upsertHubMcpServer(cc, { url: mcpUrl, key: hub.apiKey }), null, 2);
-            fs.writeFileSync(ccPath, ccData, { mode: 0o600 });
-            try { fs.chmodSync(ccPath, 0o600); } catch { /* best-effort */ }
+            // One read, one write (owner-only — see writeClaudeJson) for both entries.
+            let cc = upsertHubMcpServer(readClaudeJson(), { url: mcpUrl, key: hub.apiKey });
+            const pinned = mcpProfile
+              ? upsertProfileMcpServer(cc, { profile: mcpProfile, transport: 'http', hubMcpUrl: mcpUrl, key: hub.apiKey })
+              : null;
+            if (pinned) cc = pinned.config;
+            writeClaudeJson(cc);
             console.log(`  ✓ Registered '${HUB_MCP_SERVER_NAME}' MCP for Claude Code — worker-role tools load in NEW sessions (${mcpUrl}).`);
+            if (pinned) {
+              console.log(`  ✓ Registered '${pinned.name}' — the ${pinned.profile} profile (${pinned.entry.url}).`);
+              console.log('    Both entries load in every session; keep one per session (project .mcp.json or claude --mcp-config) to save context.');
+            }
+          } else if (mcpProfile) {
+            console.error(`  (note: '--mcp-profile ${mcpProfile}' not written — no hub MCP URL/key in hub.json)`);
           }
         } catch (e) {
           console.error(`  (note: hub MCP not registered for Claude Code: ${e.message})`);
@@ -860,6 +941,69 @@ if (command === 'logout') {
       process.exit(1);
     }
   })();
+  return;
+}
+
+// ─── Handle `mcp` — Claude Code entries pinned to a tool loading profile ───
+// Writes 'lm-assist-<profile>' into ~/.claude.json (user scope). NEVER touches 'lm-assist-hub':
+// the mission controller and its playbooks call mcp__lm-assist-hub__* and need the full surface.
+if (command === 'mcp') {
+  let cfgMod;
+  try { cfgMod = loadClaudeMcpConfig(); } catch (e) {
+    console.error(`Error: could not load the MCP config helpers (${e.message}). Is the core built?`);
+    process.exit(1);
+  }
+  const parsed = cfgMod.parseMcpCliArgs(args);
+  if (parsed.error) { console.error(parsed.error); process.exit(1); }
+  if (!parsed.profile) { console.error(cfgMod.profileRequiredMessage()); process.exit(1); }
+  if (parsed.action === 'add') {
+    const v = cfgMod.resolveEntryProfile(parsed.profile);
+    if (v.error) { console.error(`Error: ${v.error}`); process.exit(1); }
+  }
+  try {
+    const cc = readClaudeJson();
+    if (parsed.action === 'remove') {
+      const r = cfgMod.removeProfileMcpServer(cc, parsed.profile);
+      if (!r.removed) {
+        console.log(`No '${r.name}' entry in ${claudeJsonPath()} — nothing to remove.`);
+        process.exit(0);
+      }
+      writeClaudeJson(r.config);
+      console.log(`✓ Removed '${r.name}' from ${claudeJsonPath()}. Running Claude Code sessions keep it until they restart.`);
+      process.exit(0);
+    }
+    let target;
+    if (parsed.stdio) {
+      const serverPath = stdioMcpServerPath();
+      if (!fs.existsSync(serverPath)) {
+        console.error(`Error: the local MCP server is not built at ${serverPath}.`);
+        process.exit(1);
+      }
+      target = { transport: 'stdio', command: 'node', args: [serverPath] };
+    } else {
+      const hub = readHubConfig();
+      const mcpUrl = cfgMod.deriveHubMcpUrl(hub.hubUrl);
+      if (!mcpUrl || !hub.apiKey) {
+        console.error('Error: this node is not enrolled with a hub (no hubUrl/apiKey in hub.json), so it has no hub MCP URL.');
+        console.error('  Enroll with `lm-assist login <keypack>`, or use --stdio for the local MCP server.');
+        process.exit(1);
+      }
+      target = { transport: 'http', hubMcpUrl: mcpUrl, key: hub.apiKey };
+    }
+    const r = cfgMod.upsertProfileMcpServer(cc, { profile: parsed.profile, ...target });
+    writeClaudeJson(r.config);
+    const where = r.entry.type === 'http'
+      ? r.entry.url
+      : `${r.entry.command} ${r.entry.args.join(' ')} (${cfgMod.PROFILE_PIN_ENV}=${r.profile})`;
+    console.log(`✓ Wrote '${r.name}' to ${claudeJsonPath()} — the ${r.profile} profile, ${r.entry.type} → ${where}`);
+    console.log('  It loads in NEW Claude Code sessions.');
+    console.log(`  Every enabled lm-assist entry loads its own tool list, so '${r.name}' next to '${cfgMod.HUB_MCP_SERVER_NAME}' costs MORE`);
+    console.log('  than either alone. Keep one per session (a project .mcp.json, or `claude --mcp-config`).');
+    process.exit(0);
+  } catch (e) {
+    console.error(`Error: ${e.message || e}`);
+    process.exit(1);
+  }
   return;
 }
 
