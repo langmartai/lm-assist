@@ -1,5 +1,111 @@
 # Changelog
 
+## [0.2.5] - 2026-09-23
+
+Pluggable agent harnesses, MCP tool loading profiles, the September round of fleet operations fixes, and
+the fix for a Windows Core that died silently and stayed down for three and a half days.
+
+### Upgrade notes
+- **Bundled plugin renamed:** `ext__langmart-design__<tool>` is now `ext__langmart__<tool>` (and
+  `/mcp-plugins/langmart-design/…` is `/mcp-plugins/langmart/…`). Run `refresh_connector_tools` so claude.ai
+  drops the old names; nodes still on 0.2.4 keep advertising them until they are upgraded.
+- **`elevated_exec`:** shell syntax and `%VAR%` expansion belong in `cmd`; each `args` entry now arrives as
+  exactly one literal argument. Stop pre-quoting args.
+- **`ccr_restart`** resumes natively by default; pass `native:false` for the old bridge behaviour.
+- **Windows:** the upgrade to 0.2.5 still runs 0.2.4's upgrade engine, which stops the elevated worker and
+  does not restart it. Run `schtasks /run /tn LmAssistElevatedWorker` once afterwards (or log off and on) —
+  the new Core watchdog lives in that worker. Later upgrades restart it themselves.
+
+### Added
+- **Pluggable agent harnesses: `/agent/execute` can run Qwen Code (`runner: "qwen"`) or OpenCode
+  (`runner: "opencode"`) against an OpenAI-compatible model gateway.** Gateway credentials are provider
+  profiles: `PUT /harness/provider/:name` (loopback only; stored 0600 in `~/.lm-assist/harness-providers.json`)
+  or `LM_HARNESS_BASE_URL` / `_API_KEY` / `_MODEL`. `GET /harness/status` lists each runner, a `--version`
+  probe of its CLI and the profiles without their keys. Both runners auto-approve every tool call (qwen runs
+  `--approval-mode yolo`) and are not a sandbox; abort kills the whole process group; background runs live in
+  memory only; resume is not supported. Token usage is real, cost is reported as unavailable (0).
+- **MCP tool loading profiles — `basic`, `langmart`, `extended`, `admin`.** A node can advertise a named subset
+  of its tools (new `mcp_profile` tool, or `POST /mcp-tools/profile`): measured on one node, `basic` lists 42
+  tools instead of 320, about 63K tokens back per conversation. The default is `admin` (everything), so
+  nothing changes on upgrade. Hidden tools are still callable; a claude.ai connector needs
+  `refresh_connector_tools` after a change, and only `admin` advertises that tool.
+- **Windows: the elevated worker restarts a prod Core that has died.** Every 30 s it probes the Core port and
+  reads `core-prod.pid`. A Core that is gone while its pidfile survives (a crash, an out-of-memory exit, Task
+  Manager) is restarted after three probes (~90 s, at most once per 10 minutes) — ONLY through the
+  `LmAssistCoreInteractive` task, whose principal decides Core's session and integrity level; without that
+  task the worker reports that it will not restart rather than start an elevated Core. A Core stopped on
+  purpose (`lm-assist stop`, the upgrader, `node_lifecycle exit` all remove the pidfile) stays down. Off:
+  `LM_CORE_WATCHDOG=0` or create `~/.lm-assist/elevated/watchdog.off`. State: the worker's
+  `GET 127.0.0.1:3110/health`. Measured: a hard-killed Core was back in about two minutes; before this, one
+  stayed down 3.5 days.
+- **`windows_terminal_create` takes `model`, `permissionMode`, `dangerouslySkipPermissions`, `remoteControl`,
+  `name` and `effort`.** Values the CLI would not accept are dropped, and the result carries the exact
+  `command` launched. Mission executors and the controller on Windows now get their `-n` title and effort, so
+  high/critical-priority missions launch at `--effort max` as they already did on tmux nodes.
+- **More working directories for `terminal_open_tab`, `agent_execute` and the GitHub git backend:**
+  `LM_ASSIST_CWD_ROOTS` (`;`-separated on every platform) or `~/.lm-assist/cwd-roots`. Every refusal now
+  states the effective policy and how to extend it.
+- **`scheduler_jobs` gains `pause` and `resume`**, so a misbehaving built-in loop can be stopped without a
+  deploy.
+
+### Changed
+- **The bundled LangMart plugin is `langmart` (v0.2.0, 33 read-only tools), replacing `langmart-design`.**
+  The three new tools read model onboarding/quarantine history and need a platform-admin key. On the first
+  boot after upgrading, `langmart` is seeded and enabled when its grants can be derived from
+  `~/.lm-assist/hub.json`; only once it is on is `langmart-design` turned off (disabled, not deleted). An
+  owner who had disabled `langmart-design` keeps `langmart` off, and it is never handed the hub key; if
+  `langmart` cannot be enabled, `langmart-design` stays on until it can.
+- **`ccr_restart` keeps the session's claude.ai/code link instead of minting a new one.** It resumes with
+  `claude --resume <sid> --remote-control` and reports `bridge.verdict` (`reclaimed`, `new-bridge`,
+  `first-bridge` or `none`) from the bridge id Claude Code records. Only a session that was already natively
+  remote-controlled can keep its link; `webUrl` is null if no bridge appears within 45 s. `ccr_preflight`
+  shows the owner's name and bridge id.
+- **`elevated_exec` delivers arguments intact.** `cmd` is passed to the shell verbatim (cmd.exe now runs
+  `/d /s /c` with the line unchanged — previously Node re-escaped it, so a quoted `node -e "…"` lost its
+  argument and `dir /b "*.json"` failed). Each `args[i]` is quoted for the program and caret-escaped for
+  cmd.exe, so spaces, quotes, `| > & ( ) ^ !` and `%VAR%` inside an arg are data; PowerShell args are
+  single-quoted literals. Verified end to end through the real shells.
+- **The Mission Controller session runs only while there is demand.** With no open missions — or none active
+  and none touched within `missionControllerColdMin` (default 60 min) — the leader tears the controller down
+  and does not launch one; it returns on the next tick that sees a mission created, updated or activated.
+  `0` turns the cold teardown off.
+- **A model with no known price now costs $0 instead of Claude Opus 4.6 rates.** This includes current Claude
+  model ids until the LiteLLM price list has loaded (or for the process's life if that fetch fails); add a
+  `modelPattern` to `core/data/model-pricing.json` to price one.
+
+### Fixed
+- **Event-bus catch-up no longer pins Core's CPU.** Each reconnecting peer calls `POST /bus/:topic/since` per
+  topic, and each call decoded every event of every topic for its `head`, then walked the whole topic to drop
+  what the caller had. It now reads the head index and seeks each origin's cursor: on a 140k-event store the
+  handler fell from ~930 ms to 0-2 ms, Core CPU from ~110% to 4%, and event-loop lag p99 from 12.9 s to 33 ms.
+- **A Core restarted by `node_lifecycle restart` logs and records its pid; `exit` releases the pidfile.** The
+  relaunched Core used to run with stdio ignored — it logged nothing for its whole life — and the pidfile kept
+  naming the Core that had exited.
+- **Windows upgrades restart the elevated worker.** The upgrade's process sweep killed it and nothing brought
+  it back until the next logon.
+- **An unknown `runner` is refused (`UNSUPPORTED_RUNNER`)** instead of silently running a Claude agent with the
+  caller's prompt and cwd; an empty string is refused too.
+- **Text reaches Windows Claude sessions in inactive Windows Terminal panes.** Text is typed into the target's
+  console input by PID instead of locating the tab by its title, which only the active pane shows; multi-line
+  text arrives as one bracketed paste.
+- **Folder-trust auto-accept picks "Yes" on Claude Code 2.1.257,** which highlights "No, exit" first — a newly
+  launched session used to quit at the trust screen.
+- **A non-leader never clears the leader's Mission Controller record** (which had made the leader launch a new
+  controller every tick). Before any launch the leader now kills local `lmcc-` controller tmux sessions other
+  than the recorded one — pass a different `tmuxPrefix` for Claude sessions that must survive on a leader.
+- **`ccr_restart` no longer aborts when a Linux session owner is a zombie;** `<defunct>` counts as dead.
+- **`auth_status` says why Claude Code OAuth is unusable** — `absent`, `unreadable`, `malformed` or
+  `unsupported` — and which file it checked. A token without a refresh token is valid but not refreshable
+  (`present` is now true for it; check `refreshable`).
+- **`scheduler_jobs update` works** — it answered "No job to update" for every job.
+- **A conversation bootstrapped through one node is not refused on another** when the data service runs: the
+  bootstrap flag is shared through a fleet-synced `mcp-bootstrap` dataset.
+- **Local Claude Code sessions see a plugin being enabled or disabled within ~30 s** without a restart.
+
+### Docs
+- Two developer articles in `docs/articles/` — "From a terminal to an iPad" and "The server build behind
+  it" — announced at the top of the README. The deploy guide covers the Windows Core watchdog.
+
 ## [0.2.4] - 2026-09-06
 
 Three finished branches that had been waiting since July and August, plus the Windows upgrade-engine

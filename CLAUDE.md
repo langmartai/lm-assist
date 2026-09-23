@@ -276,7 +276,7 @@ When releasing a new version, update the version in **all three files** before c
 |------|-------|---------|
 | `package.json` | `"version"` | npm package version (what `npm view lm-assist version` reports) |
 | `.claude-plugin/plugin.json` | `"version"` | Plugin version (shown in Claude Code plugin cache) |
-| `.claude-plugin/marketplace.json` | `plugins[0].version` | Marketplace listing version (used by plugin registry) |
+| `.claude-plugin/marketplace.json` | the `lm-assist` entry's `version` (not `plugins[0]` — that is another plugin) | Marketplace listing version (used by plugin registry) |
 
 **Release steps:**
 
