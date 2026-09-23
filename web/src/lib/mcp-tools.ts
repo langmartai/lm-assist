@@ -221,8 +221,16 @@ export interface ProfileConnectorRow {
   /** The claude.ai name a create uses: `lm-assist <hub> <profile>`. */
   name: string;
   /** claude.ai's connector on this URL, or null when there is none — or when claude.ai could not
-   *  be read at all (then `claudeaiError` is set, and null means UNKNOWN). */
+   *  be read at all (then `claudeaiError` is set, and null means UNKNOWN). With duplicates, the one
+   *  Core reports (connected first). */
   claudeai: ClaudeAiConnectorState | null;
+  /** How many MORE claude.ai connectors sit on this same URL. Absent when there are none. Delete
+   *  removes every one of them, so the UI must say how many. */
+  duplicates?: number;
+  /** Pinned to a profile this node does not know (a typo such as `/mcp/basci`, or a newer build's
+   *  profile). It is served the NODE DEFAULT (spec §3: fail open, visibly) — so it is shown, and
+   *  offered Delete only (never Create). */
+  unknown?: true;
 }
 
 /** The Connectors table's model: one flat row list, the unpinned row as `profile: null`. */
@@ -246,13 +254,25 @@ export interface ProfileConnectorsWire {
   unknownPins: Array<{ profile: string; url: string; connector: WireConn | null }>;
 }
 export function normalizeProfileConnectors(w: ProfileConnectorsWire): ProfileConnectorsStatus {
-  const row = (profile: string | null, r: { url: string; suggestedName: string; connector: WireConn | null }): ProfileConnectorRow => ({
-    profile, url: r.url, name: r.suggestedName,
-    claudeai: r.connector ? { ...r.connector, uuid: r.connector.uuid ?? '' } : null,
+  const state = (c: WireConn | null): ClaudeAiConnectorState | null => (c ? { ...c, uuid: c.uuid ?? '' } : null);
+  const row = (profile: string | null, r: { url: string; suggestedName: string; connector: WireConn | null; duplicates?: number }): ProfileConnectorRow => ({
+    profile, url: r.url, name: r.suggestedName, claudeai: state(r.connector),
+    ...(r.duplicates ? { duplicates: r.duplicates } : {}),
+  });
+  // The wire lists each unknown-pin connector on its own; the table has one row per URL, so group
+  // them by profile — the connected one shown, the rest counted as duplicates.
+  const byPin = new Map<string, Array<{ url: string; connector: WireConn | null }>>();
+  for (const u of w.unknownPins || []) byPin.set(u.profile, [...(byPin.get(u.profile) || []), u]);
+  const unknownRows = [...byPin.entries()].map(([profile, list]): ProfileConnectorRow => {
+    const best = [...list].sort((a, b) => Number(!!b.connector?.connected) - Number(!!a.connector?.connected))[0];
+    return {
+      profile, url: best.url, name: best.connector?.name ?? '', claudeai: state(best.connector), unknown: true,
+      ...(list.length > 1 ? { duplicates: list.length - 1 } : {}),
+    };
   });
   return { base: w.base || null, nodeDefault: w.nodeDefault,
     claudeaiError: w.claudeai.ok ? null : (w.claudeai.error || 'claude.ai unreadable'),
-    connectors: [row(null, w.unpinned), ...w.profiles.map((p) => row(p.profile, p))] };
+    connectors: [row(null, w.unpinned), ...w.profiles.map((p) => row(p.profile, p)), ...unknownRows] };
 }
 
 /** A node with no hub has no public MCP URL, and the GET refuses with `HUB_NOT_CONFIGURED`
@@ -288,6 +308,15 @@ export interface ProfileConnectorCreateResult {
   connector: WireConn;
   /** The one step left, in the reader's terms; null when the connector exists AND is connected. */
   nextStep?: string | null;
+}
+
+/** DELETE /mcp/profile-connectors/:profile — every claude.ai connector on that URL (duplicates
+ *  included). `failed` is non-empty when some could not be removed; those still exist. */
+export interface ProfileConnectorDeleteResult {
+  profile: string;
+  url: string;
+  removed: Array<{ uuid: string; name: string }>;
+  failed: Array<{ uuid: string; error: string }>;
 }
 
 /** GET /claude-ai/mcp/servers row, as far as the older-Core status fallback needs it. */
@@ -344,8 +373,39 @@ export function connectorStateLabel(
       ? { text: 'unknown — claude.ai could not be read', tone: 'unknown' }
       : { text: 'not created', tone: 'none' };
   }
-  if (c.connected) return { text: `connected${c.toolCount != null ? ` · ${c.toolCount} tools` : ''}`, tone: 'ok' };
-  return { text: `not connected${c.authStatus ? ` (${c.authStatus})` : ''} — ${CONNECT_STEP}`, tone: 'warn' };
+  const dup = duplicatesNote(row);
+  if (row.unknown) {
+    return {
+      text: `pinned to a profile this node does not know — served the node default · ${c.connected ? 'connected' : 'not connected'}${dup}`,
+      tone: 'warn',
+    };
+  }
+  if (c.connected) return { text: `connected${c.toolCount != null ? ` · ${c.toolCount} tools` : ''}${dup}`, tone: 'ok' };
+  return { text: `not connected${c.authStatus ? ` (${c.authStatus})` : ''} — ${CONNECT_STEP}${dup}`, tone: 'warn' };
+}
+
+/** ` (+N duplicate[s])` — or '' — for a row whose URL carries several claude.ai connectors. */
+export function duplicatesNote(row: ProfileConnectorRow): string {
+  const n = row.duplicates ?? 0;
+  return n > 0 ? ` (+${n} duplicate${n === 1 ? '' : 's'})` : '';
+}
+
+/** The Delete confirmation: names the connector and, with duplicates, that ALL of them go. */
+export function deleteConfirmLabel(row: ProfileConnectorRow): string {
+  const n = row.duplicates ?? 0;
+  const name = row.claudeai?.name || row.name || row.url;
+  return n > 0
+    ? `Delete "${name}" and its ${n} duplicate${n === 1 ? '' : 's'} (${n + 1} connectors) from claude.ai?`
+    : `Delete "${name}" from claude.ai?`;
+}
+
+/** The outcome line for a delete — how many went, and any that could not be removed. */
+export function deleteConnectorMessage(profile: string, r?: Partial<ProfileConnectorDeleteResult> | null): string {
+  const n = r?.removed?.length ?? 1;
+  const failed = r?.failed ?? [];
+  const what = n === 1 ? `the ${profile} connector` : `${n} connectors on the ${profile} URL (duplicates included)`;
+  return `Deleted ${what} from claude.ai. Conversations that had it lose its tools.`
+    + (failed.length ? ` ${failed.length} could not be deleted and still exist${failed.length === 1 ? 's' : ''}: ${failed.map((f) => `${f.uuid} (${f.error})`).join('; ')}.` : '');
 }
 
 /** Which button a row offers. The unpinned connector is never created or deleted from here —
@@ -357,7 +417,8 @@ export function connectorActions(
   ctx: { claudeaiError?: string | null; busy: string | null },
 ): { create: boolean; remove: boolean; disabled: boolean } {
   if (row.profile === null || ctx.claudeaiError) return { create: false, remove: false, disabled: true };
-  return { create: !row.claudeai, remove: !!row.claudeai, disabled: ctx.busy !== null };
+  // An unknown pin is never created from here (Core refuses the name) — only removed.
+  return { create: !row.claudeai && !row.unknown, remove: !!row.claudeai, disabled: ctx.busy !== null };
 }
 
 /** The outcome line for a create — always names what is still left to do. */
@@ -382,15 +443,25 @@ export function applyCreateResult(status: ProfileConnectorsStatus, r: ProfileCon
   };
 }
 
+/** A delete removes EVERY connector on that URL: the row loses its connector and its duplicates,
+ *  and an unknown-pin row (which exists only because a connector does) is dropped. */
 export function applyDeleteResult(status: ProfileConnectorsStatus, profile: string): ProfileConnectorsStatus {
   return {
     ...status,
-    connectors: status.connectors.map((row) => (row.profile === profile ? { ...row, claudeai: null } : row)),
+    connectors: status.connectors.flatMap((row) => {
+      if (row.profile !== profile) return [row];
+      if (row.unknown) return [];
+      const cleared: ProfileConnectorRow = { ...row, claudeai: null };
+      delete cleared.duplicates;
+      return [cleared];
+    }),
   };
 }
 
 /** The Status panel's connector lines: one per lm-assist connector of THIS hub that exists in
- *  claude.ai, replacing the old first-/langmart/i pick that showed one and hid the rest. */
+ *  claude.ai, replacing the old first-/langmart/i pick that showed one and hid the rest. That
+ *  includes a connector pinned to a profile this node does not know (served the node default —
+ *  shown as not OK, since it is not getting what its URL asks for), and a duplicate count. */
 export function connectorStatusLines(status: ProfileConnectorsStatus): ConnectorStatusLine[] {
   if (status.claudeaiError) return [{ label: 'Connector', ok: false, detail: `claude.ai unreadable — ${status.claudeaiError}` }];
   if (!status.base) return [{ label: 'Connector', ok: null, detail: 'no hub on this node, so no connector URL' }];
@@ -399,10 +470,11 @@ export function connectorStatusLines(status: ProfileConnectorsStatus): Connector
   return existing.map((r) => {
     const c = r.claudeai as ClaudeAiConnectorState;
     const state = c.connected ? 'connected' : `not connected${c.authStatus ? ` (${c.authStatus})` : ''}`;
+    const tools = c.connected && c.toolCount != null ? ` · ${c.toolCount} tools` : '';
     return {
-      label: r.profile ? `Connector · ${r.profile}` : 'Connector',
-      ok: c.connected,
-      detail: `${c.name || r.name} · ${state}${c.connected && c.toolCount != null ? ` · ${c.toolCount} tools` : ''}`,
+      label: r.profile ? `Connector · ${r.profile}${r.unknown ? ' (unknown profile)' : ''}` : 'Connector',
+      ok: r.unknown ? false : c.connected,
+      detail: `${c.name || r.name} · ${state}${tools}${r.unknown ? ' · pinned to a profile this node does not know — served the node default' : ''}${duplicatesNote(r)}`,
     };
   });
 }

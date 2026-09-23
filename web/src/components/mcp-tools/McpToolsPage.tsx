@@ -21,6 +21,8 @@ import {
   connectorStateLabel,
   connectorStatusLines,
   createConnectorMessage,
+  deleteConfirmLabel,
+  deleteConnectorMessage,
   legacyConnectorLine,
   noHubProfileConnectors,
   orderConnectorRows,
@@ -34,6 +36,7 @@ import {
   type McpProfileSummary,
   type McpToolRow,
   type ProfileConnectorCreateResult,
+  type ProfileConnectorDeleteResult,
   type ProfileConnectorsStatus,
   type ToolRegistryDocView,
   type ToolScope,
@@ -170,11 +173,16 @@ function ConnectorsTable({
               const act = connectorActions(row, { claudeaiError: data.claudeaiError, busy });
               const working = busy !== null && busy === row.profile;
               return (
-                <tr key={row.profile ?? '(unpinned)'}>
+                <tr key={row.profile === null ? '(unpinned)' : `${row.unknown ? 'unknown:' : ''}${row.profile}`}>
                   <td style={CONN_TD}>
                     <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-primary)' }}>{row.profile ?? 'unpinned'}</span>
                     {row.profile === null && (
                       <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>follows the node default ({data.nodeDefault})</div>
+                    )}
+                    {row.unknown && (
+                      <div style={{ fontSize: 10, color: 'rgba(251,191,36,0.95)' }}>
+                        not a profile on this node — served the node default ({data.nodeDefault})
+                      </div>
                     )}
                   </td>
                   <td style={CONN_TD}>
@@ -205,7 +213,7 @@ function ConnectorsTable({
                       ) : (
                         <ConfirmButton
                           label="Delete"
-                          confirmLabel={`Delete "${row.claudeai?.name ?? row.name}" from claude.ai?`}
+                          confirmLabel={deleteConfirmLabel(row)}
                           onConfirm={() => onDelete(row.profile as string)}
                           className="btn btn-xs btn-ghost"
                         />
@@ -684,9 +692,13 @@ export function McpToolsPage() {
     setConnectorBusy(name);
     setConnectorMsg(null);
     try {
-      await apiFetch(`/mcp/profile-connectors/${encodeURIComponent(name)}`, { method: 'DELETE' });
-      setConnectors((cur) => (cur ? applyDeleteResult(cur, name) : cur));
-      setConnectorMsg({ text: `Deleted the ${name} connector from claude.ai. Conversations that had it lose its tools.`, err: false });
+      const r = unwrapBody(await apiFetch<ProfileConnectorDeleteResult>(`/mcp/profile-connectors/${encodeURIComponent(name)}`, { method: 'DELETE' }));
+      // Every connector on that URL goes, duplicates included — the message says how many, and
+      // names any claude.ai refused (those still exist, so re-read instead of patching the row).
+      const failed = Array.isArray(r?.failed) && r.failed.length > 0;
+      if (failed) await loadConnectors();
+      else setConnectors((cur) => (cur ? applyDeleteResult(cur, name) : cur));
+      setConnectorMsg({ text: deleteConnectorMessage(name, r), err: failed });
     } catch (e) {
       setConnectorMsg({ text: `Delete for "${name}" failed: ${errText(e)}. Re-reading claude.ai…`, err: true });
       await loadConnectors();

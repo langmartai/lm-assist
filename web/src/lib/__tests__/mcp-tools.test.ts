@@ -22,6 +22,9 @@ import {
   connectorStateLabel,
   connectorStatusLines,
   createConnectorMessage,
+  deleteConfirmLabel,
+  deleteConnectorMessage,
+  duplicatesNote,
   legacyConnectorLine,
   noHubProfileConnectors,
   normalizeProfileConnectors,
@@ -278,16 +281,38 @@ describe('normalizeProfileConnectors (the REST wire shape → the table model)',
         { profile: 'platform', url: 'https://mcp.langmart.ai/mcp/platform', name: 'lm-assist langmart platform', claudeai: null },
         { profile: 'extended', url: 'https://mcp.langmart.ai/mcp/extended', name: 'lm-assist langmart extended', claudeai: null },
         { profile: 'admin', url: 'https://mcp.langmart.ai/mcp/admin', name: 'lm-assist langmart admin', claudeai: null },
+        // A connector of THIS hub pinned to a profile this node does not know: served the node
+        // default, and shown (spec §3: fail open, visibly) — never dropped.
+        { profile: 'nextgen', url: 'https://mcp.langmart.ai/mcp/nextgen', name: 'from a newer build', unknown: true,
+          claudeai: { uuid: '5d5d5d5d-0000-4000-8000-00000000000d', name: 'from a newer build', connected: true, authStatus: 'authenticated', toolCount: 3 } },
       ],
     });
   });
   it('feeds the helpers the page renders from without a TypeError', () => {
     const s = normalizeProfileConnectors(WIRE_FIXTURE);
-    expect(orderConnectorRows(s.connectors, status().profiles).map((r) => r.profile)).toEqual([null, 'basic', 'platform', 'extended', 'admin']);
+    expect(orderConnectorRows(s.connectors, status().profiles).map((r) => r.profile)).toEqual([null, 'basic', 'platform', 'extended', 'admin', 'nextgen']);
     expect(connectorStatusLines(s)).toEqual([
       { label: 'Connector', ok: true, detail: 'lm-assist langmart · connected · 320 tools' },
       { label: 'Connector · basic', ok: false, detail: 'lm-assist langmart basic · not connected (auth_required)' },
+      { label: 'Connector · nextgen (unknown profile)', ok: false,
+        detail: 'from a newer build · connected · 3 tools · pinned to a profile this node does not know — served the node default' },
     ]);
+  });
+  it('carries each row\'s duplicate count, and groups several connectors on one unknown pin into one row', () => {
+    const conn = (uuid: string, connected: boolean): WireConn => ({ uuid, name: `n-${uuid}`, connected, authStatus: null, toolCount: 1 });
+    const s = normalizeProfileConnectors({
+      ...WIRE_FIXTURE,
+      unpinned: { ...WIRE_FIXTURE.unpinned, duplicates: 2 },
+      unknownPins: [
+        { profile: 'basci', url: 'https://mcp.langmart.ai/mcp/basci', connector: conn('dead', false) },
+        { profile: 'basci', url: 'https://mcp.langmart.ai/mcp/basci', connector: conn('live', true) },
+      ],
+    });
+    expect(s.connectors[0].duplicates).toBe(2);
+    expect(s.connectors[1].duplicates).toBeUndefined();
+    const typo = s.connectors.filter((r) => r.profile === 'basci');
+    expect(typo).toHaveLength(1);
+    expect(typo[0]).toMatchObject({ unknown: true, duplicates: 1, claudeai: { uuid: 'live' } });
   });
   it('turns claudeai.ok:false into claudeaiError (with a fallback text) — the rows stay, as URLs', () => {
     const down = normalizeProfileConnectors({
@@ -414,6 +439,42 @@ describe('connectorStateLabel', () => {
     expect(s.tone).toBe('warn');
     expect(s.text).toContain('auth_required');
     expect(s.text).toContain(CONNECT_STEP);
+  });
+});
+
+describe('unknown pins and duplicates in the table', () => {
+  const typo = crow({ profile: 'basci', url: 'https://mcp.langmart.ai/mcp/basci', unknown: true, claudeai: made('typo') });
+  it('an unknown pin says it is served the node default, and offers Delete only', () => {
+    const st = connectorStateLabel(typo);
+    expect(st.tone).toBe('warn');
+    expect(st.text).toContain('served the node default');
+    expect(connectorActions(typo, { busy: null })).toEqual({ create: false, remove: true, disabled: false });
+    expect(connectorActions({ ...typo, claudeai: null }, { busy: null }).create).toBe(false);
+  });
+  it('duplicates show in the claude.ai cell and the Delete confirmation', () => {
+    const dup = crow({ profile: 'basic', claudeai: made('lm-assist langmart basic'), duplicates: 2 });
+    expect(duplicatesNote(dup)).toBe(' (+2 duplicates)');
+    expect(duplicatesNote(crow({ profile: 'basic', duplicates: 1 }))).toBe(' (+1 duplicate)');
+    expect(duplicatesNote(crow({ profile: 'basic' }))).toBe('');
+    expect(connectorStateLabel(dup).text).toBe('connected · 42 tools (+2 duplicates)');
+    expect(deleteConfirmLabel(dup)).toBe('Delete "lm-assist langmart basic" and its 2 duplicates (3 connectors) from claude.ai?');
+    expect(deleteConfirmLabel(crow({ profile: 'basic', claudeai: made('x') }))).toBe('Delete "x" from claude.ai?');
+    expect(connectorStatusLines(conns({ connectors: [dup] }))[0].detail).toBe('lm-assist langmart basic · connected · 42 tools (+2 duplicates)');
+  });
+  it('a delete clears the duplicates and drops an unknown-pin row', () => {
+    const s = conns({ connectors: [crow({ profile: 'basic', claudeai: made('b'), duplicates: 1 }), typo] });
+    const afterBasic = applyDeleteResult(s, 'basic');
+    expect(afterBasic.connectors[0]).toEqual(crow({ profile: 'basic' }));
+    expect(applyDeleteResult(s, 'basci').connectors.map((r) => r.profile)).toEqual(['basic']);
+  });
+  it('the delete message says how many went, and names any claude.ai refused', () => {
+    expect(deleteConnectorMessage('basic', { removed: [{ uuid: 'a', name: 'a' }], failed: [] }))
+      .toBe('Deleted the basic connector from claude.ai. Conversations that had it lose its tools.');
+    expect(deleteConnectorMessage('basic', { removed: [{ uuid: 'a', name: 'a' }, { uuid: 'b', name: 'b' }], failed: [] }))
+      .toContain('Deleted 2 connectors on the basic URL (duplicates included)');
+    expect(deleteConnectorMessage('basic', { removed: [{ uuid: 'a', name: 'a' }], failed: [{ uuid: 'b', error: 'claude.ai responded 500' }] }))
+      .toContain('1 could not be deleted and still exists: b (claude.ai responded 500).');
+    expect(deleteConnectorMessage('basic', null)).toContain('Deleted the basic connector');
   });
 });
 

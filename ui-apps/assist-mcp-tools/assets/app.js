@@ -1199,18 +1199,43 @@
    *  shape, so a caller reports it instead of throwing mid-paint. */
   function connNormalize(d) {
     if (!d || typeof d !== 'object' || !d.unpinned || !Array.isArray(d.profiles) || !d.claudeai) return null;
+    function state(c) { return c ? Object.assign({}, c, { uuid: c.uuid == null ? '' : c.uuid }) : null; }
     function row(profile, r) {
-      var c = r.connector;
-      return { profile: profile, url: r.url, name: r.suggestedName,
-        claudeai: c ? Object.assign({}, c, { uuid: c.uuid == null ? '' : c.uuid }) : null };
+      var out = { profile: profile, url: r.url, name: r.suggestedName, claudeai: state(r.connector) };
+      if (r.duplicates) out.duplicates = r.duplicates;
+      return out;
     }
+    // A connector pinned to a profile this node does not know is served the NODE DEFAULT — shown
+    // (fail open, visibly), Delete only. The wire lists each such connector on its own; one row
+    // per URL here, the connected one shown and the rest counted as duplicates.
+    var byPin = {};
+    var order = [];
+    (d.unknownPins || []).forEach(function (u) {
+      if (!Object.prototype.hasOwnProperty.call(byPin, u.profile)) { byPin[u.profile] = []; order.push(u.profile); }
+      byPin[u.profile].push(u);
+    });
+    var unknownRows = order.map(function (profile) {
+      var list = byPin[profile];
+      var best = list.slice().sort(function (a, b) {
+        return Number(!!(b.connector && b.connector.connected)) - Number(!!(a.connector && a.connector.connected));
+      })[0];
+      var out = { profile: profile, url: best.url, name: (best.connector && best.connector.name) || '',
+        claudeai: state(best.connector), unknown: true };
+      if (list.length > 1) out.duplicates = list.length - 1;
+      return out;
+    });
     var ca = d.claudeai;
     return {
       base: d.base || null,
       nodeDefault: d.nodeDefault,
       claudeaiError: ca.ok ? null : (ca.error || 'claude.ai unreadable'),
-      connectors: [row(null, d.unpinned)].concat(d.profiles.map(function (p) { return row(p.profile, p); })),
+      connectors: [row(null, d.unpinned)].concat(d.profiles.map(function (p) { return row(p.profile, p); }), unknownRows),
     };
+  }
+  /** ' (+N duplicate[s])' for a URL that carries several claude.ai connectors — Delete removes all. */
+  function connDupNote(row) {
+    var n = row.duplicates || 0;
+    return n > 0 ? ' (+' + n + ' duplicate' + (n === 1 ? '' : 's') + ')' : '';
   }
   /** A node with no hub refuses the GET with HUB_NOT_CONFIGURED: it has no public MCP URL, so
    *  the table is empty and says so — that is a state, not an error. */
@@ -1235,8 +1260,13 @@
   function connState(row, claudeaiError) {
     var c = row.claudeai;
     if (!c) return { text: claudeaiError ? 'unknown — claude.ai could not be read' : 'not created', cls: 'dim' };
-    if (c.connected) return { text: 'connected' + (c.toolCount != null ? ' · ' + c.toolCount + ' tools' : ''), cls: 'ok' };
-    return { text: 'not connected' + (c.authStatus ? ' (' + c.authStatus + ')' : '') + ' — ' + CONNECT_STEP, cls: 'warn' };
+    var dup = connDupNote(row);
+    if (row.unknown) {
+      return { text: 'pinned to a profile this node does not know — served the node default · '
+        + (c.connected ? 'connected' : 'not connected') + dup, cls: 'warn' };
+    }
+    if (c.connected) return { text: 'connected' + (c.toolCount != null ? ' · ' + c.toolCount + ' tools' : '') + dup, cls: 'ok' };
+    return { text: 'not connected' + (c.authStatus ? ' (' + c.authStatus + ')' : '') + ' — ' + CONNECT_STEP + dup, cls: 'warn' };
   }
   function connCreateMsg(res) {
     var step = String(res.nextStep || CONNECT_STEP).replace(/\.\s*$/, '');
@@ -1256,11 +1286,13 @@
     return existing.map(function (r) {
       var c = r.claudeai;
       return {
-        label: r.profile ? 'Connector · ' + r.profile : 'Connector',
-        ok: !!c.connected,
+        label: r.profile ? 'Connector · ' + r.profile + (r.unknown ? ' (unknown profile)' : '') : 'Connector',
+        ok: r.unknown ? false : !!c.connected,
         detail: (c.name || r.name) + ' · '
           + (c.connected ? 'connected' : 'not connected' + (c.authStatus ? ' (' + c.authStatus + ')' : ''))
-          + (c.connected && c.toolCount != null ? ' · ' + c.toolCount + ' tools' : ''),
+          + (c.connected && c.toolCount != null ? ' · ' + c.toolCount + ' tools' : '')
+          + (r.unknown ? ' · pinned to a profile this node does not know — served the node default' : '')
+          + connDupNote(r),
       };
     });
   }
@@ -1283,16 +1315,21 @@
     // is unreadable; one write at a time (the hub registers each with a read-modify-write).
     var locked = p === null || !!err;
     var act = '';
+    var dups = row.duplicates || 0;
     if (!locked) {
       if (state.connBusy && state.connBusy === p) act = btn('conn-busy', 'working…', 'ghost sm', p, true);
-      else if (!row.claudeai) act = btn('conn-create', 'Create', 'ghost sm', p, !!state.connBusy);
+      // An unknown pin is never created from here (Core refuses the name) — Delete only.
+      else if (!row.claudeai) act = row.unknown ? '' : btn('conn-create', 'Create', 'ghost sm', p, !!state.connBusy);
       else if (state.connArmed === p) {
-        act = btn('conn-del', 'Delete ' + ((row.claudeai && row.claudeai.name) || row.name) + ' from claude.ai', 'danger', p, !!state.connBusy)
+        act = btn('conn-del', 'Delete ' + ((row.claudeai && row.claudeai.name) || row.name)
+          + (dups ? ' and its ' + dups + ' duplicate' + (dups === 1 ? '' : 's') : '') + ' from claude.ai', 'danger', p, !!state.connBusy)
           + btn('conn-cancel', 'Cancel', 'ghost sm', p, !!state.connBusy);
       } else act = btn('conn-arm', 'Delete', 'ghost sm', p, !!state.connBusy);
     }
     return '<tr><td><span class="b">' + esc(p === null ? 'unpinned' : p) + '</span>'
-      + (p === null ? '<div class="dim">follows the node default (' + esc(d.nodeDefault) + ')</div>' : '') + '</td>'
+      + (p === null ? '<div class="dim">follows the node default (' + esc(d.nodeDefault) + ')</div>' : '')
+      + (row.unknown ? '<div class="warn">not a profile on this node — served the node default (' + esc(d.nodeDefault) + ')</div>' : '')
+      + '</td>'
       + '<td><span class="mono-inline">' + esc(row.url) + '</span> ' + btn('conn-copy', 'Copy', 'ghost sm', row.url) + '</td>'
       + '<td class="' + st.cls + '">' + (row.claudeai && row.claudeai.name ? esc(row.claudeai.name) + '<br>' : '')
       + esc(st.text) + '</td>'
@@ -1392,12 +1429,28 @@
         paintProfile();
         return loadConnectors();
       }
+      // Every connector on that URL goes, duplicates included: say how many, and name any claude.ai
+      // refused (those still exist — re-read instead of patching the row).
+      var res = r.data || {};
+      var removed = (res.removed || []).length || 1;
+      var failed = res.failed || [];
+      var text = 'Deleted ' + (removed === 1 ? 'the ' + profile + ' connector'
+        : removed + ' connectors on the ' + profile + ' URL (duplicates included)')
+        + ' from claude.ai. Conversations that had it lose its tools.'
+        + (failed.length ? ' ' + failed.length + ' could not be deleted and still exist' + (failed.length === 1 ? 's' : '') + ': '
+          + failed.map(function (f) { return f.uuid + ' (' + f.error + ')'; }).join('; ') + '.' : '');
+      state.connMsg = { text: text, err: failed.length > 0 };
+      if (failed.length) { paintProfile(); return loadConnectors(); }
       if (state.conn) {
-        state.conn.connectors = (state.conn.connectors || []).map(function (row) {
-          return row.profile === profile ? Object.assign({}, row, { claudeai: null }) : row;
-        });
+        state.conn.connectors = (state.conn.connectors || []).reduce(function (out, row) {
+          if (row.profile !== profile) { out.push(row); return out; }
+          if (row.unknown) return out; // it existed only because the connector did
+          var cleared = Object.assign({}, row, { claudeai: null });
+          delete cleared.duplicates;
+          out.push(cleared);
+          return out;
+        }, []);
       }
-      state.connMsg = { text: 'Deleted the ' + profile + ' connector from claude.ai. Conversations that had it lose its tools.', err: false };
       paintProfile();
       say('connector deleted for ' + profile);
     });
