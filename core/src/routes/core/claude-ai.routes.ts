@@ -75,6 +75,8 @@ import {
   setMcpToolsAccess,
   setMcpToolsAutoApprove,
   listMcpRemoteServers,
+  applyConnectorToolUpdates,
+  validateConnectorToolUpdates,
   listOrgStyles,
   getModelConfig,
   getMemorySettings,
@@ -244,7 +246,13 @@ async function resolveDrivenTools(body: Record<string, unknown>): Promise<{ tool
     try {
       const names = Array.isArray(enableConn) ? enableConn.map(String) : undefined;
       const roster = await listMcpRemoteServers();
-      const conn = pickLmAssistConnector((roster.body?.servers as unknown[] as never) || []);
+      // Optional `connectorProfile`: drive THAT profile's connector (exact, or no tools). Default:
+      // this node's unpinned connector, else admin, else the widest — chosen by URL, never by name.
+      const cp = body.connectorProfile ?? body.connector_profile;
+      const conn = pickLmAssistConnector(
+        (roster.body?.servers as unknown[] as never) || [],
+        typeof cp === 'string' && cp.trim() ? { profile: cp.trim() } : {},
+      );
       if (conn) {
         // Live defs = compiled-in built-ins + dynamically-registered third-party
         // plugin tools (ext__…). LM_ASSIST_TOOL_DEFS alone is baked at build time,
@@ -984,6 +992,22 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         const tools = Array.isArray(b.tools) ? b.tools.filter((t: unknown): t is string => typeof t === 'string') : undefined;
         try {
           return upstreamWrap(await setMcpToolsAutoApprove(uuid, enable, tools));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      } },
+
+    // POST /claude-ai/mcp/tool-settings/batch — several connectors' tool access + auto-approve in
+    //   ONE serialized read-modify-write of enabled_mcp_tools (the PATCH replaces the whole map, so
+    //   per-connector writes in parallel drop each other's keys). Body: { updates: [{ connectorUuid,
+    //   access?: {tool: bool}, autoApprove?: {enable, tools?, carryForward?} }] }. Deliberately NOT
+    //   under /claude-ai/mcp/servers: that prefix is on the hub relay allow-list; this is local upkeep.
+    { method: 'POST', pattern: /^\/claude-ai\/mcp\/tool-settings\/batch$/,
+      handler: async (req) => {
+        const v = validateConnectorToolUpdates(req.body || {});
+        if ('error' in v) return { success: false, error: v.error };
+        try {
+          return upstreamWrap(await applyConnectorToolUpdates(v.updates));
         } catch (err) {
           return catchOAuth(err);
         }

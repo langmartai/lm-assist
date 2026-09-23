@@ -78,7 +78,7 @@ core/scripts/deploy-prod.sh --force
 If this deploy changes MCP tool definitions, the claude.ai connector caches the
 old tool list. Refresh it (then start a **fresh** session to see the new tools):
 
-- via the lm-assist MCP: `refresh_connector_tools(connector="langmart")`, or
+- via the lm-assist MCP: `refresh_connector_tools()` (no argument refreshes every connector of this node — the unpinned one and each per-profile one; `connector="basic"` targets one profile), or
 - the claude.ai connector settings → **refresh tools** button.
 
 Pass `--refresh-tools` to have the script print this reminder at the end.

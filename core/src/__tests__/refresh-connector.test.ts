@@ -2,6 +2,10 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { REFRESH_CONNECTOR_HANDLERS } from '../mcp-server/tools/refresh-connector';
 
+// "Ours" is decided by URL against THIS node's public MCP base — pin it, never read the host's hub.json.
+const PROD = 'https://mcp.langmart.ai';
+process.env.MCP_PUBLIC_BASE = PROD;
+
 const realFetch = global.fetch;
 const calls: Array<{ method: string; url: string }> = [];
 
@@ -24,7 +28,7 @@ const SERVERS = [
   { uuid: '8f61a74e-9d48-44b6-9ba0-a8d4873a86c2', name: 'lm-assist langmart', url: 'https://mcp.langmart.ai/mcp', connected: true },
 ];
 
-test('refresh_connector_tools: auto-finds the langmart connector and clears its cache', async () => {
+test("refresh_connector_tools: no argument targets this node's connector (by URL) and clears its cache", async () => {
   stub((url) => (url.includes('/mcp/servers') && !url.includes('clear-cache') ? { servers: SERVERS } : { cleared: true }));
   const res = await REFRESH_CONNECTOR_HANDLERS.refresh_connector_tools({});
   assert.notEqual(res.isError, true);
@@ -101,4 +105,74 @@ test('set_connector_tool_access: ambiguous connector match errors with options',
   const res = await REFRESH_CONNECTOR_HANDLERS.set_connector_tool_access({ connector: 'mcp', block: ['detail'] });
   assert.equal(res.isError, true, '"mcp" appears in both urls -> ambiguous');
   assert.match(res.content[0].text, /matches 2|more specific/i);
+});
+
+// ── several connectors of one node (one per profile) ─────────────────────────
+
+const U = '8f61a74e-9d48-44b6-9ba0-a8d4873a86c2';
+const BASIC = { uuid: '3b3b3b3b-0000-4000-8000-00000000000b', name: 'lm-assist langmart basic', url: `${PROD}/mcp/basic`, connected: true };
+const DEVC = { uuid: '4c4c4c4c-0000-4000-8000-00000000000c', name: 'lm-assist dev', url: 'https://mcp.xeenhub.com/mcp', connected: true };
+const MULTI = [...SERVERS, BASIC, DEVC];
+const listing = (servers: unknown[]) => (url: string) =>
+  (url.endsWith('/claude-ai/mcp/servers') ? { servers } : { cleared: true });
+const clearedUuids = () => calls.filter((c) => c.url.endsWith('/clear-cache')).map((c) => c.url.split('/').slice(-2)[0]);
+
+test('refresh_connector_tools: no argument clears EVERY connector of this node — unpinned and per-profile — and nothing else', async () => {
+  stub(listing(MULTI));
+  const res = await REFRESH_CONNECTOR_HANDLERS.refresh_connector_tools({});
+  assert.notEqual(res.isError, true, res.content[0].text);
+  assert.deepEqual(clearedUuids().sort(), [U, BASIC.uuid].sort());
+  assert.match(res.content[0].text, /2 connectors/);
+});
+
+test('refresh_connector_tools: connector="basic" is a PROFILE name — only the connector pinned to it', async () => {
+  stub(listing(MULTI));
+  await REFRESH_CONNECTOR_HANDLERS.refresh_connector_tools({ connector: 'basic' });
+  assert.deepEqual(clearedUuids(), [BASIC.uuid]);
+});
+
+test('refresh_connector_tools: connector="langmart" (the deploy doc call) hits every connector on that hub, not an ambiguity error', async () => {
+  stub(listing(MULTI));
+  const res = await REFRESH_CONNECTOR_HANDLERS.refresh_connector_tools({ connector: 'langmart' });
+  assert.notEqual(res.isError, true, res.content[0].text);
+  assert.deepEqual(clearedUuids().sort(), [U, BASIC.uuid].sort());
+});
+
+test('refresh_connector_tools: an exact connector name targets that one even when it is a substring of others', async () => {
+  stub(listing(MULTI));
+  await REFRESH_CONNECTOR_HANDLERS.refresh_connector_tools({ connector: 'lm-assist langmart' });
+  assert.deepEqual(clearedUuids(), [U]);
+});
+
+test('refresh_connector_tools: a node on another hub never falls back to these connectors', async () => {
+  process.env.MCP_PUBLIC_BASE = 'https://mcp.other-hub.example';
+  try {
+    stub(listing([...SERVERS, BASIC]));
+    const res = await REFRESH_CONNECTOR_HANDLERS.refresh_connector_tools({});
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /No connector points at this node/);
+    assert.equal(clearedUuids().length, 0);
+  } finally {
+    process.env.MCP_PUBLIC_BASE = PROD;
+  }
+});
+
+test('set_connector_tool_access: several targets go out as ONE batched write, never per-connector writes', async () => {
+  const bodies: Array<{ url: string; body: any }> = [];
+  // @ts-expect-error stub
+  global.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
+    calls.push({ method: opts?.method || 'GET', url: String(url) });
+    if (opts?.body) bodies.push({ url: String(url), body: JSON.parse(opts.body) });
+    const data = String(url).endsWith('/claude-ai/mcp/servers') ? { servers: MULTI } : { totalKeys: 42, results: [] };
+    const env = { success: true, data };
+    const text = JSON.stringify(env);
+    return { ok: true, status: 200, async text() { return text; }, async json() { return env; } };
+  };
+  const res = await REFRESH_CONNECTOR_HANDLERS.set_connector_tool_access({ block: ['agent_execute'] });
+  assert.notEqual(res.isError, true, res.content[0].text);
+  assert.ok(!calls.some((c) => c.url.endsWith('/tool-access')), 'no per-connector read-modify-write');
+  const batch = bodies.filter((b) => b.url.endsWith('/claude-ai/mcp/tool-settings/batch'));
+  assert.equal(batch.length, 1);
+  assert.deepEqual(batch[0].body.updates.map((u: any) => u.connectorUuid).sort(), [U, BASIC.uuid].sort());
+  for (const u of batch[0].body.updates) assert.deepEqual(u.access, { agent_execute: false });
 });
