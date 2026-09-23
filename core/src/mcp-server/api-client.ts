@@ -11,6 +11,7 @@ import { lmAuthHeaders } from '../auth/api-token';
 import * as os from 'os';
 import * as path from 'path';
 import { startCore, startWeb } from '../service-manager';
+import { PROFILE_PIN_ENV, PROFILE_PIN_HEADER } from './registry/profiles';
 
 // ─── Configuration ──────────────────────────────────────────────────
 
@@ -46,10 +47,14 @@ interface ApiResponse<T> {
 
 // ─── HTTP Helpers ──────────────────────────────────────────────────
 
-async function post<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
+async function post<T>(
+  endpoint: string,
+  body: Record<string, unknown>,
+  extraHeaders: Record<string, string> = {},
+): Promise<T> {
   const res = await fetch(`${BASE_URL}${endpoint}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
+    headers: { 'Content-Type': 'application/json', ...lmAuthHeaders(), ...extraHeaders },
     body: JSON.stringify(body),
   });
 
@@ -113,6 +118,19 @@ export async function mcpReadConversation(args: Record<string, unknown>): Promis
 }
 
 /**
+ * The header that forwards THIS stdio server's profile pin (env LM_MCP_PROFILE) to Core,
+ * so the Core-side handlers — bootstrap, session_status, mcp_profile — and the result
+ * footer see the profile this process advertises. Empty when unpinned: Core then sees
+ * exactly the request it saw before pins existed. The raw pin is sent (Core resolves it
+ * against its OWN definitions), bounded to printable ASCII — a control character would
+ * make fetch throw and fail every forwarded call.
+ */
+export function profilePinHeaders(): Record<string, string> {
+  const pin = (process.env[PROFILE_PIN_ENV] || '').trim();
+  return pin ? { [PROFILE_PIN_HEADER]: pin.replace(/[^\x20-\x7e]/g, '?').slice(0, 64) } : {};
+}
+
+/**
  * Generic call for expanded-catalog tools — forwards {tool, args} to the
  * single `/mcp-call` shim, which dispatches via EXPANDED_HANDLERS. Lets new
  * read/write tools work over stdio without a per-tool endpoint + method.
@@ -121,7 +139,7 @@ export async function mcpGenericCall(
   tool: string,
   args: Record<string, unknown>,
 ): Promise<McpToolResult> {
-  return post<McpToolResult>('/mcp-call', { tool, args });
+  return post<McpToolResult>('/mcp-call', { tool, args }, profilePinHeaders());
 }
 
 // ─── Core API + Web Auto-Start ──────────────────────────────────────────────────

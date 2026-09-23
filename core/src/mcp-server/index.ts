@@ -27,6 +27,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { configureMcpServer, type McpToolDispatcher, getLmAssistInstructions } from './configure';
 import { getHubConfig } from '../hub-client/hub-config';
 import { hubHostOf, envLabelOf } from './fleet-identity';
+import { PROFILE_PIN_ENV, resolveEffectiveProfile, type EffectiveProfile } from './registry/profiles';
 import {
   ensureCoreApi,
   mcpSearch,
@@ -45,6 +46,21 @@ import { createHttpExtToolProvider, callPluginViaCore } from './plugins/ext-http
 import { createHttpOverlayProvider } from './registry/overlay-http';
 import { startToolsChangeWatcher } from './tools-change-watcher';
 
+// ─── Profile pin ──────────────────────────────────────────────────
+// A stdio server is one process per client entry, so its pin is the entry's own
+// (`claude mcp add lm-assist-basic -e LM_MCP_PROFILE=basic -- node …/index.js`). Read
+// ONCE. No pin ⇒ PINNED is undefined: tools/list re-reads the node default on every
+// request and no MCP context is installed, exactly as before pins.
+const PROFILE_PIN = (process.env[PROFILE_PIN_ENV] || '').trim() || undefined;
+const PINNED: EffectiveProfile | undefined = PROFILE_PIN ? resolveEffectiveProfile(PROFILE_PIN) : undefined;
+if (PINNED) {
+  console.error(
+    PINNED.unknownPin
+      ? `[MCP] ${PROFILE_PIN_ENV}="${PINNED.pin}" names no profile — serving the node default (${PINNED.name}) instead`
+      : `[MCP] profile pinned by ${PROFILE_PIN_ENV}: ${PINNED.name}`,
+  );
+}
+
 // ─── Server Setup ──────────────────────────────────────────────────
 
 const server = new Server(
@@ -52,7 +68,12 @@ const server = new Server(
   // tools.listChanged is a PROMISE: it is declared only because
   // startToolsChangeWatcher() below actually sends the notification. Advertising
   // a capability we do not honour would leave clients trusting a stale list.
-  { capabilities: { tools: { listChanged: true } }, instructions: getLmAssistInstructions() }
+  // Instructions are fixed at spawn, so they are built for this process's profile: its
+  // pin, else the node default in force NOW. Unpinned under the shipped default `admin`
+  // that is the pre-pin text byte for byte; under a narrowed node default the client is
+  // told which profile it is on, as an HTTP client is (spec §3). A later
+  // `mcp_profile set` reaches tools/list at once and the banner at the next spawn.
+  { capabilities: { tools: { listChanged: true } }, instructions: getLmAssistInstructions(PINNED ?? resolveEffectiveProfile(undefined)) }
 );
 
 /** Distinct server name per environment so the two connectors read apart. */
@@ -89,7 +110,12 @@ const dispatch: McpToolDispatcher = async (name, args) => {
 // Tool-registry overlay (spec §4.4): fetched from the core API per list/call with a
 // short TTL — registry edits apply live; core unreachable ⇒ fail-open defaults (the
 // core-side shim guards still reject disabled calls).
-configureMcpServer(server, dispatch, createHttpOverlayProvider(), createHttpExtToolProvider());
+// The pin (if any) narrows tools/list here and — forwarded as a header by api-client —
+// reaches the Core-side handlers on every /mcp-call.
+configureMcpServer(
+  server, dispatch, createHttpOverlayProvider(), createHttpExtToolProvider(),
+  PINNED ? { profile: PINNED } : undefined,
+);
 
 // ─── Main ──────────────────────────────────────────────────
 

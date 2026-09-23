@@ -553,7 +553,7 @@ import { hubHostOf, envLabelOf } from './fleet-identity';
 import {
   applyProfileToToolDefs, liveEffectiveProfile, profileNeedsExtTools, type EffectiveProfile,
 } from './registry/profiles';
-import { currentEffectiveProfile } from './principal-context';
+import { currentEffectiveProfile, currentMcpContext, runWithMcpContext } from './principal-context';
 
 /**
  * MCP `instructions` for THIS connector — the always-sent body prefixed with a
@@ -675,7 +675,11 @@ export function configureMcpServer(
     return { tools };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  // The CallTool body, as a function so a pinned stdio server can run it inside its
+  // pin's MCP context (registration at the end of this function). Unchanged otherwise.
+  const callTool = async (
+    request: { params: { name: string; arguments?: Record<string, unknown> } },
+  ): Promise<CallToolResult> => {
     const { name, arguments: rawArgs } = request.params;
     const args = (rawArgs || {}) as Record<string, unknown>;
     const t0 = Date.now();
@@ -726,5 +730,20 @@ export function configureMcpServer(
     // narrower `McpToolResult` to satisfy the typechecker without a
     // structural change at runtime.
     return result as CallToolResult;
-  });
+  };
+
+  // stdio has no per-request entry point that sets the MCP context (HTTP sets it in
+  // handleMcpRequest), so a PINNED stdio server installs its process pin here. That
+  // makes currentEffectiveProfile() the one read for everything on this seam — the
+  // bootstrap gate, bootstrap enrichment, the result footer — on both transports.
+  // An existing context (HTTP) is never replaced; an unpinned stdio server installs
+  // none, exactly as before. principal 'local' is what stdio IS, and the footer
+  // already reads "no context" as LOCAL, so no footer changes.
+  server.setRequestHandler(CallToolRequestSchema, async (request) =>
+    opts?.profile && !currentMcpContext()
+      ? runWithMcpContext(
+          { principal: { type: 'local' }, profile: liveEffectiveProfile(opts.profile) },
+          () => callTool(request),
+        )
+      : callTool(request));
 }
