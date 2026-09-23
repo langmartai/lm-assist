@@ -33,9 +33,12 @@ node that happens to answer.
 - A **pin** is a profile name carried by one request.
 - **Effective profile** = the pin when present and known; otherwise the **node default** (the existing
   file, default `admin`). A pin is never written to the file or to the module cache.
-- 🔴 **No pin ⇒ byte-identical output to today** — tools/list, instructions, footer, bootstrap. This is
-  the compatibility contract; the existing pinned tests (`result-origin.test.ts`,
-  `fleet-identity.test.ts`, `session-start-routing.test.ts`) keep passing unmodified.
+- 🔴 **No pin + node default `admin` (the shipped default) ⇒ byte-identical output to today** —
+  tools/list, instructions, footer, bootstrap. This is the compatibility contract; the existing pinned
+  tests (`result-origin.test.ts`, `fleet-identity.test.ts`, `session-start-routing.test.ts`) keep
+  passing unmodified. A node whose operator already narrowed the default (no pin, default `basic`) gets
+  the profile-aware banner and bootstrap too — the effective profile, not the pin, drives them. The
+  footer's `· profile` segment appears only when a pin is present.
 - Precedence is unchanged: the overlay wins (a disabled tool is off under every profile), the profile
   narrows, and PROTECTED_TOOLS (`bootstrap`, `guide`, `mcp_profile`, `session_status`) are always
   listed.
@@ -117,7 +120,9 @@ resolveEffectiveProfile(pin: string | undefined): EffectiveProfile   // no I/O b
 - No tool counting on `initialize`. The banner names the profile, not a live count.
 - When the effective profile has no `ext__` selector and is not `all`, tools/list **skips** the
   fleet plugin fan-out (`fleetExtToolDefs`, up to 5 s) — it would all be filtered out anyway.
-- tools/list writes one log line: effective profile, source, pin (if any), advertised count.
+- tools/list writes one line to the Core log (`[mcp] tools/list …`): effective profile, source, pin (if
+  any), advertised count. Not to `mcp-calls.jsonl` — that is a 1,000-line capped fleet dataset whose
+  tool-call history a per-request line would push out.
 
 ## 6. What the model is told
 
@@ -129,7 +134,9 @@ resolveEffectiveProfile(pin: string | undefined): EffectiveProfile   // no I/O b
   the other"); different **profiles on the same hub** share the same nodes and are NOT a failover —
   a failure on one will be on the other too.
 - **Footer** (`result-origin.ts`) gains `· profile <name>` only when a pin is present.
-- **`session_status`** reports the effective profile and its source.
+- **`session_status`** reports the effective profile and its source. The bootstrap page's own identity
+  block stays profile-unaware; the banner, `session_status`, the footer and bootstrap's closing
+  "hidden by this profile" line carry the profile.
 - **Bootstrap / guide** become profile-aware: a section whose governed tools are ALL hidden under the
   effective profile is left out; the page manifest is built from what is actually delivered (not from
   the static section order); one closing line lists what the profile hides and that the unpinned or
@@ -142,7 +149,9 @@ resolveEffectiveProfile(pin: string | undefined): EffectiveProfile   // no I/O b
   persist file and the fleet-shared `mcp-bootstrap` dataset without a schema change.
 - **`mcp_profile`**
   - `get` reports `{ effective, source, pin, nodeDefault }` plus this fleet's connector URL for each
-    profile and whether a claude.ai connector exists for it.
+    profile. It makes NO claude.ai call (it is a protected, always-listed tool, and reading claude.ai's
+    connector list is a ~30 s stream); it points at `mcp_connectors {action:"list"}` for per-profile
+    claude.ai status.
   - `set` changes the **node default only** (affects unpinned clients). On a pinned connector the reply
     says loudly that THIS connector did not change and names the connector that has the requested
     profile.
