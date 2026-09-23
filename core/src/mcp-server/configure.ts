@@ -38,7 +38,7 @@ import {
   NODE_PARAM,
 } from './tools/definitions';
 import { EXPANDED_TOOL_DEFS } from './tools/expanded';
-import { logToolCall } from './mcp-logger';
+import { logToolCall, logToolsList } from './mcp-logger';
 import { applyOverlayToToolDefs, isToolDisabled, disabledResult, type OverlayProvider, type ToolOverlay } from './registry/overlay';
 
 /** A third-party plugin tool as advertised on our surface: already namespaced
@@ -550,7 +550,10 @@ import { withOriginTag } from './result-origin';
 import { capToolResult, type ResultSize } from './result-cap';
 import { getHubConfig } from '../hub-client/hub-config';
 import { hubHostOf, envLabelOf } from './fleet-identity';
-import { applyProfileToToolDefs, activeProfileName } from './registry/profiles';
+import {
+  applyProfileToToolDefs, liveEffectiveProfile, profileNeedsExtTools, type EffectiveProfile,
+} from './registry/profiles';
+import { currentEffectiveProfile } from './principal-context';
 
 /**
  * MCP `instructions` for THIS connector — the always-sent body prefixed with a
@@ -558,8 +561,13 @@ import { applyProfileToToolDefs, activeProfileName } from './registry/profiles';
  * BOTH lm-assist connectors attached can tell them apart and pick the right one
  * up-front (not just from the per-result origin footer). Resolved at connect
  * time from the hub this instance serves. NEVER throws.
+ *
+ * `profile` is the effective profile of the connector being served — HTTP passes the
+ * request's resolution (buildServer), a pinned stdio server its process pin. With no
+ * argument, or a node-default resolution to `admin`, the text MUST stay byte-identical
+ * to the unpinned text: that is the compatibility contract for every existing client.
  */
-export function getLmAssistInstructions(): string {
+export function getLmAssistInstructions(profile?: EffectiveProfile): string {
   let hub: string | null = null;
   let hostname = '';
   try {
@@ -584,6 +592,16 @@ export function getLmAssistInstructions(): string {
 /** @deprecated Back-compat alias — prefer getLmAssistInstructions() (env-aware). */
 export const LM_ASSIST_INSTRUCTIONS = LM_ASSIST_INSTRUCTIONS_BODY;
 
+/** Per-server options for configureMcpServer. */
+export interface ConfigureMcpOptions {
+  /**
+   * The profile this server serves. HTTP builds one Server per request and passes the
+   * request's resolution; a pinned stdio server passes its process pin. Absent ⇒ the
+   * request context's profile, else the node default — the behaviour before pins.
+   */
+  profile?: EffectiveProfile;
+}
+
 /**
  * @param overlay Optional tool-registry overlay provider (spec §4.4). When present,
  *   tools/list drops disabled tools + swaps overridden descriptions, and tools/call
@@ -591,12 +609,15 @@ export const LM_ASSIST_INSTRUCTIONS = LM_ASSIST_INSTRUCTIONS_BODY;
  *   apply live with no restart. Absent ⇒ identical behavior to before the registry
  *   existed. Provider errors fail open (defaults served) — the registry is a
  *   management layer, not a security boundary.
+ * @param opts Per-server options (the effective profile). Optional and last, so every
+ *   existing caller is unchanged.
  */
 export function configureMcpServer(
   server: Server,
   dispatch: McpToolDispatcher,
   overlay?: OverlayProvider,
   extTools?: ExtToolDefsProvider,
+  opts?: ConfigureMcpOptions,
 ): void {
   assertScopesCoverTools();
 
@@ -631,17 +652,28 @@ export function configureMcpServer(
   // cost knob behave like a permission, which it is not — TOOL_SCOPES and the admin
   // gate are the security boundary and are untouched here.
   //
-  // This is the seam BOTH transports cross (index.ts:92 stdio, mcp.routes.ts:99 HTTP),
-  // so one filter covers Claude Code and the claude.ai connector alike.
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: applyProfileToToolDefs(
-      applyOverlayToToolDefs(
-        [...LM_ASSIST_TOOL_DEFS, ...(await currentExtDefs())],
-        await currentOverlay(),
-      ),
-      activeProfileName(),
-    ),
-  }));
+  // This is the seam BOTH transports cross (index.ts stdio, mcp.routes.ts HTTP), so one
+  // filter covers Claude Code and the claude.ai connector alike.
+  //
+  // WHICH profile: this server's own (HTTP builds a Server per request and passes the
+  // request's resolution; a pinned stdio server passes its process pin), else the
+  // request context's, else the node default. liveEffectiveProfile keeps a PIN fixed but
+  // re-reads a node-default resolution, so a stdio server resolved at spawn still follows
+  // `mcp_profile set`. No disk beyond activeProfileName()'s 1.5 s cached read.
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const t0 = Date.now();
+    const effective = liveEffectiveProfile(opts?.profile ?? currentEffectiveProfile());
+    // The plugin list can cost a fleet fan-out (fleetExtToolDefs, up to 5 s). A profile
+    // with no ext__ selector would filter every one of those tools out below — skip it.
+    const extDefs = profileNeedsExtTools(effective.name) ? await currentExtDefs() : [];
+    const tools = applyProfileToToolDefs(
+      applyOverlayToToolDefs([...LM_ASSIST_TOOL_DEFS, ...extDefs], await currentOverlay()),
+      effective.name,
+    );
+    // One line to the Core log — never to mcp-calls.jsonl (see logToolsList).
+    logToolsList(effective, tools.length, Date.now() - t0);
+    return { tools };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: rawArgs } = request.params;
