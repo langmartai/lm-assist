@@ -62,6 +62,7 @@ import { createSessionMessagingRoutes } from './session-messaging.routes';
 import { createTransportRoutes } from './transport.routes';
 import { createUiPagesRoutes } from './ui-pages.routes';
 import { createRemoteControlRoutes } from './remote-control.routes';
+import { createDataBundleRoutes } from './data-bundle.routes';
 import { createDataRoutes } from './data.routes';
 import { createSchedulerRoutes } from './scheduler.routes';
 import { createWorkerRoutes } from './worker.routes';
@@ -145,6 +146,9 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createTransportRoutes(ctx),
     ...createUiPagesRoutes(ctx),
     ...createRemoteControlRoutes(ctx),
+    // BEFORE the data routes — first match wins, and `/data/:dataset/fetch` would capture
+    // POST /data/bundles/fetch.
+    ...createDataBundleRoutes(ctx),
     ...createDataRoutes(ctx),
     ...createSchedulerRoutes(ctx),
     ...createWorkerRoutes(ctx),
