@@ -1,5 +1,14 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the lm-assist imports: the bootstrap gate, bootstrap enrichment and
+// session_status read the node-default profile file under getDataDir() (a host whose
+// operator ran `mcp_profile set basic` keys markers `#basic`), and a bootstrap persists
+// its marker there. Never the developer's real ~/.lm-assist.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'session-resolver-'));
 import {
   SESSION_STATUS_HANDLERS,
   SESSION_STATUS_TOOL_DEFS,

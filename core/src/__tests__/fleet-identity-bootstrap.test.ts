@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+
+// Hermetic, BEFORE the lm-assist imports: bootstrap serves the node-default profile's
+// playbooks, read from the profile file under getDataDir(). Never the developer's real
+// ~/.lm-assist.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'fid-bootstrap-'));
 import { fleetIdentity } from '../mcp-server/fleet-identity';
 import { GUIDE_HANDLERS } from '../mcp-server/tools/guide';
 

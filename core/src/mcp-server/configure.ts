@@ -722,6 +722,15 @@ export function configureMcpServer(
     const { name, arguments: rawArgs } = request.params;
     const args = (rawArgs || {}) as Record<string, unknown>;
     const t0 = Date.now();
+    // The profile this call is served under — the same resolution tools/list advertised.
+    // The MCP context carries it on both transports: HTTP sets it in handleMcpRequest, and
+    // a pinned stdio server's wrapper (end of this function) installs
+    // liveEffectiveProfile(opts.profile). The fallback covers a context set without a
+    // profile. It must be the LIVE resolution, never raw opts.profile: for an unknown stdio
+    // pin, opts.profile still names the node default as it was at spawn. Undefined ⇒ the
+    // resolver falls back to the node default. It keys the bootstrap-gate marker
+    // (gateKeyFor): a narrowed bootstrap satisfies only its own profile.
+    const callProfile = currentEffectiveProfile() ?? (opts?.profile ? liveEffectiveProfile(opts.profile) : undefined);
 
     let result: McpToolResult;
     try {
@@ -730,7 +739,7 @@ export function configureMcpServer(
       // dispatch, so a gated write has no side effects. Fails open on any
       // uncertainty; LM_BOOTSTRAP_GATE=off disables. Sits at this seam so both
       // MCP transports are covered and REST/internal callers never see it.
-      const gated = await bootstrapGateCheck(name).catch(() => null);
+      const gated = await bootstrapGateCheck(name, callProfile).catch(() => null);
       result = gated ?? (isToolDisabled(await currentOverlay(), name) ? disabledResult(name) : await dispatch(name, args));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -739,7 +748,7 @@ export function configureMcpServer(
     // On bootstrap, hand the conversation its own id back (resolved from the node APIs) + record it.
     // Only on bootstrap → no per-call latency / claude.ai load, and no risk of a wrong auto-nudge.
     if (name === 'bootstrap' && !result.isError) {
-      try { result = await enrichBootstrapWithIdentity(result); } catch { /* never break bootstrap */ }
+      try { result = await enrichBootstrapWithIdentity(result, callProfile); } catch { /* never break bootstrap */ }
     }
     // HARD per-result byte ceiling — the guardrail that makes it impossible for ONE tool
     // call to exceed the context window and destroy the conversation (see result-cap.ts

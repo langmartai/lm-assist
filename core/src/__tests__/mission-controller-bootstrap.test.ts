@@ -1,5 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the lm-assist imports: the controller module reaches the MCP identity
+// modules, the hub config and the data dir under getDataDir(). Never the developer's real
+// ~/.lm-assist.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-bootstrap-'));
 import { CONTROLLER_SYSTEM_PROMPT, buildControllerLaunchExtras } from '../mission/mission-controller';
 
 test('CONTROLLER_SYSTEM_PROMPT names the role + heartbeat marker + scope', () => {

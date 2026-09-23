@@ -16,6 +16,11 @@ import type { ContentState } from '../registry/content-model';
 // per-result trailer (result-origin.ts) needs the same mapping and must not import
 // this prose module to get it.
 import { TOPIC_TOOLS } from '../tool-topics';
+// Profile-aware bootstrap: which tools the EFFECTIVE profile lists. All three modules are
+// already on configure.ts's import path, so the stdio binary's import graph gains nothing.
+import { CATEGORY_ORDER, categoryMeta, toolsInCategory } from '../registry/categories';
+import { getProfile, resolveProfileTools, resolveEffectiveProfile } from '../registry/profiles';
+import { currentEffectiveProfile } from '../principal-context';
 
 // Ordered so the multi-node model + combination workflows surface first in the index.
 const GUIDES: Record<string, string> = {
@@ -912,13 +917,17 @@ export const INDEX_PREAMBLE_DEFAULT = [
   '',
 ].join('\n');
 
-function buildIndex(lookup?: ContentLookup | null): string {
-  const preamble = lookup?.('guide.index')?.contentOverride ?? INDEX_PREAMBLE_DEFAULT;
+function buildIndex(lookup?: ContentLookup | null, view?: BootstrapProfileView | null): string {
+  const rawPreamble = lookup?.('guide.index')?.contentOverride ?? INDEX_PREAMBLE_DEFAULT;
+  const preamble = view && !view.claudeAiListed ? withoutClaudeAiMandate(rawPreamble) : rawPreamble;
   const lines = [preamble, '## Topics'];
   for (const topic of Object.keys(GUIDES)) {
     const blurb = lookup?.(`guide.${topic}`)?.blurbOverride ?? BLURB[topic] ?? '';
     lines.push(`- \`${topic}\` — ${blurb}`);
   }
+  // Every topic stays listed (guide(topic) serves any of them — a profile is advertise-only);
+  // the closing line says which ones cover tools this connector does not list.
+  if (view) lines.push('', profileHiddenLine(view));
   return lines.join('\n');
 }
 
@@ -957,11 +966,149 @@ export const BOOTSTRAP_WRAP_RESERVE = 12_288;
 /** One playbook section: its key and its (override-resolved) body. */
 export interface BootstrapEntry { key: string; body: string; }
 
-/** Every section in order, with content-override applied. */
-export function bootstrapEntries(lookup?: ContentLookup | null): BootstrapEntry[] {
+// ── Profile-aware bootstrap / guide (one connector per profile) ─────────────
+//
+// A pinned connector, or a node whose DEFAULT profile was narrowed, lists only some of the
+// tools. Measured on `basic`, ~57% of the bootstrap bytes were playbooks for tools the
+// connector does not list. Four places also told the model to call
+// `list_claudeai_conversations` FIRST, and `basic` hides that tool. So bootstrap works from
+// the EFFECTIVE profile (the call's pin, else the node default):
+//   - a section is left out when the profile hides ALL of the tools it governs;
+//   - the manifest lists only what was actually delivered;
+//   - one closing line names the hidden categories and the left-out playbooks, and says
+//     that the unpinned or `admin` connector carries them;
+//   - the claude.ai-first mandate is replaced by a pointer to that connector.
+// The identity block (fleetIdentity) stays profile-unaware: the instructions banner,
+// session_status, the result footer and the closing line above carry the profile.
+// 🔴 A profile that hides nothing (`admin`, the shipped default) has NO view. With no view,
+// every builder here runs the pre-profile code path, so the unpinned bootstrap is
+// byte-identical to before. A hash in bootstrap-profile.test.ts pins this.
+
+/** Sections whose tools are NOT in TOPIC_TOOLS. They are kept out of TOPIC_TOOLS on
+ *  purpose, because that map also drives the BOOTSTRAP_REQUIRED gate and the playbook
+ *  pointer on every result. Adding `desktop_*` there would newly gate those tools and
+ *  change their footers under `admin`. */
+const SECTION_EXTRA_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  desktop: toolsInCategory('desktop'),
+  login: ['claudeai_login'],
+};
+
+/** The tools a bootstrap section is the playbook for. An empty list means a general
+ *  section (orientation, speaking, cross-node, …) that every profile gets. */
+export function sectionGovernedTools(key: string): string[] {
+  const own = Object.hasOwn(TOPIC_TOOLS, key) ? TOPIC_TOOLS[key] : [];
+  const extra = Object.hasOwn(SECTION_EXTRA_TOOLS, key) ? SECTION_EXTRA_TOOLS[key] : [];
+  return [...own, ...extra];
+}
+
+/** What a narrowed profile changes about bootstrap and the guide index. */
+export interface BootstrapProfileView {
+  /** The effective profile this view describes. */
+  profile: string;
+  /** Sections where the profile hides ALL governed tools. Left out of bootstrap. */
+  omitted: string[];
+  /** Categories with no tool listed under the profile, in CATEGORY_ORDER. */
+  hiddenCategories: string[];
+  /** Whether the profile lists `list_claudeai_conversations`. If false, the claude.ai-first
+   *  mandate is replaced by a pointer to the connector that does list it. */
+  claudeAiListed: boolean;
+}
+
+const viewMemo = new Map<string, BootstrapProfileView | null>();
+
+/**
+ * PURE, memoised per profile name (profile definitions are code constants). Returns null
+ * when the profile hides nothing bootstrap cares about: `admin`, an unknown name, or a
+ * malformed definition. On null, callers take the pre-profile path unchanged. Only known
+ * names are memoised, so the map is bounded by PROFILE_DEFINITIONS.
+ */
+export function bootstrapProfileView(profileName: string): BootstrapProfileView | null {
+  const def = getProfile(profileName);
+  if (!def || !Array.isArray(def.selectors)) return null;
+  const memo = viewMemo.get(profileName);
+  if (memo !== undefined) return memo;
+  const universe = new Set<string>(Object.keys(categoryMeta()));
+  for (const k of BOOTSTRAP_SECTION_ORDER) for (const t of sectionGovernedTools(k)) universe.add(t);
+  const shown = resolveProfileTools(def, [...universe]);
+  const omitted = BOOTSTRAP_SECTION_ORDER.filter((k) => {
+    const tools = sectionGovernedTools(k);
+    return !!GUIDES[k] && tools.length > 0 && !tools.some((t) => shown.has(t));
+  });
+  const hiddenCategories = CATEGORY_ORDER.filter((c) => !toolsInCategory(c).some((t) => shown.has(t)));
+  const claudeAiListed = shown.has('list_claudeai_conversations');
+  const view = omitted.length > 0 || hiddenCategories.length > 0 || !claudeAiListed
+    ? { profile: profileName, omitted, hiddenCategories, claudeAiListed }
+    : null;
+  viewMemo.set(profileName, view);
+  return view;
+}
+
+/** The profile this bootstrap/guide call is served under. That is the pin carried by the
+ *  MCP call context (the HTTP `?profile=`, the stdio header lifted into the context by
+ *  /mcp-call, or a pinned stdio process's own context), else the node default (the same
+ *  cached read tools/list pays). Never throws. On failure it returns null, which serves
+ *  the full pre-profile text. */
+function viewForThisCall(): BootstrapProfileView | null {
+  try {
+    return bootstrapProfileView((currentEffectiveProfile() ?? resolveEffectiveProfile(undefined)).name);
+  } catch {
+    return null;
+  }
+}
+
+/** The "unqualified conversation ⇒ read claude.ai FIRST" mandate, copied verbatim from each
+ *  default that states it (`where` is that default's content id), paired with the text to
+ *  serve when the profile does not list `list_claudeai_conversations`. The swap is an
+ *  exact match, so an operator's content override (which will not contain the default
+ *  sentence) is served untouched. A test checks that every `from` is still in its
+ *  default, so edit both together. */
+export const CLAUDEAI_MANDATE_SWAPS: ReadonlyArray<{ where: string; from: string; to: string }> = [
+  {
+    where: 'bootstrap.header',
+    from: '🔴 WORDS FIRST: **"conversation" ALWAYS means a claude.ai conversation**; **"session" means a Claude Code / CCR run (cloud or local)**. Unqualified — "the conversation", "the most recent one" — read claude.ai FIRST with `list_claudeai_conversations`, NOT `list_recent_sessions`. Full rule + the measured failure: guide("speaking").',
+    to: '🔴 WORDS FIRST: **"conversation" ALWAYS means a claude.ai conversation**; **"session" means a Claude Code / CCR run (cloud or local)**. This connector\'s profile does not list the claude.ai tools, so read an unqualified "the conversation" / "the most recent one" through the unpinned or `admin` lm-assist connector on this hub. Do NOT answer it from `list_recent_sessions`, which lists SESSIONS, a different store. Full rule: guide("speaking").',
+  },
+  {
+    where: 'guide.speaking',
+    from: '**When the user does NOT qualify it — "the conversation", "the most recent one", "that chat" — read the claude.ai store FIRST:** `list_claudeai_conversations` → `read_conversation(uuid)`. Do NOT reach for `list_recent_sessions`: that lists Claude Code sessions on a host — a DIFFERENT store, a different uuid space.',
+    to: '**When the user does NOT qualify it — "the conversation", "the most recent one", "that chat" — they still mean a claude.ai conversation.** This connector\'s profile does not list the claude.ai tools: say so, and read it through the unpinned or `admin` lm-assist connector. Do NOT reach for `list_recent_sessions`: that lists Claude Code sessions on a host — a DIFFERENT store, a different uuid space.',
+  },
+  {
+    where: 'guide.sessions',
+    from: '🔴 WRONG STORE CHECK: everything here is a SESSION (a Claude Code / CCR run). If the user said "conversation" / "chat" / "the most recent one" with no repo, branch, host or terminal named, they mean a claude.ai conversation — go to guide("claude-ai") and start with `list_claudeai_conversations`, not `list_recent_sessions`.',
+    to: '🔴 WRONG STORE CHECK: everything here is a SESSION (a Claude Code / CCR run). If the user said "conversation" / "chat" / "the most recent one" with no repo, branch, host or terminal named, they mean a claude.ai conversation. This connector\'s profile does not list the claude.ai tools, so use the unpinned or `admin` lm-assist connector for it, not `list_recent_sessions`.',
+  },
+  {
+    where: 'guide.index',
+    from: '- **Words:** "conversation" ALWAYS = a claude.ai conversation; "session" = a Claude Code / CCR run (cloud or local). Unqualified ("the conversation", "the most recent one") → `list_claudeai_conversations` FIRST, NOT `list_recent_sessions`. See guide("speaking").',
+    to: '- **Words:** "conversation" ALWAYS = a claude.ai conversation; "session" = a Claude Code / CCR run (cloud or local). This connector\'s profile does not list the claude.ai tools: read a conversation through the unpinned or `admin` lm-assist connector, NOT with `list_recent_sessions`. See guide("speaking").',
+  },
+];
+
+function withoutClaudeAiMandate(text: string): string {
+  let out = text;
+  for (const s of CLAUDEAI_MANDATE_SWAPS) out = out.split(s.from).join(s.to);
+  return out;
+}
+
+/** The closing line of the manifest and of the guide index under a narrowed profile. It is
+ *  ONE line: the model needs to know there is a gap and where the rest lives, not a second
+ *  manifest. */
+export function profileHiddenLine(view: BootstrapProfileView): string {
+  const cats = view.hiddenCategories.length > 0 ? view.hiddenCategories.join(', ') : 'none';
+  const left = view.omitted.length > 0 ? view.omitted.join(', ') : 'none';
+  return `🔒 Profile \`${view.profile}\` hides these tool categories: ${cats}. Playbooks left out of bootstrap: ${left}. The unpinned or \`admin\` lm-assist connector on this hub lists them; \`guide(topic=...)\` still reads any topic.`;
+}
+
+/** Every DELIVERED section in order, with content-override applied. With a profile view,
+ *  sections whose governed tools are all hidden are left out and the claude.ai-first
+ *  mandate is swapped; with no view (admin / unpinned) this is the pre-profile list. */
+export function bootstrapEntries(lookup?: ContentLookup | null, view?: BootstrapProfileView | null): BootstrapEntry[] {
+  const omit = new Set(view?.omitted ?? []);
+  const swap = view && !view.claudeAiListed ? withoutClaudeAiMandate : (text: string): string => text;
   return BOOTSTRAP_SECTION_ORDER
-    .filter((k) => GUIDES[k])
-    .map((k) => ({ key: k, body: lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k] }));
+    .filter((k) => GUIDES[k] && !omit.has(k))
+    .map((k) => ({ key: k, body: swap(lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k]) }));
 }
 
 /**
@@ -990,23 +1137,28 @@ export function paginateEntries(entries: BootstrapEntry[], contentBudget: number
   return pages.length > 0 ? pages : [[]];
 }
 
-/** The manifest: every topic, its one-line blurb, and the page it is on. Generated (not
- *  overlayable) so it always matches the live pagination. */
-function buildManifest(pages: string[][], lookup?: ContentLookup | null): string {
+/** The manifest: every DELIVERED topic, its one-line blurb, and the page it is on.
+ *  Generated (not overlayable) so it always matches the live pagination. It walks the
+ *  pages, not BOOTSTRAP_SECTION_ORDER: under a narrowed profile some sections are left
+ *  out, and a manifest that still listed them would send the model to `(p1)` for a
+ *  playbook that is not there. With every section delivered (admin) the two are the same
+ *  list in the same order, so the unpinned manifest is unchanged. */
+function buildManifest(pages: string[][], lookup?: ContentLookup | null, view?: BootstrapProfileView | null): string {
   const pageOf = new Map<string, number>();
   pages.forEach((keys, i) => keys.forEach((k) => pageOf.set(k, i + 1)));
   const blurb = (k: string): string => lookup?.(`guide.${k}`)?.blurbOverride ?? BLURB[k] ?? '';
-  const lines = BOOTSTRAP_SECTION_ORDER
-    .filter((k) => GUIDES[k])
-    .map((k) => {
-      const b = blurb(k);
-      return `- \`${k}\`${b ? ' — ' + b : ''} (p${pageOf.get(k) ?? 1})`;
-    });
-  return [
-    `## Manifest — ${BOOTSTRAP_SECTION_ORDER.filter((k) => GUIDES[k]).length} topics across ${pages.length} page${pages.length === 1 ? '' : 's'}`,
+  const delivered = pages.flat();
+  const lines = delivered.map((k) => {
+    const b = blurb(k);
+    return `- \`${k}\`${b ? ' — ' + b : ''} (p${pageOf.get(k) ?? 1})`;
+  });
+  const out = [
+    `## Manifest — ${delivered.length} topics across ${pages.length} page${pages.length === 1 ? '' : 's'}`,
     'Pull a page with `bootstrap(page=N)`, or read one topic with `guide(topic=...)`.',
     ...lines,
-  ].join('\n');
+  ];
+  if (view) out.push(profileHiddenLine(view));
+  return out.join('\n');
 }
 
 /** A page's footer: on a non-final page it names the next call and the topics it brings;
@@ -1033,6 +1185,8 @@ export function buildBootstrapPage(
     identity?: string;
     auth?: string;
     cluster?: string;
+    /** The effective profile's view; absent/null ⇒ the pre-profile page, byte for byte. */
+    view?: BootstrapProfileView | null;
   },
 ): string {
   const { entries, pages, lookup } = parts;
@@ -1043,8 +1197,9 @@ export function buildBootstrapPage(
   const footer = pageFooter(idx + 1, pages);
 
   if (idx === 0) {
-    const header = lookup?.('bootstrap.header')?.contentOverride ?? BOOTSTRAP_HEADER_DEFAULT;
-    const manifest = buildManifest(pages, lookup);
+    const rawHeader = lookup?.('bootstrap.header')?.contentOverride ?? BOOTSTRAP_HEADER_DEFAULT;
+    const header = parts.view && !parts.view.claudeAiListed ? withoutClaudeAiMandate(rawHeader) : rawHeader;
+    const manifest = buildManifest(pages, lookup, parts.view);
     const head = [parts.identity, header, manifest].filter(Boolean).join('\n\n');
     const status = [parts.auth, parts.cluster].filter(Boolean).join('');
     return head + sep + sectionText + status + sep + footer;
@@ -1123,30 +1278,35 @@ async function clusterBlock(): Promise<string> {
 }
 
 async function handleBootstrap(args: Record<string, unknown>): Promise<McpToolResult> {
+  const view = viewForThisCall();
   const [lookup, auth, cluster] = await Promise.all([contentLookup(), authBlock(), clusterBlock()]);
-  const entries = bootstrapEntries(lookup);
+  const entries = bootstrapEntries(lookup, view);
   const contentBudget = maxResultBytes() - BOOTSTRAP_WRAP_RESERVE;
   const pages = paginateEntries(entries, contentBudget);
   // page defaults to 1 and clamps into range — a session-start auto-call must never fail,
   // and an out-of-range page returns the last page rather than an error.
   const rawPage = Number(args.page);
   const pageNum = Number.isFinite(rawPage) && rawPage >= 1 ? Math.min(Math.floor(rawPage), pages.length) : 1;
-  return ok(buildBootstrapPage(pageNum, { entries, pages, lookup, identity: fleetIdentity(), auth, cluster }));
+  return ok(buildBootstrapPage(pageNum, { entries, pages, lookup, identity: fleetIdentity(), auth, cluster, view }));
 }
 
 async function handleGuide(args: Record<string, unknown>): Promise<McpToolResult> {
   const raw = String((args.topic ?? args.use_case ?? args.tool ?? '') as string).trim().toLowerCase();
   const lookup = await contentLookup();
-  if (!raw || raw === 'index' || raw === 'help' || raw === 'list' || raw === 'topics') return ok(buildIndex(lookup));
+  const view = viewForThisCall();
+  if (!raw || raw === 'index' || raw === 'help' || raw === 'list' || raw === 'topics') return ok(buildIndex(lookup, view));
   const key = (GUIDES[raw] ? raw : undefined) ?? ALIASES[raw];
-  // Registry override ?? code default, resolved per call (live, no restart).
-  const topicBody = (k: string): string => lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k];
+  // Registry override ?? code default, resolved per call (live, no restart). Under a
+  // profile that hides `list_claudeai_conversations`, the claude.ai-first mandate in the
+  // body is swapped for a pointer to the connector that lists it.
+  const swap = view && !view.claudeAiListed ? withoutClaudeAiMandate : (text: string): string => text;
+  const topicBody = (k: string): string => swap(lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k]);
   // `connectors` is dynamic: prepend the live fleet identity so the body names THIS hub/node/cluster.
   const body = (k: string): string => (k === 'connectors' ? fleetIdentity() + '\n\n' + topicBody(k) : topicBody(k));
   if (key && GUIDES[key]) return ok(body(key));
   const sub = Object.keys(GUIDES).find((k) => k.includes(raw) || raw.includes(k));
   if (sub) return ok(body(sub));
-  return ok(`No guide titled "${args.topic ?? args.use_case ?? args.tool}". Pick a topic below.\n\n${buildIndex(lookup)}`);
+  return ok(`No guide titled "${args.topic ?? args.use_case ?? args.tool}". Pick a topic below.\n\n${buildIndex(lookup, view)}`);
 }
 
 export const GUIDE_TOOL_DEFS = [

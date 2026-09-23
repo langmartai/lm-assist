@@ -1,5 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the lm-assist imports: bootstrap and guide serve the node-default
+// profile's playbooks, read from the profile file under getDataDir(). On a host whose
+// operator ran `mcp_profile set basic`, the full-bootstrap assertions below would fail.
+// Never the developer's real ~/.lm-assist.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'guide-'));
 import { GUIDE_HANDLERS, GUIDE_TOOL_DEFS, BOOTSTRAP_SECTION_ORDER, paginateEntries } from '../mcp-server/tools/guide';
 import { LM_ASSIST_INSTRUCTIONS } from '../mcp-server/configure';
 import { capToolResult, maxResultBytes } from '../mcp-server/result-cap';

@@ -1,5 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the lm-assist imports: bootstrap serves the node-default profile's
+// playbooks (`basic` leaves out missions), read from the profile file under getDataDir().
+// Never the developer's real ~/.lm-assist.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mission-guide-'));
 import { GUIDE_HANDLERS } from '../mcp-server/tools/guide';
 import { CONTROLLER_SYSTEM_PROMPT } from '../mission/mission-controller';
 
