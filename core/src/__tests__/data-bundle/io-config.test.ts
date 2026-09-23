@@ -177,26 +177,31 @@ test('project-settings: add absent keys, differing reported not applied unless r
   const p = createProjectSettingsProvider({ file: dstFile });
   // A hand-crafted bundle carrying node-bound keys is refused on import too.
   const plan = await p.plan({ ...data, devModeEnabled: true }, 'merge');
-  assert.equal(plan.counts.add, 2, JSON.stringify(plan.samples)); // dataReconcileSec, bundleRetention
-  assert.equal(plan.counts.skipDiffers, 1); // excludedPaths
+  // A key ABSENT locally is its DEFAULT, not "unset": dataReconcileSec (default 300 ≠ 600)
+  // differs like a present key does — merge never overrides a fresh node's defaults.
+  assert.equal(plan.counts.add, 0, JSON.stringify(plan.samples));
+  assert.equal(plan.counts.skipDiffers, 2); // excludedPaths, dataReconcileSec
   assert.equal(plan.counts.skipIdentical, 2); // busEnabled, fabricEnabled
   assert.ok(plan.warnings.some((w) => /dataServiceEnabled/.test(w) && /never flipped/.test(w)));
   assert.ok(plan.warnings.some((w) => /devModeEnabled/.test(w)));
+  assert.ok(plan.warnings.some((w) => /bundleRetention/.test(w) && /never lowered/.test(w)), 'retention 5 < default 20 is never imported');
 
   const res = await p.apply(data, 'merge');
-  assert.equal(res.applied.add, 2);
+  assert.equal(res.applied.add + res.applied.update, 0);
   let after = JSON.parse(fs.readFileSync(dstFile, 'utf8'));
   assert.deepEqual(after.excludedPaths, ['/b']);
-  assert.equal(after.dataReconcileSec, 600);
-  assert.equal(after.bundleRetention, 5);
-  assert.equal(after.dataServiceEnabled, false);
-  assert.equal(after.localOnly, 1, 'keys absent from the bundle are never touched');
+  assert.equal('dataReconcileSec' in after, false);
 
   const rep = await p.apply(data, 'replace');
-  assert.equal(rep.applied.update, 1);
+  assert.equal(rep.applied.update, 1); // excludedPaths
+  assert.equal(rep.applied.add, 1); // dataReconcileSec
+  assert.ok(rep.warnings.some((w) => w === 'setting "dataReconcileSec": 300 → 600'), rep.warnings.join('\n'));
   after = JSON.parse(fs.readFileSync(dstFile, 'utf8'));
   assert.deepEqual(after.excludedPaths, ['/a']);
+  assert.equal(after.dataReconcileSec, 600);
+  assert.equal('bundleRetention' in after, false, 'retention never lowered, even in replace');
   assert.equal(after.dataServiceEnabled, false, 'never flipped, even in replace');
+  assert.equal(after.localOnly, 1, 'keys absent from the bundle are never touched');
   assert.equal('devModeEnabled' in after, false);
 
   // A never-flip key ABSENT locally compares against the default (false): importing true is refused.
@@ -218,13 +223,16 @@ test('mcp-access: add-missing unions gated tools; replace overwrites', async () 
   assert.deepEqual([plan.counts.add, plan.counts.skipIdentical, plan.counts.skipExists], [1, 1, 1]);
   await p.apply(data, 'add-missing');
   assert.deepEqual(JSON.parse(fs.readFileSync(f, 'utf8')).adminGatedTools, ['a', 'b', 'c']);
+  // replace NEVER removes a gate (a gate only adds a confirmation step): 'a' stays gated.
   const rep = await p.apply(data, 'replace');
-  assert.equal(rep.counts.update, 1);
-  assert.deepEqual(JSON.parse(fs.readFileSync(f, 'utf8')).adminGatedTools.sort(), ['b', 'c']);
+  assert.equal(rep.counts.update, 0);
+  assert.equal(rep.counts.skipExists, 1);
+  assert.ok(rep.warnings.some((w) => /never removes a gate/.test(w) && /\ba\b/.test(w)));
+  assert.deepEqual(JSON.parse(fs.readFileSync(f, 'utf8')).adminGatedTools.sort(), ['a', 'b', 'c']);
   const same = await p.apply(data, 'replace');
   assert.equal(same.applied.add + same.applied.update, 0);
   const c = await p.collect();
-  assert.deepEqual(c.data, { version: 2, adminGatedTools: ['b', 'c'] });
+  assert.deepEqual(c.data, { version: 2, adminGatedTools: ['a', 'b', 'c'] });
 });
 
 test('mcp-profile: applies only in replace, unknown profile refused, via the owning module', async () => {
@@ -238,10 +246,106 @@ test('mcp-profile: applies only in replace, unknown profile refused, via the own
   assert.equal(fs.existsSync(path.join(process.env.LM_ASSIST_DATA_DIR!, 'mcp-profile-dev.json')), false);
   const unknown = await p.apply({ profile: 'no-such-profile' }, 'replace');
   assert.equal(unknown.counts.skipped, 1);
+  const { currentToolsRev } = await import('../../mcp-server/registry/tools-rev');
+  const revBefore = currentToolsRev();
   const rep = await p.apply({ profile: 'basic' }, 'replace');
   assert.equal(rep.applied.update, 1);
+  assert.notEqual(currentToolsRev(), revBefore, 'connected MCP clients are told the tool list changed');
+  assert.ok(rep.warnings.some((w) => /refresh_connector_tools/.test(w)));
   const state = JSON.parse(fs.readFileSync(path.join(process.env.LM_ASSIST_DATA_DIR!, 'mcp-profile-dev.json'), 'utf8'));
   assert.equal(state.profile, 'basic');
   assert.equal(state.setBy, 'import');
   assert.equal((await p.plan({ profile: 'basic' }, 'replace')).counts.skipIdentical, 1);
+});
+
+test('project-settings: fabric toggles are never flipped, unknown keys skipped, live side effects run', async () => {
+  const dir = tmp();
+  const fresh = path.join(dir, 'fresh.json');   // a fresh / rebuilt node: no file at all
+  const seen: Array<[Record<string, unknown>, Record<string, unknown>]> = [];
+  const p = createProjectSettingsProvider({ file: fresh, onApplied: (a, b) => seen.push([a, b]) });
+  const data = { fabricRpcEnabled: true, fabricEnabled: false, missionRelayedSpawnEnabled: true, bundleRetention: 1, dataReconcileSec: 300, notASetting: 1, memorySyncEnabled: false };
+  const plan = await p.plan(data, 'merge');
+  for (const k of ['fabricRpcEnabled', 'fabricEnabled', 'missionRelayedSpawnEnabled']) {
+    assert.ok(plan.warnings.some((w) => w.startsWith(`"${k}" is never flipped`)), `${k}: ${plan.warnings.join('\n')}`);
+  }
+  assert.ok(plan.warnings.some((w) => /bundleRetention/.test(w) && /never lowered/.test(w)));
+  assert.ok(plan.warnings.some((w) => /unknown setting "notASetting"/.test(w)));
+  assert.equal(plan.counts.skipIdentical, 1, 'dataReconcileSec equals the default');
+  assert.equal(plan.counts.skipDiffers, 1, 'memorySyncEnabled differs from the default');
+  const rep = await p.apply(data, 'replace');
+  assert.equal(rep.applied.add, 1);
+  const after = JSON.parse(fs.readFileSync(fresh, 'utf8'));
+  assert.deepEqual(Object.keys(after), ['memorySyncEnabled']);
+  assert.equal(seen.length, 1, 'the live side effects run once per apply');
+  assert.equal(seen[0][0].memorySyncEnabled, true);
+  assert.equal(seen[0][1].memorySyncEnabled, false);
+});
+
+test('scheduled-jobs: a builtin override never sets runIf/ids, never arms a job, and says what it changes', async () => {
+  const dst = freshJobs();
+  const cur = dst.getJob('executor-reaper')!;
+  assert.equal(cur.enabled, false);
+  const p = createScheduledJobsProvider({ jobs: () => dst });
+  const data = { custom: [], builtins: [
+    { id: 'executor-reaper', enabled: true, intervalMinutes: cur.intervalMinutes + 1, config: { ...cur.config, dryRun: false, runIf: 'touch /tmp/should-never-exist' } },
+  ] };
+  const plan = await p.plan(data, 'replace');
+  assert.ok(plan.warnings.some((w) => /config key "runIf" is never imported/.test(w)), plan.warnings.join('\n'));
+  assert.ok(plan.warnings.some((w) => /not armed by import/.test(w) && /enabled/.test(w) && /dryRun/.test(w)));
+  assert.ok(plan.warnings.some((w) => /override: intervalMinutes/.test(w)));
+  await p.apply(data, 'replace');
+  const after = dst.getJob('executor-reaper')!;
+  assert.equal(after.enabled, false, 'never enabled by an import');
+  assert.notEqual(after.config.dryRun, false, 'never disarmed by an import');
+  assert.equal(after.config.runIf, undefined, 'a shell guard never lands');
+  assert.equal(after.intervalMinutes, cur.intervalMinutes + 1, 'the harmless part still applies');
+});
+
+test('scheduled-jobs + machine-access: a replace of an UNCHANGED item keeps its secrets and is identical', async () => {
+  const jobs = freshJobs();
+  jobs.upsertJob({ id: 'j1', type: 'shell', enabled: true, intervalMinutes: 60, config: { command: 'x', apiKey: 'S3CRET' } });
+  (jobs as any).jobs.set('j1', { ...(jobs as any).jobs.get('j1'), runCount: 5 });
+  const p = createScheduledJobsProvider({ jobs: () => jobs });
+  const data = (await p.collect()).data as ScheduledJobsData;
+  const plan = await p.plan(data, 'replace');
+  assert.equal(plan.counts.update, 0, 'masked compare: the redacted bundle copy is the same job');
+  assert.ok(plan.samples.skipIdentical?.includes('j1'));
+  await p.apply(data, 'replace');
+  const j = jobs.getJob('j1')!;
+  assert.equal(j.config.apiKey, 'S3CRET');
+  assert.equal(j.enabled, true, 'not disarmed');
+  // A real change carries the secret over and keeps run state.
+  const changed = { ...data, custom: [{ ...data.custom[0], config: { command: 'y' } }] };
+  await p.apply(changed, 'replace');
+  const j2 = jobs.getJob('j1')!;
+  assert.equal(j2.config.command, 'y');
+  assert.equal(j2.config.apiKey, 'S3CRET', 'the local secret survives a replace');
+  assert.equal((j2 as any).runCount, 5, 'run state kept (updated in place)');
+  assert.equal(j2.enabled, false, 'a changed job still lands disabled');
+
+  const dir = tmp();
+  const f = path.join(dir, 'ma.json');
+  fs.writeFileSync(f, JSON.stringify({ version: 1, machines: [
+    { id: 'box', name: 'Box', access: [{ type: 'ssh', host: 'h', user: 'u' }], passwordFile: '/secret/pw' },
+  ] }));
+  const ma = createMachineAccessProvider({ file: f });
+  const md = (await ma.collect()).data as any;
+  assert.equal(md.machines[0].passwordFile, undefined, 'stripped on export');
+  assert.equal((await ma.plan(md, 'replace')).counts.skipIdentical, 1);
+  await ma.apply({ machines: [{ ...md.machines[0], name: 'Box 2' }] }, 'replace');
+  const saved = JSON.parse(fs.readFileSync(f, 'utf8')).machines[0];
+  assert.equal(saved.name, 'Box 2');
+  assert.equal(saved.passwordFile, '/secret/pw', 'the local secret-named field is carried over');
+  const baks = fs.readdirSync(dir).filter((n) => n.startsWith('ma.json.bak-import-'));
+  assert.equal(baks.length, 1, 'one pre-import snapshot');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, baks[0]), 'utf8')).machines[0].name, 'Box');
+});
+
+test('scheduled-jobs: inline credentials in a custom job\'s command are redacted on export', async () => {
+  const jobs = freshJobs();
+  jobs.upsertJob({ id: 'dump', type: 'shell', enabled: false, intervalMinutes: 60, config: { command: 'PGPASSWORD=hunter2 pg_dump db; curl -H "Authorization: Bearer abcdefghijklmnopqrstuvwxyz" https://u:pw@example.com/x' } });
+  const c = await createScheduledJobsProvider({ jobs: () => jobs }).collect();
+  const cmd = (c.data as ScheduledJobsData).custom[0].config.command as string;
+  assert.ok(!/hunter2|abcdefghijklmnop|u:pw@/.test(cmd), cmd);
+  assert.ok(c.redactedKeys.includes('custom.dump.config.command (value)'));
 });

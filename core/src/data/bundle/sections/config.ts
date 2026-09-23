@@ -5,15 +5,22 @@
  *
  *   scheduled-jobs    custom jobs in full + builtin {id,enabled,intervalMinutes,config} overrides,
  *                     run state stripped. Imported custom jobs ALWAYS land enabled:false (a shell
- *                     job is code execution); builtin overrides apply only under `replace`.
+ *                     job is code execution); builtin overrides apply only under `replace`, only
+ *                     for config keys the builtin already has (never runIf/cwd/command/env/ids/
+ *                     roots …), and NEVER arm a job (enabled on, dryRun off stay a human's call).
  *                     Written through the scheduler's own upsert API so the live scheduler adopts it.
  *   machine-access    profiles (key PATHS only — the store holds no key material); upsert via the
  *                     store; `key-missing` when an identityFile is absent on this host.
- *   project-settings  every key but the node-bound deny-list; absent keys are added, differing keys
- *                     are reported and applied only under `replace`; dataServiceEnabled, busEnabled
- *                     and dataSyncViaFabric are NEVER flipped by an import.
- *   mcp-access        add-missing (union of gated tools); `replace` overwrites.
- *   mcp-profile       applies only under `replace` (a node-global budget choice).
+ *   project-settings  every known key but the node-bound deny-list, compared with the EFFECTIVE
+ *                     value (a missing key is its default); differing keys apply only under
+ *                     `replace`; the data-service/bus/fabric toggles are NEVER flipped and
+ *                     bundleRetention is never lowered. Written through project-settings.ts with
+ *                     the same live side effects PUT /project-settings runs.
+ *   mcp-access        add-missing (union of gated tools) under every policy — never un-gates.
+ *   mcp-profile       applies only under `replace` (a node-global budget choice); bumps tools-rev.
+ *
+ * Compares mask secret-named keys on BOTH sides and a replace carries this node's redacted
+ * values over, so restoring an unchanged job/profile never deletes its credentials.
  *
  * Secret-named keys are dropped on collect and their dotted paths reported in `redactedKeys`.
  * Every provider takes injectable paths/APIs so a test never touches the real files; the
@@ -80,6 +87,39 @@ async function applyWrites(plan: SectionPlan, writes: Write[]): Promise<ApplyRes
   return res;
 }
 
+/**
+ * Carry THIS node's secret-named values into an incoming copy that had them redacted on
+ * export: for every secret-named key present locally and absent from `incoming` at the same
+ * object path, the local value is kept. Without this, a replace of an unchanged job/profile
+ * would silently delete its credentials (the bundle side never has them).
+ */
+export function reinjectLocalSecrets<T>(local: unknown, incoming: T): T {
+  const walk = (l: unknown, i: unknown): unknown => {
+    if (Array.isArray(l) && Array.isArray(i)) return i.map((x, idx) => walk(l[idx], x));
+    if (isObj(l) && isObj(i)) {
+      const out: Record<string, unknown> = { ...i };
+      for (const [k, v] of Object.entries(l)) {
+        if (SECRET_KEY_RE.test(k)) { if (!(k in i)) out[k] = v; continue; }
+        if (k in i) out[k] = walk(v, i[k]);
+      }
+      return out;
+    }
+    return i;
+  };
+  return walk(local, incoming) as T;
+}
+
+/** Best-effort value scan of shell-ish strings: inline credentials (`PASSWORD=…`, a bearer
+ *  token, an Authorization header, user:pass@ in a URL) are replaced with `<redacted>`.
+ *  Key-name stripping cannot see these — `command` is not a secret-named key. */
+const INLINE_SECRET_RE = /(authorization:\s*(?:bearer|basic|token)?\s*\S+|bearer\s+[A-Za-z0-9._~+/=-]{16,}|\b[A-Z0-9_]*(?:PASSWORD|PASSWD|TOKEN|SECRET|API_?KEY)=\S+|:\/\/[^/\s:@]+:[^/\s@]+@)/gi;
+
+export function redactInlineSecrets(v: string): { value: string; hit: boolean } {
+  let hit = false;
+  const value = v.replace(INLINE_SECRET_RE, () => { hit = true; return '<redacted>'; });
+  return { value, hit };
+}
+
 // ─── scheduled-jobs ─────────────────────────────────────────────────────────
 
 /** The subset of ScheduledJobs this provider needs — injectable for tests. */
@@ -110,6 +150,14 @@ export interface ScheduledJobsData { custom: ExportedJob[]; builtins: BuiltinOve
 const jobContent = (j: Partial<ExportedJob>) => ({
   name: j.name, description: j.description, type: j.type, intervalMinutes: j.intervalMinutes, config: j.config ?? {},
 });
+
+/** Builtin config keys an import NEVER sets: a shell guard (`runIf` is cp.exec'd on every
+ *  tick), process shaping, and the target lists of the destructive builtins. A builtin
+ *  override is otherwise a side door around "imported code lands disabled". */
+export const BUILTIN_CONFIG_NEVER_IMPORTED: ReadonlySet<string> = new Set(['runIf', 'cwd', 'timeoutMs', 'command', 'argv', 'args', 'env', 'ids', 'roots']);
+
+/** String fields of a custom job's config scanned for inline credentials on export. */
+const JOB_SHELL_FIELDS = ['command', 'runIf', 'args', 'argv'];
 
 export function createScheduledJobsProvider(opts: { jobs?: () => ScheduledJobsApi } = {}): ConfigProvider {
   const api = (): ScheduledJobsApi => opts.jobs?.() ?? require('../../../scheduler/scheduled-jobs').getScheduledJobs();
@@ -150,12 +198,20 @@ export function createScheduledJobsProvider(opts: { jobs?: () => ScheduledJobsAp
         writes.push({ bucket: 'add', id: j.id, disabled: true, run: () => { api().upsertJob(patch); } });
         continue;
       }
-      if (canonicalEqual(jobContent(cur as ExportedJob), jobContent(patch))) { bump(plan, 'skipIdentical', j.id); continue; }
+      // Compare with secrets masked on BOTH sides: the bundle copy had them redacted on
+      // export, so an unchanged job must still read as identical (and never be disarmed).
+      const curMasked = stripSecretKeys(cur as unknown as ExportedJob).value;
+      if (canonicalEqual(jobContent(curMasked), jobContent(stripSecretKeys(patch).value))) { bump(plan, 'skipIdentical', j.id); continue; }
       if (policy !== 'replace') { bump(plan, 'skipExists', j.id); continue; }
       bump(plan, 'update', j.id);
       bump(plan, 'importedDisabled', j.id);
-      // Delete + upsert so config keys absent from the bundle do not survive (upsert MERGES config).
-      writes.push({ bucket: 'update', id: j.id, disabled: true, run: () => { const a = api(); a.deleteJob(j.id!); a.upsertJob(patch); } });
+      // This node's redacted values are carried over, and the job is updated IN PLACE (run
+      // count/log/createdAt kept). Keys absent from the bundle are cleared explicitly:
+      // upsertJob MERGES config, and undefined drops out when it persists.
+      const config = reinjectLocalSecrets(cur.config ?? {}, patch.config);
+      const cleared = Object.fromEntries(Object.keys(cur.config ?? {}).filter((k) => !(k in config)).map((k) => [k, undefined]));
+      const full = { ...patch, config: { ...cleared, ...config } };
+      writes.push({ bucket: 'update', id: j.id, disabled: true, run: () => { api().upsertJob(full); } });
     }
 
     let gated = 0;
@@ -168,17 +224,43 @@ export function createScheduledJobsProvider(opts: { jobs?: () => ScheduledJobsAp
         plan.warnings.push(`builtin override "${b.id}" is not a builtin job on this node — skipped`);
         continue;
       }
+      // Only config keys this builtin already has, minus the never-imported ones.
+      const curConfig: Record<string, unknown> = isObj(cur.config) ? cur.config : {};
+      const cfgPatch: Record<string, unknown> = {};
+      const refused: string[] = [];
+      for (const [k, v] of Object.entries(isObj(b.config) ? b.config : {})) {
+        if (BUILTIN_CONFIG_NEVER_IMPORTED.has(k) || !(k in curConfig) || SECRET_KEY_RE.test(k)) {
+          if (!canonicalEqual(curConfig[k], v)) refused.push(k);
+          continue;
+        }
+        cfgPatch[k] = v;
+      }
       const incoming = {
         enabled: typeof b.enabled === 'boolean' ? b.enabled : cur.enabled,
         intervalMinutes: typeof b.intervalMinutes === 'number' ? b.intervalMinutes : cur.intervalMinutes,
-        config: isObj(b.config) ? { ...cur.config, ...b.config } : cur.config,
+        config: { ...curConfig, ...cfgPatch },
       };
-      if (canonicalEqual({ enabled: cur.enabled, intervalMinutes: cur.intervalMinutes, config: cur.config }, incoming)) {
-        bump(plan, 'skipIdentical', b.id);
+      // An import never ARMS a builtin: turning a job on, or turning its dryRun off, is a
+      // human's call after a dry-run review on THIS node (the destructive builtins — reapers,
+      // gc, conversation cleanup — "never self-arm").
+      const notArmed: string[] = [];
+      if (cur.enabled === false && incoming.enabled === true) { incoming.enabled = false; notArmed.push('enabled'); }
+      if (curConfig.dryRun !== false && incoming.config.dryRun === false) { incoming.config.dryRun = curConfig.dryRun; notArmed.push('config.dryRun'); }
+      if (policy === 'replace') {
+        for (const k of refused) plan.warnings.push(`builtin "${b.id}": config key "${k}" is never imported`);
+        if (notArmed.length) plan.warnings.push(`builtin "${b.id}" not armed by import (${notArmed.join(', ')} kept as here) — enable/arm it yourself after a dry-run`);
+      }
+      if (canonicalEqual({ enabled: cur.enabled, intervalMinutes: cur.intervalMinutes, config: curConfig }, incoming)) {
+        bump(plan, (refused.length || notArmed.length) ? 'skipped' : 'skipIdentical', b.id);
         continue;
       }
       if (policy !== 'replace') { bump(plan, 'skipped', b.id); gated++; continue; }
       bump(plan, 'update', b.id);
+      const changed: string[] = [];
+      if (cur.enabled !== incoming.enabled) changed.push(`enabled ${cur.enabled}→${incoming.enabled}`);
+      if (cur.intervalMinutes !== incoming.intervalMinutes) changed.push(`intervalMinutes ${cur.intervalMinutes}→${incoming.intervalMinutes}`);
+      for (const [k, v] of Object.entries(cfgPatch)) if (!canonicalEqual(curConfig[k], v)) changed.push(`config.${k}: ${JSON.stringify(curConfig[k])}→${JSON.stringify(v)}`);
+      plan.warnings.push(`builtin "${b.id}" override: ${changed.join(', ')}`);
       writes.push({ bucket: 'update', id: b.id, run: () => { api().upsertJob({ id: b.id!, ...incoming }); } });
     }
     if (gated) plan.warnings.push(`${gated} builtin job override(s) not applied — builtin overrides apply only with policy "replace"`);
@@ -208,6 +290,20 @@ export function createScheduledJobsProvider(opts: { jobs?: () => ScheduledJobsAp
         delete out.builtin;
         const { value, redactedKeys: rk } = stripSecretKeys(out, `custom.${j.id}`);
         redactedKeys.push(...rk);
+        // Inline credentials in shell strings (best effort — the key names say nothing).
+        const vcfg = isObj((value as Record<string, unknown>).config) ? { ...((value as Record<string, unknown>).config as Record<string, unknown>) } : {};
+        for (const f of JOB_SHELL_FIELDS) {
+          const x = vcfg[f];
+          if (typeof x === 'string') {
+            const r = redactInlineSecrets(x);
+            if (r.hit) { vcfg[f] = r.value; redactedKeys.push(`custom.${j.id}.config.${f} (value)`); }
+          } else if (Array.isArray(x)) {
+            let hit = false;
+            vcfg[f] = x.map((e) => { if (typeof e !== 'string') return e; const r = redactInlineSecrets(e); hit ||= r.hit; return r.value; });
+            if (hit) redactedKeys.push(`custom.${j.id}.config.${f} (value)`);
+          }
+        }
+        (value as Record<string, unknown>).config = vcfg;
         custom.push(value as unknown as ExportedJob);
       }
       return { data: { custom, builtins } satisfies ScheduledJobsData, redactedKeys, warnings: [] };
@@ -249,7 +345,8 @@ export function createMachineAccessProvider(opts: { file?: string; keyExists?: (
       const cur = local.get(m.id);
       let bucket: 'add' | 'update';
       if (!cur) bucket = 'add';
-      else if (canonicalEqual(machineContent(cur), machineContent(m))) { bump(plan, 'skipIdentical', m.id); continue; }
+      // Secret-named fields are masked on both sides (the bundle copy never carries them).
+      else if (canonicalEqual(stripSecretKeys(machineContent(cur)).value, stripSecretKeys(machineContent(m)).value)) { bump(plan, 'skipIdentical', m.id); continue; }
       else if (policy !== 'replace') { bump(plan, 'skipExists', m.id); continue; }
       else bucket = 'update';
       bump(plan, bucket, m.id);
@@ -258,9 +355,23 @@ export function createMachineAccessProvider(opts: { file?: string; keyExists?: (
           plan.warnings.push(`key-missing: ${m.id} uses ${a.identityFile}, which does not exist on this node`);
         }
       }
-      const profile = machineContent(m) as MachineProfile;
-      writes.push({ bucket, id: m.id, run: () => { upsertMachine(profile, file()); } });
+      // Carry this node's secret-named fields over, so a replace never deletes them.
+      const profile = (cur ? reinjectLocalSecrets(machineContent(cur), machineContent(m)) : machineContent(m)) as MachineProfile;
+      writes.push({ bucket, id: m.id, run: () => { snapshotOnce(); upsertMachine(profile, file()); } });
     }
+    // The store keeps a ONE-deep .bak per write, so a multi-profile import would leave a .bak
+    // that already holds earlier imported writes. Snapshot the pre-import file once instead.
+    let snapped = false;
+    const snapshotOnce = () => {
+      if (snapped) return;
+      snapped = true;
+      try {
+        if (!fs.existsSync(file())) return;
+        const bak = `${file()}.bak-import-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+        fs.copyFileSync(file(), bak);
+        fs.chmodSync(bak, 0o600);
+      } catch { /* best effort */ }
+    };
     return apply ? applyWrites(plan, writes) : plan;
   }
 
@@ -284,19 +395,53 @@ export function createMachineAccessProvider(opts: { file?: string; keyExists?: (
 
 /** Keys bound to THIS node — never exported, never imported. */
 export const PROJECT_SETTINGS_NODE_BOUND = new Set(['devModeEnabled']);
-/** Keys an import never flips — the operator turns these on or off per node, deliberately. */
-export const PROJECT_SETTINGS_NEVER_FLIP = new Set(['dataServiceEnabled', 'busEnabled', 'dataSyncViaFabric']);
+/** Keys an import never flips — the operator turns these on or off per node, deliberately.
+ *  The fabric toggles are here because fabricRpcEnabled opens full peer RPC (no route
+ *  allow-list) — the most security-sensitive switch in the file. */
+export const PROJECT_SETTINGS_NEVER_FLIP = new Set([
+  'dataServiceEnabled', 'busEnabled', 'dataSyncViaFabric',
+  'fabricEnabled', 'fabricRpcEnabled', 'missionRelayedSpawnEnabled',
+]);
+/** Keys an import may raise but never LOWER: fewer restore points is never restored. */
+export const PROJECT_SETTINGS_NEVER_LOWER = new Set(['bundleRetention']);
 
 /** Same path project-settings.ts uses (shared by dev and prod). */
 export function projectSettingsPath(): string {
   return path.join(getDataDir(), 'project-settings.json');
 }
 
-export function createProjectSettingsProvider(opts: { file?: string } = {}): ConfigProvider {
+export interface ProjectSettingsProviderOptions {
+  /** Test seam: read/write this raw file instead of going through project-settings.ts. */
+  file?: string;
+  /** Called after a write with the effective settings before and after (test seam; the
+   *  default applies the PUT /project-settings live side effects). */
+  onApplied?: (prev: Record<string, unknown>, next: Record<string, unknown>) => void;
+}
+
+export function createProjectSettingsProvider(opts: ProjectSettingsProviderOptions = {}): ConfigProvider {
   const file = () => opts.file ?? projectSettingsPath();
   const readLocal = (): Record<string, unknown> => {
     const raw = readJsonFile(file());
     return isObj(raw) ? raw : {};
+  };
+  const defaults = PROJECT_SETTINGS_DEFAULTS as unknown as Record<string, unknown>;
+  /** The effective value — the file's, else the default a missing key resolves to. */
+  const effective = (local: Record<string, unknown>, k: string) => (k in local ? local[k] : defaults[k]);
+  /** Write through the owning module (typed coercion + its cache) and run the same live
+   *  side effects PUT /project-settings runs, so daemons follow the new values without a
+   *  restart. A test-injected file is written raw. */
+  const write = (changes: Record<string, unknown>) => {
+    if (opts.file) {
+      const prev = { ...defaults, ...readLocal() };
+      writeJsonAtomic(file(), { ...readLocal(), ...changes });
+      opts.onApplied?.(prev, { ...defaults, ...readLocal() });
+      return;
+    }
+    const ps = require('../../../project-settings') as typeof import('../../../project-settings');
+    const prev = ps.getProjectSettings();
+    const next = ps.saveProjectSettings(changes as Partial<import('../../../project-settings').ProjectSettings>);
+    if (opts.onApplied) opts.onApplied(prev as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
+    else (require('../../../project-settings-live') as typeof import('../../../project-settings-live')).applyProjectSettingsSideEffects(prev, next);
   };
 
   async function planOrApply(data: unknown, policy: ImportPolicy, apply: boolean): Promise<PlanResult> {
@@ -313,17 +458,30 @@ export function createProjectSettingsProvider(opts: { file?: string } = {}): Con
         continue;
       }
       if (SECRET_KEY_RE.test(k)) { bump(plan, 'skipped', k); plan.warnings.push(`secret-named key "${k}" is never imported`); continue; }
-      if (PROJECT_SETTINGS_NEVER_FLIP.has(k)) {
-        const effective = k in local ? local[k] : (PROJECT_SETTINGS_DEFAULTS as unknown as Record<string, unknown>)[k];
-        if (canonicalEqual(effective, v)) { bump(plan, 'skipIdentical', k); continue; }
+      if (!(k in defaults)) {
+        // Not a setting this build knows: saveProjectSettings would drop it anyway.
         bump(plan, 'skipped', k);
-        plan.warnings.push(`"${k}" is never flipped by an import (here ${JSON.stringify(effective)}, bundle ${JSON.stringify(v)}) — change it yourself if intended`);
+        plan.warnings.push(`unknown setting "${k}" is not a project setting on this build — skipped`);
         continue;
       }
-      if (!(k in local)) { bump(plan, 'add', k); changes[k] = v; continue; }
-      if (canonicalEqual(local[k], v)) { bump(plan, 'skipIdentical', k); continue; }
+      const eff = effective(local, k);
+      if (PROJECT_SETTINGS_NEVER_FLIP.has(k)) {
+        if (canonicalEqual(eff, v)) { bump(plan, 'skipIdentical', k); continue; }
+        bump(plan, 'skipped', k);
+        plan.warnings.push(`"${k}" is never flipped by an import (here ${JSON.stringify(eff)}, bundle ${JSON.stringify(v)}) — change it yourself if intended`);
+        continue;
+      }
+      // A key absent from the file is NOT "unset": it resolves to the default. Compare with
+      // the effective value, so a fresh node's defaults are not silently overridden.
+      if (canonicalEqual(eff, v)) { bump(plan, 'skipIdentical', k); continue; }
+      if (PROJECT_SETTINGS_NEVER_LOWER.has(k) && typeof eff === 'number' && typeof v === 'number' && v < eff) {
+        bump(plan, 'skipped', k);
+        plan.warnings.push(`"${k}" is never lowered by an import (here ${eff}, bundle ${v}) — change it yourself if intended`);
+        continue;
+      }
       if (policy !== 'replace') { bump(plan, 'skipDiffers', k); differs.push(k); continue; }
-      bump(plan, 'update', k);
+      bump(plan, k in local ? 'update' : 'add', k);
+      plan.warnings.push(`setting "${k}": ${JSON.stringify(eff)} → ${JSON.stringify(v)}`);
       changes[k] = v;
     }
     if (differs.length) {
@@ -335,7 +493,7 @@ export function createProjectSettingsProvider(opts: { file?: string } = {}): Con
       let done = false;
       const writeAll = () => {
         if (done) return;
-        writeJsonAtomic(file(), { ...readLocal(), ...changes });
+        write(changes);
         done = true;
       };
       for (const k of keys) writes.push({ bucket: k in local ? 'update' : 'add', id: k, run: writeAll });
@@ -388,17 +546,16 @@ export function createMcpAccessProvider(opts: { file?: string } = {}): ConfigPro
     const have = new Set(tools(local));
     const incoming = tools(data);
     const want = new Set(incoming);
-    let next: string[];
-    if (policy === 'replace') {
-      for (const t of incoming) bump(plan, have.has(t) ? 'skipIdentical' : 'add', t);
-      for (const t of have) if (!want.has(t)) bump(plan, 'update', `-${t}`); // un-gated by the overwrite
-      next = [...want];
-    } else {
-      // add-missing BY KEY: every gated tool is a key; a gate only ever adds a confirmation step.
-      for (const t of incoming) bump(plan, have.has(t) ? 'skipIdentical' : 'add', t);
-      for (const t of have) if (!want.has(t)) bump(plan, 'skipExists', t);
-      next = [...have, ...incoming.filter((t) => !have.has(t))];
+    // add-missing BY KEY under every policy: each gated tool is a key, and a gate only ever
+    // adds a confirmation step. An import never REMOVES a gate — not even under replace,
+    // which is often chosen for the datasets and would otherwise quietly un-gate admin tools.
+    for (const t of incoming) bump(plan, have.has(t) ? 'skipIdentical' : 'add', t);
+    const kept = [...have].filter((t) => !want.has(t));
+    for (const t of kept) bump(plan, 'skipExists', t);
+    if (policy === 'replace' && kept.length) {
+      plan.warnings.push(`${kept.length} admin gate(s) not in the bundle are kept — an import never removes a gate (un-gate them yourself): ${kept.slice(0, 10).join(', ')}${kept.length > 10 ? ', …' : ''}`);
     }
+    const next = [...have, ...incoming.filter((t) => !have.has(t))];
     const writes: Write[] = [];
     if (plan.counts.add || plan.counts.update) {
       const cfg = { ...local, version: typeof local.version === 'number' ? local.version : (typeof data.version === 'number' ? data.version : 2), adminGatedTools: next };
@@ -426,6 +583,8 @@ export interface McpProfileApi {
   readProfileState(): { profile: string };
   setActiveProfile(name: string, setBy?: string): unknown;
   getProfile(name: string): unknown;
+  /** Move the tools-list stamp so connected MCP clients re-fetch (default: tools-rev). */
+  bumpToolsRev?(): void;
 }
 
 export function createMcpProfileProvider(opts: { profiles?: () => McpProfileApi } = {}): ConfigProvider {
@@ -448,7 +607,18 @@ export function createMcpProfileProvider(opts: { profiles?: () => McpProfileApi 
       plan.warnings.push(`unknown MCP tool profile "${name}" on this build — not applied`);
     } else {
       bump(plan, 'update', name);
-      writes.push({ bucket: 'update', id: name, run: () => { api().setActiveProfile(name, 'import'); } });
+      plan.warnings.push(`MCP tool profile "${cur}" → "${name}": Claude Code picks it up within ~30s; a claude.ai connector needs refresh_connector_tools`);
+      writes.push({
+        bucket: 'update', id: name, run: () => {
+          const a = api();
+          a.setActiveProfile(name, 'import');
+          // Like both other setters: without the bump, connected clients keep the old tool list.
+          try {
+            if (a.bumpToolsRev) a.bumpToolsRev();
+            else (require('../../../mcp-server/registry/tools-rev') as typeof import('../../../mcp-server/registry/tools-rev')).bumpToolsRev();
+          } catch { /* best effort */ }
+        },
+      });
     }
     return apply ? applyWrites(plan, writes) : plan;
   }
@@ -471,6 +641,7 @@ export interface ConfigProvidersOptions {
   machineAccessFile?: string;
   keyExists?: (p: string) => boolean;
   projectSettingsFile?: string;
+  projectSettingsApplied?: ProjectSettingsProviderOptions['onApplied'];
   mcpAccessFile?: string;
   profiles?: () => McpProfileApi;
 }
@@ -480,7 +651,7 @@ export function createConfigProviders(o: ConfigProvidersOptions = {}): ConfigPro
   return [
     createScheduledJobsProvider({ jobs: o.jobs }),
     createMachineAccessProvider({ file: o.machineAccessFile, keyExists: o.keyExists }),
-    createProjectSettingsProvider({ file: o.projectSettingsFile }),
+    createProjectSettingsProvider({ file: o.projectSettingsFile, onApplied: o.projectSettingsApplied }),
     createMcpAccessProvider({ file: o.mcpAccessFile }),
     createMcpProfileProvider({ profiles: o.profiles }),
   ];

@@ -9,6 +9,7 @@
 
 import type { RouteHandler, RouteContext } from '../index';
 import { getProjectSettings, saveProjectSettings } from '../../project-settings';
+import { applyProjectSettingsSideEffects } from '../../project-settings-live';
 
 export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -61,64 +62,9 @@ export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] 
           bundleRetention,
         });
 
-        // Live-apply the memory-sync toggle: re-resolve the autosync daemon mode (no restart).
-        if (prevSettings.memorySyncEnabled !== updated.memorySyncEnabled) {
-          try {
-            const mode = require('../../memory/autosync').getAutoSyncDaemon().refreshMode();
-            console.log(`[ProjectSettings] memorySyncEnabled=${updated.memorySyncEnabled} → autosync mode=${mode}`);
-          } catch (err: any) {
-            console.error('[ProjectSettings] memory-sync toggle error:', err?.message);
-          }
-        }
-
-        // Live-apply the cross-project signpost toggle: start the sweep+watcher, or stop the watcher.
-        if (prevSettings.crossProjectSignpostEnabled !== updated.crossProjectSignpostEnabled) {
-          try {
-            const sp = require('../../memory/cross-project-signpost');
-            if (updated.crossProjectSignpostEnabled) sp.startCrossProjectSignpost();
-            else sp.stopCrossProjectSignpost();
-            console.log(`[ProjectSettings] crossProjectSignpostEnabled=${updated.crossProjectSignpostEnabled}`);
-          } catch (err: any) {
-            console.error('[ProjectSettings] signpost toggle error:', err?.message);
-          }
-        }
-
-        // Live-apply the rule-sync toggle: re-resolve the rule-autosync daemon mode (no restart).
-        if (prevSettings.ruleSyncEnabled !== updated.ruleSyncEnabled) {
-          try {
-            const mode = require('../../rules/autosync').getRuleAutoSyncDaemon().refreshMode();
-            console.log(`[ProjectSettings] ruleSyncEnabled=${updated.ruleSyncEnabled} → rule-autosync mode=${mode}`);
-          } catch (err: any) {
-            console.error('[ProjectSettings] rule-sync toggle error:', err?.message);
-          }
-        }
-
-        // Runtime load/unload knowledge system on toggle
-        if (prevSettings.knowledgeEnabled !== updated.knowledgeEnabled) {
-          try {
-            if (updated.knowledgeEnabled) {
-              // Re-enable: start scheduler, pre-warm embedder + vector store
-              console.log('[ProjectSettings] Knowledge enabled — starting scheduler and pre-warming');
-              const { getKnowledgeScheduler } = require('../../knowledge/scheduler');
-              getKnowledgeScheduler().start();
-              const { getEmbedder } = require('../../vector/embedder');
-              const { getVectorStore } = require('../../vector/vector-store');
-              getEmbedder().load().catch(() => {});
-              getVectorStore().init().catch(() => {});
-            } else {
-              // Disable: stop scheduler, destroy embedder + vector store to free memory
-              console.log('[ProjectSettings] Knowledge disabled — stopping scheduler and unloading');
-              const { getKnowledgeScheduler } = require('../../knowledge/scheduler');
-              getKnowledgeScheduler().stop();
-              const { destroyEmbedder } = require('../../vector/embedder');
-              destroyEmbedder();
-              const { destroyVectorStore } = require('../../vector/vector-store');
-              destroyVectorStore();
-            }
-          } catch (err: any) {
-            console.error('[ProjectSettings] Knowledge toggle error:', err.message);
-          }
-        }
+        // Live-apply toggles (autosync, signpost, rule-sync, knowledge) — shared with the
+        // data-bundle project-settings import so both writers keep the daemons in step.
+        applyProjectSettingsSideEffects(prevSettings, updated);
 
         return { success: true, data: updated };
       },
