@@ -6,6 +6,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the configure import: the ListTools closure reads the node-default
+// profile file under getDataDir(); the full-count assertions below must not depend on
+// what this host's operator last chose.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-runtime-'));
 import { handleToolSet } from '../routes/core/mcp-tools.routes';
 import { createLiveOverlayProvider } from '../mcp-server/registry/overlay-live';
 import { configureMcpServer, LM_ASSIST_TOOL_DEFS, type McpToolDispatcher } from '../mcp-server/configure';

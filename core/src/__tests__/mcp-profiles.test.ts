@@ -7,13 +7,25 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic: tests below write the node-default profile file. Never the developer's real one.
+const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-profiles-'));
+process.env.LM_ASSIST_DATA_DIR = DATA_DIR;
 
 import {
   PROFILE_DEFINITIONS, DEFAULT_PROFILE, resolveProfileTools, applyProfileToToolDefs,
   unmatchedSelectors, knownSelectors,
+  PROFILE_ALIASES, PROFILE_PIN_HEADER, PROFILE_PIN_ENV, canonicalProfileName, getProfile,
+  isValidPinSyntax, resolveEffectiveProfile, liveEffectiveProfile, isNarrowedProfile,
+  profileNeedsExtTools, activeProfileName, setActiveProfile, readProfileState,
+  _resetProfileCacheForTests,
 } from '../mcp-server/registry/profiles';
 import { PROTECTED_TOOLS } from '../mcp-server/registry/model';
 import { LM_ASSIST_TOOL_DEFS } from '../mcp-server/configure';
+import { isDevRepo } from '../utils/path-utils';
 
 const AVAILABLE = LM_ASSIST_TOOL_DEFS.map((d) => d.name);
 const WITH_EXT = [...AVAILABLE, 'ext__langmart__models_list', 'ext__langmart__quota_status', 'ext__other__thing'];
@@ -54,7 +66,7 @@ test('basic is a real reduction and still carries orientation', () => {
 });
 
 test('an ext__<plugin> selector takes the whole plugin and nothing else', () => {
-  const keep = resolveProfileTools(PROFILE_DEFINITIONS.langmart, WITH_EXT);
+  const keep = resolveProfileTools(PROFILE_DEFINITIONS.platform, WITH_EXT);
   assert.ok(keep.has('ext__langmart__models_list'));
   assert.ok(keep.has('ext__langmart__quota_status'));
   assert.ok(!keep.has('ext__other__thing'), 'a different plugin must not be pulled in');
@@ -142,4 +154,152 @@ test('an Object.prototype key is not a profile and cannot break tools/list', () 
     const out = applyProfileToToolDefs(LM_ASSIST_TOOL_DEFS as any[], bad);
     assert.equal(out.length, LM_ASSIST_TOOL_DEFS.length, `"${bad}" must leave the surface untouched`);
   }
+});
+
+// --- 2026-09-23: `langmart` → `platform`, and request-scoped profile PINS -------------
+
+function stateFile(): string {
+  return path.join(DATA_DIR, `mcp-profile${isDevRepo() ? '-dev' : ''}.json`);
+}
+function resetNodeDefault(): void {
+  fs.rmSync(stateFile(), { force: true });
+  _resetProfileCacheForTests();
+}
+
+test('`langmart` is now `platform`, and the old name still resolves to it', () => {
+  assert.ok(Object.hasOwn(PROFILE_DEFINITIONS, 'platform'));
+  assert.ok(!Object.hasOwn(PROFILE_DEFINITIONS, 'langmart'), 'the retired name must not be a second definition');
+  assert.equal(PROFILE_ALIASES.langmart, 'platform');
+  assert.equal(canonicalProfileName('langmart'), 'platform');
+  assert.equal(getProfile('langmart'), PROFILE_DEFINITIONS.platform);
+  const defs = WITH_EXT.map((name) => ({ name }));
+  assert.deepEqual(
+    applyProfileToToolDefs(defs, 'langmart').map((d) => d.name),
+    applyProfileToToolDefs(defs, 'platform').map((d) => d.name),
+  );
+});
+
+test('every alias points at a real profile, is not one itself, and is a legal pin', () => {
+  for (const [alias, target] of Object.entries(PROFILE_ALIASES)) {
+    assert.ok(Object.hasOwn(PROFILE_DEFINITIONS, target), `alias "${alias}" points at nothing`);
+    assert.ok(!Object.hasOwn(PROFILE_DEFINITIONS, alias), `alias "${alias}" shadows a real profile`);
+    assert.ok(isValidPinSyntax(alias), `alias "${alias}" could never arrive as a pin`);
+  }
+});
+
+test('every shipped profile name is a legal pin — otherwise it could never be pinned', () => {
+  for (const name of Object.keys(PROFILE_DEFINITIONS)) assert.ok(isValidPinSyntax(name), name);
+});
+
+test('canonicalProfileName uses own keys on BOTH maps', () => {
+  for (const bad of ['constructor', '__proto__', 'toString', 'hasOwnProperty', '', 'no-such']) {
+    assert.equal(canonicalProfileName(bad), undefined, JSON.stringify(bad));
+  }
+  for (const n of Object.keys(PROFILE_DEFINITIONS)) assert.equal(canonicalProfileName(n), n);
+});
+
+test('pin grammar: lowercase, starts with a letter, ≤32 chars, `connectors` reserved', () => {
+  for (const ok of ['basic', 'a', 'platform', 'with-dash', 'x1', 'a'.repeat(32)]) {
+    assert.equal(isValidPinSyntax(ok), true, ok);
+  }
+  for (const bad of ['', 'Basic', '1abc', '-x', 'with space', 'under_score', 'a'.repeat(33), 'connectors', 'basic/x', 'basic?x']) {
+    assert.equal(isValidPinSyntax(bad), false, JSON.stringify(bad));
+  }
+});
+
+test('resolveEffectiveProfile: no pin ⇒ the node default, with no pin fields at all', () => {
+  resetNodeDefault();
+  for (const none of [undefined, null, '', '   ']) {
+    assert.deepEqual(resolveEffectiveProfile(none), { name: 'admin', source: 'node-default' }, JSON.stringify(none));
+  }
+});
+
+test('resolveEffectiveProfile: a known pin wins, an alias resolves, the pin is kept as sent', () => {
+  resetNodeDefault();
+  assert.deepEqual(resolveEffectiveProfile('basic'), { name: 'basic', source: 'pin', pin: 'basic' });
+  assert.deepEqual(resolveEffectiveProfile('langmart'), { name: 'platform', source: 'pin', pin: 'langmart' });
+  assert.deepEqual(resolveEffectiveProfile(' extended '), { name: 'extended', source: 'pin', pin: 'extended' });
+});
+
+test('resolveEffectiveProfile: an unknown pin fails OPEN to the node default, flagged', () => {
+  resetNodeDefault();
+  for (const bad of ['basci', 'constructor', '__proto__', 'connectors', 'Basic']) {
+    assert.deepEqual(
+      resolveEffectiveProfile(bad),
+      { name: 'admin', source: 'node-default', pin: bad, unknownPin: true },
+      bad,
+    );
+  }
+});
+
+test('resolveEffectiveProfile: the echoed pin is bounded — printable ASCII, ≤64 chars', () => {
+  const r = resolveEffectiveProfile('x\n\u0000'.repeat(40) + 'tail');
+  assert.equal(r.unknownPin, true);
+  assert.ok(r.pin!.length <= 64, `echo is ${r.pin!.length} chars`);
+  assert.match(r.pin!, /^[\x20-\x7e]*$/);
+});
+
+test('a pin is request-scoped: it never reaches the node-default file or cache', () => {
+  resetNodeDefault();
+  setActiveProfile('basic', 'test');
+  assert.equal(resolveEffectiveProfile('extended').name, 'extended');
+  assert.equal(activeProfileName(), 'basic', 'the cache still holds the node default');
+  _resetProfileCacheForTests();
+  assert.equal(activeProfileName(), 'basic', 'and so does the file');
+  assert.equal(readProfileState().profile, 'basic');
+  assert.deepEqual(resolveEffectiveProfile(undefined), { name: 'basic', source: 'node-default' });
+  assert.deepEqual(
+    resolveEffectiveProfile('basci'),
+    { name: 'basic', source: 'node-default', pin: 'basci', unknownPin: true },
+    'an unknown pin falls back to the node default IN FORCE, not to admin',
+  );
+  resetNodeDefault();
+});
+
+test('the node-default file accepts the retired name and reports the current one', () => {
+  resetNodeDefault();
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(stateFile(), JSON.stringify({ profile: 'langmart' }));
+  _resetProfileCacheForTests();
+  assert.equal(activeProfileName(), 'platform', 'a file written before the rename still selects the profile');
+  resetNodeDefault();
+  assert.equal(setActiveProfile('langmart', 'test').profile, 'platform', 'an alias is stored as its target');
+  assert.equal(readProfileState().profile, 'platform');
+  assert.equal(activeProfileName(), 'platform');
+  resetNodeDefault();
+});
+
+test('liveEffectiveProfile keeps a pin and re-reads a node-default resolution', () => {
+  resetNodeDefault();
+  const pinned = resolveEffectiveProfile('extended');
+  const unpinned = resolveEffectiveProfile(undefined);
+  const unknown = resolveEffectiveProfile('basci');
+  setActiveProfile('basic', 'test');
+  assert.equal(liveEffectiveProfile(pinned), pinned, 'a pin is fixed for the life of its connector');
+  assert.deepEqual(liveEffectiveProfile(unpinned), { name: 'basic', source: 'node-default' });
+  assert.deepEqual(liveEffectiveProfile(unknown), { name: 'basic', source: 'node-default', pin: 'basci', unknownPin: true });
+  assert.deepEqual(liveEffectiveProfile(undefined), { name: 'basic', source: 'node-default' });
+  resetNodeDefault();
+});
+
+test('isNarrowedProfile / profileNeedsExtTools', () => {
+  assert.equal(isNarrowedProfile('basic'), true);
+  assert.equal(isNarrowedProfile('platform'), true);
+  assert.equal(isNarrowedProfile('langmart'), true);
+  assert.equal(isNarrowedProfile('extended'), true);
+  assert.equal(isNarrowedProfile('admin'), false);
+  assert.equal(isNarrowedProfile('no-such'), false, 'an unknown name serves everything — not narrowed');
+
+  assert.equal(profileNeedsExtTools('basic'), false);
+  assert.equal(profileNeedsExtTools('extended'), false);
+  assert.equal(profileNeedsExtTools('platform'), true);
+  assert.equal(profileNeedsExtTools('langmart'), true);
+  assert.equal(profileNeedsExtTools('admin'), true);
+  assert.equal(profileNeedsExtTools('no-such'), true, 'fail open');
+  assert.equal(profileNeedsExtTools('constructor'), true, 'fail open, never a throw');
+});
+
+test('the pin transport names are fixed', () => {
+  assert.equal(PROFILE_PIN_HEADER, 'x-lm-mcp-profile');
+  assert.equal(PROFILE_PIN_ENV, 'LM_MCP_PROFILE');
 });

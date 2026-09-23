@@ -214,9 +214,9 @@ function toApi(e: Envelope, start: number) {
 /** GET /mcp-tools/profile — the active profile, what else is available, and what each costs. */
 async function handleProfileGet(): Promise<Envelope> {
   // Built-ins AND the ext plugin tools. getToolCatalog() covers only the built-ins, so
-  // counting from it alone made every `ext__*` selector match nothing — `langmart`
-  // reported the same size as `basic` and the plugin list came back empty, while the
-  // real tools/list was 33 tools larger. Fail-open, like the tools/list path itself.
+  // counting from it alone made every `ext__*` selector match nothing — `platform`
+  // (then named `langmart`) reported the same size as `basic` and the plugin list came
+  // back empty, while the real tools/list was 33 tools larger. Fail-open, like tools/list.
   let extNames: string[] = [];
   try {
     extNames = (await getPluginAggregator().listToolDefs()).map((d) => d.name);

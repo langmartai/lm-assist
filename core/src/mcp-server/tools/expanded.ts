@@ -1171,7 +1171,7 @@ export const mcpProfileToolDef = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      set: { type: 'string', description: 'basic | langmart | extended | admin. Omit to read.' },
+      set: { type: 'string', description: 'basic | platform | extended | admin. Omit to read.' },
     },
     required: [] as string[],
   },

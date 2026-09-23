@@ -126,7 +126,7 @@ function status(partial: Partial<McpProfileStatus> = {}): McpProfileStatus {
     selectors: { categories: ['core', 'session'], plugins: ['ext__langmart'] },
     profiles: [
       prof({ name: 'basic', tools: 42 }),
-      prof({ name: 'langmart', tools: 75 }),
+      prof({ name: 'platform', tools: 75 }),
       prof({ name: 'extended', tools: 168 }),
       prof({ name: 'admin', tools: 320, active: true }),
     ],
@@ -137,7 +137,7 @@ function status(partial: Partial<McpProfileStatus> = {}): McpProfileStatus {
 describe('sortProfiles', () => {
   it('orders narrow → wide so the list reads as a cost ladder', () => {
     const out = sortProfiles(status().profiles);
-    expect(out.map((p) => p.name)).toEqual(['basic', 'langmart', 'extended', 'admin']);
+    expect(out.map((p) => p.name)).toEqual(['basic', 'platform', 'extended', 'admin']);
   });
   it('breaks ties on the name so the order is stable across refreshes', () => {
     const out = sortProfiles([prof({ name: 'zeta', tools: 5 }), prof({ name: 'alpha', tools: 5 })]);
@@ -186,7 +186,7 @@ describe('unmatchedSelectorNote', () => {
     expect(unmatchedSelectorNote(prof({ name: 'basic' }))).toBeNull();
   });
   it('names the selectors that matched nothing', () => {
-    const note = unmatchedSelectorNote(prof({ name: 'langmart', unmatchedSelectors: ['ext__langmart'] }));
+    const note = unmatchedSelectorNote(prof({ name: 'platform', unmatchedSelectors: ['ext__langmart'] }));
     expect(note).toContain('ext__langmart');
     expect(note).toContain('this selector matches');
   });
