@@ -29,7 +29,9 @@ import {
   _resetProfileCacheForTests, activeProfileName, readProfileState, setActiveProfile,
   type EffectiveProfile,
 } from '../mcp-server/registry/profiles';
-import { CONNECTORS_HINT } from '../mcp-server/registry/profile-report';
+import { CONNECTORS_HINT, connectorsHintFor } from '../mcp-server/registry/profile-report';
+import { LM_ASSIST_TOOL_DEFS } from '../mcp-server/configure';
+import { applyProfileToToolDefs, PROFILE_DEFINITIONS } from '../mcp-server/registry/profiles';
 import { _setUnpinnedRefresherForTests } from '../mcp-server/profile-connectors';
 import { currentToolsRev } from '../mcp-server/registry/tools-rev';
 import { createMcpToolsRoutes, handleProfileGet, handleProfileSet } from '../routes/core/mcp-tools.routes';
@@ -122,8 +124,12 @@ test('get makes NO network call and fires no refresh — it is a protected, alwa
     await settle();
     assert.equal(fetched, 0, 'get must never read claude.ai — its connector list is a ~30 s stream');
     assert.equal(hookCalls, 0);
-    assert.equal(pinned.connectorsHint, CONNECTORS_HINT);
-    assert.equal(unpinned.connectorsHint, CONNECTORS_HINT);
+    assert.equal(unpinned.connectorsHint, CONNECTORS_HINT, 'admin lists mcp_connectors: the hint is unchanged');
+    // basic does not list mcp_connectors, and claude.ai / Claude Code only offer listed tools.
+    assert.notEqual(pinned.connectorsHint, CONNECTORS_HINT);
+    assert.match(pinned.connectorsHint, /profile "basic" does not list it/);
+    assert.match(pinned.connectorsHint, /the unpinned or `admin` lm-assist connector/);
+    assert.match(pinned.connectorsHint, /GET \/mcp\/profile-connectors/);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -282,4 +288,51 @@ test('POST /mcp-tools/profile (the route) with an unknown profile does not refre
   assert.equal(res.success, false);
   await settle();
   assert.equal(hookCalls, 0);
+});
+
+// ── the hint never names a tool the caller cannot call without saying where it is listed ──
+
+/** Is `tool` in this profile's advertised tools/list? (The real filter, over the real defs.) */
+const lists = (profile: string, tool: string): boolean =>
+  applyProfileToToolDefs(LM_ASSIST_TOOL_DEFS as any[], profile).some((d: any) => d.name === tool);
+
+test('connectorsHint: unchanged only where the profile lists mcp_connectors; elsewhere it says where it is listed', () => {
+  assert.ok(lists('admin', 'mcp_connectors'));
+  for (const name of Object.keys(PROFILE_DEFINITIONS)) {
+    for (const source of ['pin', 'node-default'] as const) {
+      const hint = connectorsHintFor({ name, source });
+      if (lists(name, 'mcp_connectors')) {
+        assert.equal(hint, CONNECTORS_HINT, `${name} (${source}) lists it`);
+      } else {
+        assert.match(hint, new RegExp(`profile "${name}" does not list it`), `${name} (${source})`);
+        assert.match(hint, /GET \/mcp\/profile-connectors/, `${name} (${source}) names the REST route`);
+        assert.ok(Buffer.byteLength(hint) < 400, `${name} (${source}) stays one bounded line`);
+      }
+    }
+  }
+});
+
+test('connectorsHint under a narrowed NODE DEFAULT never points at the unpinned connector (it is narrowed too)', async () => {
+  setActiveProfile('basic', 'test');
+  try {
+    const d = await readJson({});
+    assert.equal(d.effective, 'basic');
+    assert.doesNotMatch(d.connectorsHint, /unpinned or/);
+    assert.match(d.connectorsHint, /an `admin`-pinned lm-assist connector on this hub \(URL …\/mcp\/admin\)/);
+    // A basic PIN on this node: the unpinned connector is narrowed too, so the same pointer.
+    const p = await readJson({}, PIN_BASIC);
+    assert.doesNotMatch(p.connectorsHint, /unpinned or/);
+    assert.match(p.connectorsHint, /`admin`-pinned/);
+  } finally {
+    setActiveProfile('admin', 'test');
+  }
+});
+
+test('set from a basic PIN: the note names mcp_connectors only together with where it is listed', async () => {
+  const d = await readJson({ set: 'extended' }, PIN_BASIC);
+  assert.match(d.note, /mcp_connectors \{action:"create", profile:"extended"\} on /);
+  // The node default is now extended, which does not list mcp_connectors either.
+  assert.match(d.note, /`admin`-pinned lm-assist connector/);
+  const a = await readJson({ set: 'basic' }, { name: 'admin', source: 'pin', pin: 'admin' });
+  assert.match(a.note, /mcp_connectors \{action:"create", profile:"basic"\}\)/, 'an admin pin lists it: no pointer needed');
 });

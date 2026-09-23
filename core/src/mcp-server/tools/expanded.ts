@@ -2452,7 +2452,7 @@ async function handleMcpProfile(args: Record<string, unknown>): Promise<McpToolR
   // Lazy requires: this module is also loaded by the stdio process, which never runs this
   // handler (its dispatcher forwards every EXPANDED_HANDLERS tool to Core over /mcp-call).
   const { PROFILE_DEFINITIONS } = require('../registry/profiles') as typeof import('../registry/profiles');
-  const { profileReport, setNodeDefaultProfile, CONNECTORS_HINT } =
+  const { profileReport, setNodeDefaultProfile, connectorsHintFor } =
     require('../registry/profile-report') as typeof import('../registry/profile-report');
   const { currentEffectiveProfile } = require('../principal-context') as typeof import('../principal-context');
 
@@ -2470,7 +2470,8 @@ async function handleMcpProfile(args: Record<string, unknown>): Promise<McpToolR
     }
   }
   // A read makes NO claude.ai call — this tool is protected and always listed. Per-profile
-  // claude.ai status is mcp_connectors {action:"list"} (CONNECTORS_HINT says so).
+  // claude.ai status is mcp_connectors {action:"list"} — connectorsHintFor says so, and says where
+  // that tool is listed when THIS connector's profile hides it.
   const r = change ? change.report : profileReport(caller);
   const conns = r.connectors;
   return ok(pretty({
@@ -2487,7 +2488,8 @@ async function handleMcpProfile(args: Record<string, unknown>): Promise<McpToolR
       ]),
     ),
     unpinnedConnector: conns?.unpinned ?? null,
-    connectorsHint: CONNECTORS_HINT,
+    // For the profile this caller is served NOW (after a `set`, an unpinned caller moved with it).
+    connectorsHint: connectorsHintFor({ name: r.effective, source: r.source }),
     ...(change ? { note: change.note } : {}),
   }));
 }
