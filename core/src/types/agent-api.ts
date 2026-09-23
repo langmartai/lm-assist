@@ -585,6 +585,9 @@ export interface AgentExecutionStatusResponse {
 
   /** Working directory the execution ran in (for project/repo provenance) */
   cwd?: string;
+
+  /** Which runner the execution was dispatched to; absent means the default Claude Agent SDK. */
+  runner?: HarnessId;
 }
 
 /**

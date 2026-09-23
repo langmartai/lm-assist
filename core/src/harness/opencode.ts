@@ -33,11 +33,63 @@ import type {
   AgentExecuteResponse,
   AgentTokenUsage,
 } from '../types/agent-api';
-import type { AgentHarness, HarnessProbe } from './types';
+import type { AgentHarness, HarnessProbe, HarnessRunHooks } from './types';
 import { resolveProfile, type ProviderProfile } from './provider-config';
 import { terminateRun } from './process';
+import { redactString } from './redact';
 
 export const OPENCODE_ID = 'opencode';
+
+/** Prefix of every per-run credential dir under os.tmpdir(). */
+const CONFIG_DIR_PREFIX = 'lm-harness-opencode-';
+
+/**
+ * Credential dirs of runs still in flight in THIS process, across every
+ * harness instance — the boot/periodic sweep must never pull a config out from
+ * under a child that is still reading it.
+ */
+const liveConfigDirs = new Set<string>();
+
+/**
+ * Remove per-run credential dirs a run failed to clean up.
+ *
+ * A run removes its own dir on close/error, but a Core that dies mid-run (or a
+ * crash between write and spawn) leaves a 0600 file holding a live key in
+ * os.tmpdir(). Only dirs that are ours by name AND uid, real directories (not
+ * symlinks), older than `maxAgeMs` and not used by a live run are removed.
+ * Returns how many were.
+ */
+export function sweepStaleOpencodeConfigs(
+  maxAgeMs: number = 24 * 3600 * 1000,
+  isLive: (dir: string) => boolean = (dir) => liveConfigDirs.has(dir),
+): number {
+  const tmp = os.tmpdir();
+  let names: string[];
+  try {
+    names = fs.readdirSync(tmp);
+  } catch {
+    return 0;
+  }
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const now = Date.now();
+  let removed = 0;
+  for (const name of names) {
+    if (!name.startsWith(CONFIG_DIR_PREFIX)) continue;
+    const dir = path.join(tmp, name);
+    try {
+      const st = fs.lstatSync(dir);
+      if (st.isSymbolicLink() || !st.isDirectory()) continue;
+      if (uid !== undefined && st.uid !== uid) continue;
+      if (now - st.mtimeMs < maxAgeMs) continue;
+      if (isLive(dir)) continue;
+      fs.rmSync(dir, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // Raced with the run's own cleanup, or not ours to remove.
+    }
+  }
+  return removed;
+}
 
 /** Wall-clock ceiling for a single run when the caller names none. */
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
@@ -301,9 +353,15 @@ export function createOpencodeHarness(): AgentHarness {
       return terminateRun(child);
     },
 
-    async execute(request: AgentExecuteRequest, executionId: string): Promise<AgentExecuteResponse> {
+    async execute(request: AgentExecuteRequest, executionId: string, hooks?: HarnessRunHooks): Promise<AgentExecuteResponse> {
       const start = Date.now();
       const profile = resolveProfile((request as any).providerProfile);
+
+      // Hooks are observers. A throwing one must not change what this run does or returns.
+      const safe = <A>(fn: ((a: A) => void) | undefined, arg: A): void => {
+        if (!fn) return;
+        try { fn.call(hooks, arg); } catch { /* observer failure is not a run failure */ }
+      };
 
       const base = (error: string): AgentExecuteResponse => ({
         success: false,
@@ -322,6 +380,7 @@ export function createOpencodeHarness(): AgentHarness {
       // Refuse rather than fall back — running a Claude agent for a request that
       // named a gateway harness is the silent substitution this work removes.
       if (!profile) {
+        safe(hooks?.onSettle, { termination: 'config_error' });
         return base(
           'No harness provider profile configured. Set one with PUT /harness/provider/:name ' +
             `or via ${'LM_HARNESS_'}BASE_URL + ${'LM_HARNESS_'}API_KEY.`
@@ -329,46 +388,96 @@ export function createOpencodeHarness(): AgentHarness {
       }
 
       const model = request.model || profile.model;
-      if (!model) return base(`Provider profile "${profile.name}" has no model and the request named none.`);
-
-      // One temp dir per run. mkdtemp gives 0700; the config inside is 0600
-      // because it holds the credential.
-      let configDir: string;
-      let configPath: string;
-      try {
-        configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lm-harness-opencode-'));
-        configPath = path.join(configDir, 'opencode.json');
-        fs.writeFileSync(configPath, JSON.stringify(buildOpencodeConfig(profile, model), null, 2), { mode: 0o600 });
-      } catch (err) {
-        return base(`Could not write the opencode provider config: ${err instanceof Error ? err.message : String(err)}`);
+      if (!model) {
+        safe(hooks?.onSettle, { termination: 'config_error' });
+        return base(`Provider profile "${profile.name}" has no model and the request named none.`);
       }
-
-      const cleanup = () => {
-        try {
-          fs.rmSync(configDir, { recursive: true, force: true });
-        } catch {
-          // Best effort. A leftover file in a 0700 temp dir is bad enough to try
-          // for, not bad enough to fail a completed run over.
-        }
-      };
 
       // Resolved once and passed BOTH as --dir and as the spawn cwd: --dir is what
       // opencode actually honours, the cwd keeps anything else the child does
       // (and any error message quoting it) consistent with that.
       const dir = request.cwd || process.cwd();
+
+      // 🔴 Checked BEFORE the credential is written. MEASURED: spawn() throws
+      // synchronously on a NUL byte in argv or cwd, and the prompt and model are
+      // on argv. That throw used to happen after the config write, inside the
+      // Promise executor, so cleanup() never ran and a 0600 file holding the live
+      // key was left in /tmp. JSON carries \u0000 fine and nothing upstream rejects it.
+      if ([request.prompt, model, dir].some((v) => typeof v === 'string' && v.includes('\u0000'))) {
+        safe(hooks?.onSettle, { termination: 'config_error' });
+        return base('Invalid request: NUL byte in prompt/model/cwd');
+      }
+      safe(hooks?.onResolved, {
+        model,
+        profileName: profile.name,
+        baseUrl: profile.baseUrl,
+        cwd: dir,
+        maxTurnsEnforced: false,
+      });
+
+      // One temp dir per run. mkdtemp gives 0700; the config inside is 0600
+      // because it holds the credential.
+      let configDir: string | undefined;
+      let configPath: string;
+      try {
+        configDir = fs.mkdtempSync(path.join(os.tmpdir(), CONFIG_DIR_PREFIX));
+        liveConfigDirs.add(configDir);
+        configPath = path.join(configDir, 'opencode.json');
+        fs.writeFileSync(configPath, JSON.stringify(buildOpencodeConfig(profile, model), null, 2), { mode: 0o600 });
+      } catch (err) {
+        // A write that failed part-way (ENOSPC, EDQUOT) can leave a partial 0600 file
+        // holding the key. Remove it here, and unpin it FIRST: a dir still marked live
+        // is skipped by the stale sweep for as long as this process runs, so an rm
+        // that fails too must at least leave it to the sweep.
+        if (configDir !== undefined) {
+          liveConfigDirs.delete(configDir);
+          try { fs.rmSync(configDir, { recursive: true, force: true }); } catch { /* unpinned — the sweep reclaims it */ }
+        }
+        safe(hooks?.onSettle, { termination: 'config_error' });
+        return base(`Could not write the opencode provider config: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const runConfigDir: string = configDir;
+
+      const cleanup = () => {
+        liveConfigDirs.delete(runConfigDir);
+        try {
+          fs.rmSync(runConfigDir, { recursive: true, force: true });
+        } catch {
+          // Best effort. A leftover file in a 0700 temp dir is bad enough to try
+          // for, not bad enough to fail a completed run over — the boot sweep
+          // (sweepStaleOpencodeConfigs) gets another go at it.
+        }
+      };
+
       const args = buildOpencodeArgs(request, model, dir);
       const timeoutMs = request.timeout ?? DEFAULT_TIMEOUT_MS;
 
       return new Promise<AgentExecuteResponse>((resolve) => {
-        const child = spawn('opencode', args, {
-          cwd: dir,
-          env: buildOpencodeEnv(configPath),
-          stdio: ['ignore', 'pipe', 'pipe'],
-          // Own process group: opencode starts a local server subprocess, so
-          // killing only the top-level process would strand it.
-          detached: true,
-        });
+        let child: ChildProcess;
+        try {
+          child = spawn('opencode', args, {
+            cwd: dir,
+            env: buildOpencodeEnv(configPath),
+            stdio: ['ignore', 'pipe', 'pipe'],
+            // Own process group: opencode starts a local server subprocess, so
+            // killing only the top-level process would strand it.
+            detached: true,
+          });
+        } catch (err) {
+          // Whatever else can make spawn() throw synchronously, the credential
+          // written above must not outlive this run.
+          cleanup();
+          safe(hooks?.onSettle, { termination: 'spawn_throw' });
+          resolve({
+            ...base(`Failed to launch opencode: ${err instanceof Error ? err.message : String(err)}`),
+            runner: OPENCODE_ID,
+          });
+          return;
+        }
         live.set(executionId, child);
+        // Decode as UTF-8 at the stream so a character split across chunks survives.
+        child.stdout?.setEncoding('utf8');
+        safe(hooks?.onSpawn, { pid: child.pid });
 
         let stdout = '';
         let stderr = '';
@@ -380,6 +489,7 @@ export function createOpencodeHarness(): AgentHarness {
           if (settled) return;
           settled = true;
           terminateRun(child);
+          safe(hooks?.onSettle, { termination: 'timeout' });
           const partial = parseOpencodeStream(stdout);
           resolve({
             ...base(`Timed out after ${timeoutMs}ms`),
@@ -393,7 +503,11 @@ export function createOpencodeHarness(): AgentHarness {
           });
         }, timeoutMs);
 
-        child.stdout?.on('data', (d) => (stdout += d.toString()));
+        child.stdout?.on('data', (d) => {
+          const chunk = typeof d === 'string' ? d : d.toString('utf8');
+          stdout += chunk;
+          safe(hooks?.onStdout, chunk);
+        });
         child.stderr?.on('data', (d) => (stderr += d.toString()));
 
         child.on('error', (err) => {
@@ -402,6 +516,7 @@ export function createOpencodeHarness(): AgentHarness {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          safe(hooks?.onSettle, { termination: 'launch_error' });
           resolve({
             ...base(`Failed to launch opencode: ${err.message}. Install with: npm i -g opencode-ai`),
             runner: OPENCODE_ID,
@@ -416,6 +531,7 @@ export function createOpencodeHarness(): AgentHarness {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          safe(hooks?.onSettle, { termination: 'exit', exitCode: code, signal });
 
           const summary = parseOpencodeStream(stdout);
           const ok = code === 0 && !summary.errored;
@@ -438,7 +554,9 @@ export function createOpencodeHarness(): AgentHarness {
               : {
                   error:
                     summary.errorText ||
-                    stderr.trim().slice(0, 2000) ||
+                    // Redacted BEFORE the cut: a key straddling char 2000 would otherwise
+                    // survive as a fragment the exact-value rule no longer matches.
+                    redactString(stderr.trim()).slice(0, 2000) ||
                     (signal ? `opencode terminated by ${signal}` : `opencode exited with code ${code}`),
                 }),
           });

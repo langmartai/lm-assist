@@ -17,15 +17,16 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getDataDir } from '../utils/path-utils';
 import type {
   AgentExecuteRequest,
   AgentExecuteResponse,
   AgentTokenUsage,
 } from '../types/agent-api';
-import type { AgentHarness, HarnessProbe } from './types';
+import type { AgentHarness, HarnessProbe, HarnessRunHooks } from './types';
 import { resolveProfile, type ProviderProfile } from './provider-config';
 import { terminateRun } from './process';
+import { redactString } from './redact';
+import { harnessRunDir } from './run-paths';
 
 export const QWEN_ID = 'qwen';
 
@@ -115,10 +116,10 @@ export function buildQwenEnv(profile: ProviderProfile, model: string, runHome: s
   };
 }
 
-/** Per-run home for qwen under the node's data dir, keyed by execution id. Stays after
- *  the run so the transcript can be inspected; nothing else on the node reads it. */
+/** Per-run home for qwen inside the run's dir (see run-paths), keyed by execution id. Stays
+ *  after the run so the transcript can be inspected; retention removes it with the run. */
 export function qwenRunHome(executionId: string): string {
-  return path.join(getDataDir(), 'harness-runs', executionId.replace(/[^A-Za-z0-9_-]+/g, '_'), 'qwen-home');
+  return path.join(harnessRunDir(executionId), 'qwen-home');
 }
 
 export interface QwenStreamSummary {
@@ -163,6 +164,13 @@ function addUsage(into: AgentTokenUsage, raw: any): boolean {
   return true;
 }
 
+/** A usage block with any non-zero count — a thinking-only frame's `{0, 0}` is "nothing reported yet". */
+function frameReportsUsage(raw: any): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  return ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']
+    .some((k) => typeof raw[k] === 'number' && Number.isFinite(raw[k]) && raw[k] > 0);
+}
+
 /**
  * Fold qwen's NDJSON into a summary.
  *
@@ -183,6 +191,18 @@ export function parseQwenStream(stdout: string): QwenStreamSummary {
   };
   const texts: string[] = [];
   const seenTurnIds = new Set<string>();
+  /**
+   * The open model turn — the transcript layer's rule (transcript/qwen-stream.ts), so
+   * the recorded count and the timeline agree. MEASURED on qwen 0.15.10: one turn is
+   * TWO assistant frames with DIFFERENT uuids — thinking-only with usage 0/0, then the
+   * tool_use/text frame carrying the real usage — so a uuid dedupe alone counted every
+   * turn twice. A new frame joins the open turn until that turn has reported non-zero
+   * usage; a tool_result (`user`) or the result frame closes it.
+   */
+  let open = false;
+  let openHasUsage = false;
+  /** The CLI's own count, from the result frame: authoritative when present. */
+  let resultTurns: number | null = null;
 
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
@@ -198,21 +218,28 @@ export function parseQwenStream(stdout: string): QwenStreamSummary {
     if (event.session_id && !out.sessionId) out.sessionId = String(event.session_id);
 
     if (event.type === 'assistant') {
-      // One model turn can arrive as MORE THAN ONE `assistant` frame (qwen emits the
-      // tool-call part and the text part separately). Counting frames reported exactly
-      // 2x the real turn count — measured against the on-disk transcript: 3 assistant
-      // lines, harness said 6. Dedupe on the frame's uuid when it carries one.
+      // A frame repeating a uuid (else message.id) restates the open turn; a new one
+      // starts a turn only once the open turn has reported usage (see `open` above).
       const id = typeof event.uuid === 'string' ? event.uuid : (typeof event.message?.id === 'string' ? event.message.id : null);
-      if (!id || !seenTurnIds.has(id)) {
-        if (id) seenTurnIds.add(id);
+      const repeat = !!id && seenTurnIds.has(id);
+      if (id) seenTurnIds.add(id);
+      if (open && !repeat && openHasUsage) open = false;
+      if (!open) {
         out.numTurns += 1;
+        open = true;
+        openHasUsage = false;
       }
+      if (frameReportsUsage(event.message?.usage)) openHasUsage = true;
       for (const block of event.message?.content ?? []) {
         if (block?.type === 'text' && typeof block.text === 'string') texts.push(block.text);
         if (block?.type === 'tool_use') out.toolCalls += 1;
       }
       if (event.message?.usage) out.usageReported = addUsage(out.usage, event.message.usage) || out.usageReported;
+    } else if (event.type === 'user') {
+      open = false;
     } else if (event.type === 'result') {
+      open = false;
+      if (Number.isInteger(event.num_turns) && event.num_turns >= 0) resultTurns = event.num_turns;
       // The result frame is authoritative for the final answer.
       if (typeof event.result === 'string' && event.result.trim()) {
         out.text = event.result;
@@ -225,6 +252,8 @@ export function parseQwenStream(stdout: string): QwenStreamSummary {
   }
 
   if (!out.text) out.text = texts.join('\n').trim();
+  // A timed-out run has no result frame; the open-turn count above stands in for it.
+  if (resultTurns !== null) out.numTurns = resultTurns;
 
   // qwen exits 0 and reports subtype "success" even when the turn's only content
   // is a transport error from the endpoint, so the text has to be inspected too.
@@ -294,9 +323,15 @@ export function createQwenHarness(): AgentHarness {
       return signalled;
     },
 
-    async execute(request: AgentExecuteRequest, executionId: string): Promise<AgentExecuteResponse> {
+    async execute(request: AgentExecuteRequest, executionId: string, hooks?: HarnessRunHooks): Promise<AgentExecuteResponse> {
       const start = Date.now();
       const profile = resolveProfile((request as any).providerProfile);
+
+      // Hooks are observers. A throwing one must not change what this run does or returns.
+      const safe = <A>(fn: ((a: A) => void) | undefined, arg: A): void => {
+        if (!fn) return;
+        try { fn.call(hooks, arg); } catch { /* observer failure is not a run failure */ }
+      };
 
       const base = (error: string): AgentExecuteResponse => ({
         success: false,
@@ -309,6 +344,7 @@ export function createQwenHarness(): AgentHarness {
         totalCostUsd: 0,
         usage: { ...EMPTY_USAGE },
         modelUsage: {},
+        runner: QWEN_ID,
         error,
       });
 
@@ -316,6 +352,7 @@ export function createQwenHarness(): AgentHarness {
       // run an Anthropic agent for a request that explicitly asked for a gateway
       // model — the exact silent-substitution failure this work exists to remove.
       if (!profile) {
+        safe(hooks?.onSettle, { termination: 'config_error' });
         return base(
           'No harness provider profile configured. Set one in ~/.lm-assist/harness-providers.json ' +
             `or via ${'LM_HARNESS_'}BASE_URL + ${'LM_HARNESS_'}API_KEY.`
@@ -323,27 +360,55 @@ export function createQwenHarness(): AgentHarness {
       }
 
       const model = request.model || profile.model;
-      if (!model) return base(`Provider profile "${profile.name}" has no model and the request named none.`);
+      if (!model) {
+        safe(hooks?.onSettle, { termination: 'config_error' });
+        return base(`Provider profile "${profile.name}" has no model and the request named none.`);
+      }
+      safe(hooks?.onResolved, {
+        model,
+        profileName: profile.name,
+        baseUrl: profile.baseUrl,
+        cwd: request.cwd || process.cwd(),
+        maxTurnsEnforced: true,
+      });
 
       const args = buildQwenArgs(request, model);
       const timeoutMs = request.timeout ?? DEFAULT_TIMEOUT_MS;
 
       const runHome = qwenRunHome(executionId);
-      try { fs.mkdirSync(runHome, { recursive: true }); } catch { /* spawn will surface it */ }
+      // The run dir holds the transcript, which can quote anything the agent read,
+      // so it is owner-only. The recorder normally made it already; this covers a
+      // harness used on its own.
+      try { fs.mkdirSync(path.dirname(runHome), { recursive: true, mode: 0o700 }); } catch { /* spawn will surface it */ }
+      try { fs.mkdirSync(runHome, { recursive: true, mode: 0o700 }); } catch { /* spawn will surface it */ }
 
       return new Promise<AgentExecuteResponse>((resolve) => {
-        const child = spawn('qwen', args, {
-          cwd: request.cwd || process.cwd(),
-          env: buildQwenEnv(profile, model, runHome),
-          stdio: ['pipe', 'pipe', 'pipe'],
-          // Own process group, so abort/timeout can end qwen AND the shell
-          // commands it spawns under yolo. See terminateRun().
-          detached: true,
-        });
+        let child: ChildProcess;
+        try {
+          child = spawn('qwen', args, {
+            cwd: request.cwd || process.cwd(),
+            env: buildQwenEnv(profile, model, runHome),
+            stdio: ['pipe', 'pipe', 'pipe'],
+            // Own process group, so abort/timeout can end qwen AND the shell
+            // commands it spawns under yolo. See terminateRun().
+            detached: true,
+          });
+        } catch (err) {
+          // spawn() throws SYNCHRONOUSLY on some inputs (a NUL byte in argv or
+          // cwd). Inside this executor that became a rejection nothing reported
+          // as a launch failure; resolve it as one instead.
+          safe(hooks?.onSettle, { termination: 'spawn_throw' });
+          resolve(base(`Failed to launch qwen: ${err instanceof Error ? err.message : String(err)}`));
+          return;
+        }
         // Hand the prompt over on stdin and close it — see buildQwenArgs for why not argv.
         child.stdin?.on('error', () => { /* child exited before reading; the close handler reports it */ });
         child.stdin?.end(qwenStdinPrompt(request));
         live.set(executionId, child);
+        // Decode as UTF-8 at the stream, not per chunk: a multi-byte character
+        // split across two chunks would otherwise decode as two replacement chars.
+        child.stdout?.setEncoding('utf8');
+        safe(hooks?.onSpawn, { pid: child.pid });
 
         let stdout = '';
         let stderr = '';
@@ -359,6 +424,7 @@ export function createQwenHarness(): AgentHarness {
           if (settled) return;
           settled = true;
           terminateRun(child);
+          safe(hooks?.onSettle, { termination: 'timeout' });
           const partial = parseQwenStream(stdout);
           resolve({
             ...base(`Timed out after ${timeoutMs}ms`),
@@ -372,7 +438,11 @@ export function createQwenHarness(): AgentHarness {
           });
         }, timeoutMs);
 
-        child.stdout?.on('data', (d) => (stdout += d.toString()));
+        child.stdout?.on('data', (d) => {
+          const chunk = typeof d === 'string' ? d : d.toString('utf8');
+          stdout += chunk;
+          safe(hooks?.onStdout, chunk);
+        });
         child.stderr?.on('data', (d) => (stderr += d.toString()));
 
         child.on('error', (err) => {
@@ -380,6 +450,7 @@ export function createQwenHarness(): AgentHarness {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          safe(hooks?.onSettle, { termination: 'launch_error' });
           resolve({
             ...base(`Failed to launch qwen: ${err.message}. Install with: npm i -g @qwen-code/qwen-code`),
             runner: QWEN_ID,
@@ -391,6 +462,7 @@ export function createQwenHarness(): AgentHarness {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          safe(hooks?.onSettle, { termination: 'exit', exitCode: code, signal });
 
           const summary = parseQwenStream(stdout);
           const ok = code === 0 && !summary.errored;
@@ -414,7 +486,9 @@ export function createQwenHarness(): AgentHarness {
               : {
                   error:
                     summary.errorText ||
-                    stderr.trim().slice(0, 2000) ||
+                    // Redacted BEFORE the cut: a key straddling char 2000 would otherwise
+                    // survive as a fragment the exact-value rule no longer matches.
+                    redactString(stderr.trim()).slice(0, 2000) ||
                     // A signal, not an exit code, is what an abort looks like from
                     // in here — say so instead of reporting "exited with code null".
                     (signal ? `qwen terminated by ${signal}` : `qwen exited with code ${code}`),

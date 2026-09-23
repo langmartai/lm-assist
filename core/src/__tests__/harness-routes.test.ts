@@ -156,3 +156,55 @@ test('"env" is reserved so a stored profile cannot masquerade as the environment
   assert.equal(res.success, false);
   assert.equal(res.error!.code, 'RESERVED_NAME');
 });
+
+test('a loopback write that came through the hub relay is refused; plain loopback still works', async () => {
+  // The relay reaches Core over 127.0.0.1 WITH the owner token and marks the
+  // request `x-relay-source: hub`, so the source address alone let it through.
+  const relayed = await handleProviderPut(
+    'relayed',
+    req({ headers: { 'x-relay-source': 'hub' } }),
+    { baseUrl: 'https://gw.example/v1', apiKey: SECRET },
+  );
+  assert.equal(relayed.success, false);
+  assert.equal(relayed.error!.code, 'FORBIDDEN');
+  assert.equal((relayed as any).httpStatus, 403);
+  assert.equal(loadProviderConfig().profiles.relayed, undefined, 'a refused write must not have written');
+
+  const anyValue = await handleProviderPut('relayed', req({ headers: { 'x-relay-source': '' } }), { baseUrl: 'https://gw.example/v1', apiKey: SECRET });
+  assert.equal(anyValue.error!.code, 'FORBIDDEN', 'the header\'s presence is enough, whatever its value');
+
+  const local = await handleProviderPut('local-ok', req(), { baseUrl: 'https://gw.example/v1', apiKey: SECRET });
+  assert.equal(local.success, true, 'a genuine console caller is unaffected');
+});
+
+test('a loopback write that came through the web /_coreapi proxy is refused — that is the LAN, not the console', async () => {
+  // The web binds 0.0.0.0 and rewrites /_coreapi/* to 127.0.0.1:<core>, so a LAN client
+  // holding the token reaches Core FROM loopback. Next's proxy marks it x-forwarded-host.
+  for (const headers of [
+    { 'x-forwarded-host': '10.0.1.42:3948' },
+    { 'x-forwarded-for': '10.0.1.42' },
+    { 'x-forwarded-proto': 'http' },
+  ]) {
+    const res = await handleProviderPut('proxied', req({ headers }), { baseUrl: 'https://gw.example/v1', apiKey: SECRET });
+    assert.equal(res.success, false, JSON.stringify(headers));
+    assert.equal(res.error!.code, 'FORBIDDEN');
+    assert.equal((res as any).httpStatus, 403);
+  }
+  assert.equal(loadProviderConfig().profiles.proxied, undefined, 'a refused write must not have written');
+});
+
+test('pointing an existing profile at a new host requires re-supplying its key', async () => {
+  // Even past the guard above, a write must not be able to redirect a STORED key elsewhere.
+  const moved = await handleProviderPut('gw', req(), { baseUrl: 'https://attacker.example/v1' });
+  assert.equal(moved.success, false);
+  assert.equal(moved.error!.code, 'INVALID_INPUT');
+  assert.match(moved.error!.message, /requires re-supplying apiKey/);
+  assert.equal(loadProviderConfig().profiles.gw.baseUrl, 'https://gw.example/native/x/v1', 'nothing was changed');
+  assert.equal(JSON.stringify(moved).includes(SECRET), false);
+
+  // The same baseUrl, or a new one WITH a key, is fine.
+  assert.equal((await handleProviderPut('gw', req(), { baseUrl: 'https://gw.example/native/x/v1', model: 'm2' })).success, true);
+  const withKey = await handleProviderPut('gw', req(), { baseUrl: 'https://gw2.example/v1', apiKey: SECRET });
+  assert.equal(withKey.success, true);
+  assert.equal(loadProviderConfig().profiles.gw.baseUrl, 'https://gw2.example/v1');
+});

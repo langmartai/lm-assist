@@ -44,6 +44,7 @@ import type { AgentApi } from './types/agent-api';
 import { registerHarness } from './harness/registry';
 import { createQwenHarness } from './harness/qwen';
 import { createOpencodeHarness } from './harness/opencode';
+import { initHarnessRuns } from './harness/run-store';
 
 // ============================================================================
 // Helper Functions
@@ -200,6 +201,14 @@ export class TierControlApiImpl {
     // reports the failure per-request instead of at boot.
     registerHarness(createQwenHarness());
     registerHarness(createOpencodeHarness());
+    // Run-history maintenance (interrupted sweep, retention, compaction, stale
+    // credential sweep). It defers itself; this guard only keeps a bug in it
+    // from ever taking boot down with it.
+    try {
+      initHarnessRuns();
+    } catch (err) {
+      console.error('[control-api] harness run maintenance failed to start:', err);
+    }
 
     // Initialize Agent API (direct SDK access with full options)
     profiler.start('agentApi', 'AgentApi', 'ControlApi');

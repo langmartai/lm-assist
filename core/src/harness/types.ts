@@ -62,8 +62,11 @@ export interface AgentHarness {
    * Run to completion and return a fully-formed response. Implementations own
    * their own timeout policy and MUST populate `runner` on the response so a
    * caller can tell what actually served the request.
+   *
+   * `hooks` is optional and observational: a harness must behave identically
+   * without it, and must call each hook through a guard that swallows throws.
    */
-  execute(request: AgentExecuteRequest, executionId: string): Promise<AgentExecuteResponse>;
+  execute(request: AgentExecuteRequest, executionId: string, hooks?: HarnessRunHooks): Promise<AgentExecuteResponse>;
   /** Optional; harnesses without it must be refused rather than silently served by another runner. */
   resume?(request: AgentResumeRequest): Promise<AgentExecuteResponse>;
   /**
@@ -81,6 +84,28 @@ export interface AgentHarness {
   abort?(executionId: string): boolean | Promise<boolean>;
   /** Preflight — is the underlying binary present and configured? */
   probe?(): Promise<HarnessProbe>;
+}
+
+/**
+ * What a harness tells an observer (the run recorder) while a run is in flight.
+ *
+ * These exist because the response alone cannot say what the run recorder
+ * needs: the resolved model and profile, the pid, a live view of the stream, and
+ * WHY a run ended — a timeout, an abort and a failed launch all resolve with
+ * `success: false`, and before this their only difference was an error string.
+ */
+export interface HarnessRunHooks {
+  /** The profile and model were resolved and the run is about to start. */
+  onResolved?(i: { model: string; profileName: string; baseUrl: string; cwd: string; maxTurnsEnforced: boolean }): void;
+  onSpawn?(i: { pid?: number }): void;
+  /** A UTF-8 chunk of the child's stdout (the harness sets the stream's encoding). */
+  onStdout?(chunk: string): void;
+  /** Called exactly once, on the path that settles the run. */
+  onSettle?(i: {
+    termination: 'exit' | 'timeout' | 'launch_error' | 'config_error' | 'spawn_throw';
+    exitCode?: number | null;
+    signal?: string | null;
+  }): void;
 }
 
 export interface HarnessProbe {

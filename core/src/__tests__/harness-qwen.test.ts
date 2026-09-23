@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
-import { buildQwenArgs, buildQwenEnv, parseQwenStream, qwenRunHome, qwenStdinPrompt } from '../harness/qwen';
+import { buildQwenArgs, buildQwenEnv, createQwenHarness, parseQwenStream, qwenRunHome, qwenStdinPrompt, QWEN_ID } from '../harness/qwen';
 import type { AgentExecuteRequest } from '../types/agent-api';
 import type { ProviderProfile } from '../harness/provider-config';
 
@@ -197,17 +200,121 @@ test('a garbage usage block cannot poison the totals with NaN', () => {
   assert.equal(s.usage.inputTokens, 0);
 });
 
-test('two assistant frames with the same uuid are ONE turn (qwen splits a turn across frames)', () => {
-  // Measured: the harness reported numTurns=6 on a run whose transcript had 3
-  // assistant lines — qwen emits the tool-call part and the text part as separate
-  // frames of the same turn. Frames sharing a uuid must count once.
+test('a frame repeating a uuid restates its turn rather than starting one', () => {
+  // Both frames of turn-1 carry (the same) usage, so only the uuid can say they are one turn.
+  const u = { input_tokens: 100, output_tokens: 5 };
   const stream = [
-    JSON.stringify({ type: 'assistant', uuid: 'turn-1', message: { content: [{ type: 'tool_use', name: 'read_file', input: {} }] } }),
-    JSON.stringify({ type: 'assistant', uuid: 'turn-1', message: { content: [{ type: 'text', text: 'reading' }] } }),
-    JSON.stringify({ type: 'assistant', uuid: 'turn-2', message: { content: [{ type: 'text', text: 'done' }] } }),
+    JSON.stringify({ type: 'assistant', uuid: 'turn-1', message: { content: [{ type: 'tool_use', name: 'read_file', input: {} }], usage: u } }),
+    JSON.stringify({ type: 'assistant', uuid: 'turn-1', message: { content: [{ type: 'text', text: 'reading' }], usage: u } }),
+    JSON.stringify({ type: 'assistant', uuid: 'turn-2', message: { content: [{ type: 'text', text: 'done' }], usage: u } }),
     JSON.stringify({ type: 'result', subtype: 'success', result: 'done' }),
   ].join('\n');
   const s = parseQwenStream(stream);
   assert.equal(s.numTurns, 2, 'same-uuid frames are one turn');
   assert.equal(s.toolCalls, 1, 'tool calls are still counted per block');
+});
+
+/**
+ * The MEASURED qwen 0.15.10 shape (capture of run agent-1790134036168-bf2x51, 2 real
+ * turns): every turn is TWO assistant frames with DIFFERENT uuids — thinking-only with
+ * usage 0/0, then the tool_use/text frame carrying the real usage. A uuid dedupe alone
+ * reported numTurns 4 for it; the result frame itself says num_turns 2.
+ */
+const REAL_TWO_TURNS = [
+  { type: 'system', subtype: 'init', uuid: '10315e67', session_id: '10315e67-67d3-408c-bb84-5a99d5baf4e3' },
+  { type: 'assistant', uuid: '8c33aaaa', session_id: '10315e67-67d3-408c-bb84-5a99d5baf4e3',
+    message: { id: '8c33aaaa', content: [{ type: 'thinking', thinking: 'I should write the file.' }], usage: { input_tokens: 0, output_tokens: 0 } } },
+  { type: 'assistant', uuid: '96caaaaa', session_id: '10315e67-67d3-408c-bb84-5a99d5baf4e3',
+    message: { id: '96caaaaa', content: [{ type: 'tool_use', id: 'call_1', name: 'write_file', input: { file_path: '/w/hello.txt', content: 'PONG' } }],
+      usage: { input_tokens: 16102, output_tokens: 118, cache_read_input_tokens: 0, total_tokens: 16220 } } },
+  { type: 'user', session_id: '10315e67-67d3-408c-bb84-5a99d5baf4e3',
+    message: { content: [{ type: 'tool_result', tool_use_id: 'call_1', is_error: false, content: 'Successfully created and wrote to new file' }] } },
+  { type: 'assistant', uuid: '99a2aaaa', session_id: '10315e67-67d3-408c-bb84-5a99d5baf4e3',
+    message: { id: '99a2aaaa', content: [{ type: 'thinking', thinking: 'Done; reply.' }], usage: { input_tokens: 0, output_tokens: 0 } } },
+  { type: 'assistant', uuid: '6588aaaa', session_id: '10315e67-67d3-408c-bb84-5a99d5baf4e3',
+    message: { id: '6588aaaa', content: [{ type: 'text', text: 'DONE' }], usage: { input_tokens: 16164, output_tokens: 23, cache_read_input_tokens: 0, total_tokens: 16187 } } },
+  { type: 'result', subtype: 'success', is_error: false, result: 'DONE', num_turns: 2,
+    usage: { input_tokens: 32266, output_tokens: 141 } },
+];
+
+test('the real two-frames-per-turn shape counts 2 turns, not 4 — with or without the result frame', () => {
+  const full = parseQwenStream(REAL_TWO_TURNS.map((f) => JSON.stringify(f)).join('\n'));
+  assert.equal(full.numTurns, 2);
+  assert.equal(full.toolCalls, 1);
+  assert.equal(full.usage.inputTokens, 16102 + 16164, 'usage is still summed across frames');
+  assert.equal(full.text, 'DONE');
+
+  // A timed-out run has no result frame: the open-turn rule alone must give the same count.
+  const noResult = parseQwenStream(REAL_TWO_TURNS.filter((f) => f.type !== 'result').map((f) => JSON.stringify(f)).join('\n'));
+  assert.equal(noResult.numTurns, 2);
+
+  // And with the tool_result frame gone too, the second thinking frame still opens a new turn:
+  // the first turn had already reported usage.
+  const bare = parseQwenStream(REAL_TWO_TURNS.filter((f) => f.type === 'assistant').map((f) => JSON.stringify(f)).join('\n'));
+  assert.equal(bare.numTurns, 2);
+});
+
+test("the result frame's num_turns is the CLI's own count and wins", () => {
+  const frames = [...REAL_TWO_TURNS.slice(0, -1), { ...REAL_TWO_TURNS[REAL_TWO_TURNS.length - 1], num_turns: 3 }];
+  assert.equal(parseQwenStream(frames.map((f) => JSON.stringify(f)).join('\n')).numTurns, 3);
+  // A garbage num_turns is ignored, not trusted.
+  const bad = [...REAL_TWO_TURNS.slice(0, -1), { ...REAL_TWO_TURNS[REAL_TWO_TURNS.length - 1], num_turns: 'two' }];
+  assert.equal(parseQwenStream(bad.map((f) => JSON.stringify(f)).join('\n')).numTurns, 2);
+});
+
+/**
+ * The run home and the hooks. execute() reads the provider config, so each test
+ * pins LM_ASSIST_DATA_DIR to a temp dir with no profile and clears LM_HARNESS_* —
+ * the refusal path then returns before anything is spawned, and the operator's
+ * real provider file is never read.
+ */
+async function withoutProfile(fn: (dataDir: string) => Promise<void>): Promise<void> {
+  const keys = ['LM_ASSIST_DATA_DIR', 'LM_ASSIST_PROD', 'LM_HARNESS_BASE_URL', 'LM_HARNESS_API_KEY', 'LM_HARNESS_MODEL'];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-qwen-'));
+  for (const k of keys) delete process.env[k];
+  process.env.LM_ASSIST_DATA_DIR = dataDir;
+  try {
+    await fn(dataDir);
+  } finally {
+    for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+test('the run home lives in this mode\'s run root, so a dev and a prod Core never share one', async () => {
+  await withoutProfile(async (dataDir) => {
+    // Tests run from a checkout, so this is the dev Core's root.
+    assert.equal(qwenRunHome('agent-1-abc'), path.join(dataDir, 'harness-runs-dev', 'agent-1-abc', 'qwen-home'));
+    process.env.LM_ASSIST_PROD = 'true';
+    assert.equal(qwenRunHome('agent-1-abc'), path.join(dataDir, 'harness-runs', 'agent-1-abc', 'qwen-home'));
+  });
+});
+
+test('a refusal settles as config_error, never spawns, and names its runner', async () => {
+  await withoutProfile(async () => {
+    const events: string[] = [];
+    const res = await createQwenHarness().execute(req(), 'qwen-refuse-1', {
+      onResolved: () => events.push('resolved'),
+      onSpawn: () => events.push('spawn'),
+      onStdout: () => events.push('stdout'),
+      onSettle: (i) => events.push(`settle:${i.termination}`),
+    });
+    assert.deepEqual(events, ['settle:config_error']);
+    assert.equal(res.success, false);
+    assert.equal(res.runner, QWEN_ID, 'a refusal must still say which harness refused');
+    assert.match(res.error!, /No harness provider profile/);
+  });
+});
+
+test('hooks — even throwing ones — do not change the response', async () => {
+  await withoutProfile(async () => {
+    const boom = () => { throw new Error('observer bug'); };
+    const shape = (r: Awaited<ReturnType<ReturnType<typeof createQwenHarness>['execute']>>) => ({ ...r, durationMs: 0, executionId: '' });
+    const without = await createQwenHarness().execute(req(), 'qwen-shape-1');
+    const withHooks = await createQwenHarness().execute(req(), 'qwen-shape-2', { onSettle: () => {} });
+    const throwing = await createQwenHarness().execute(req(), 'qwen-shape-3', { onSettle: boom, onResolved: boom, onSpawn: boom });
+    assert.deepEqual(shape(withHooks), shape(without));
+    assert.deepEqual(shape(throwing), shape(without));
+  });
 });

@@ -28,6 +28,7 @@ import {
   Wrench,
   BookText,
   Lightbulb,
+  Bot,
 } from 'lucide-react';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
@@ -48,6 +49,7 @@ const baseNavItems = [
   { href: '/backlog', icon: Lightbulb, label: 'Backlog' },
   { href: '/mission-processes', icon: Workflow, label: 'Processes' },
   { href: '/mcp-tools', icon: Wrench, label: 'MCP Tools' },
+  { href: '/harness', icon: Bot, label: 'Harness Runs' },
   { href: '/assist-content', icon: BookText, label: 'Assist Content' },
   { href: '/scheduler', icon: Clock, label: 'Scheduler' },
   { href: '/ccr', icon: Code2, label: 'Code' },

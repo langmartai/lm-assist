@@ -188,6 +188,50 @@ Proxies `api.anthropic.com` endpoints that use Claude Code's OAuth token (from `
 | GET | `/claude-code/mcp-servers` | Anthropic-managed MCP servers (`anthropic-beta: mcp-servers-2025-12-04`) |
 | GET | `/claude-code/mcp-registry` | Public MCP marketplace catalog (no auth) |
 
+### Harness (non-Claude agent runners)
+
+**Topic file:** [`docs/harness-runs.md`](./harness-runs.md) — storage, recorder, redaction, OpenCode DB rules, retention, backfill.
+
+Harnesses (`qwen`, `opencode`) run behind `POST /agent/execute` with `runner: "<id>"`. None of
+`/harness/*` is on the hub relay allow-list: these routes are node-local. The run-history routes are
+GET-only and every response is redacted.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/harness/status` | Every runner with capabilities + a bounded binary probe (~1.6 s — do not poll), and the provider profiles (redacted: `hasKey`, never the key) |
+| PUT | `/harness/provider/:name` | Create/update a provider profile `{baseUrl, apiKey?, model?, note?, makeDefault?}`. **Loopback only** — a direct call to Core — and refused (`FORBIDDEN`, 403) when `x-relay-source` or `x-forwarded-host/for/proto` is present (the hub relay and the web `/_coreapi` proxy both reach Core from 127.0.0.1). `apiKey` may be omitted to keep the stored one, except when `baseUrl` changes (`INVALID_INPUT`) |
+| GET | `/harness/runners?days=1..365` | Per-runner summary: capabilities, default profile, isolation, window stats (success rate, p50/p95, tokens, top tools, recent failures). Never probes. `sdk`/`tmux` are listed with `recorded:false` |
+| GET | `/harness/runs` | Recorded (and, on dev, backfilled) runs, newest first — see query below |
+| GET | `/harness/runs/:id` | One run: `{run, status (derived), live, abortable, childAlive? (interrupted only), sources}` |
+| GET | `/harness/runs/:id/transcript` | One page of the normalized event stream — see query below |
+| GET | `/harness/runs/:id/debug?lines=1..200` | Tail of qwen's own debug log (qwen only; `NOT_APPLICABLE` 404 otherwise) |
+
+`GET /harness/runs` query: `runner=<id>`, `status=<csv>` (`running|succeeded|failed|timed_out|aborted|refused|launch_failed|interrupted|not_started|unknown`),
+`q=<≤100 chars>` (prompt, cwd, model, session id, run id), `since=<epoch ms|24h|7d|30d|all>`,
+`includeBackfill=1|0` (default 1), `limit=1..200` (default 50), `offset`. Returns
+`{core, runs, counts:{shown, matched, total, running, byRunner, byStatus}, nextOffset, backfill}`;
+`byRunner`/`byStatus` are facet counts (every filter except their own).
+
+`GET /harness/runs/:id/transcript` query: `source=auto|captured|native` (default auto: captured while
+live, the CLI's own store after), `offset`, `limit=1..1000` (default 300), `maxField=256..65536`
+(default 4000), `ifVersion=<version>` — a match answers `unchanged: true` with no events, which is how
+a live run is polled cheaply. Each field is redacted before it is cut to `maxField`, and an event cut
+there (text, reasoning, tool, user) carries `truncated: true`.
+
+Errors: `INVALID_QUERY` (400, echoes the value sent), `INVALID_ID` (400 — ids must match
+`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`), `NOT_FOUND` (404 — pruned by retention, or recorded by the other
+dev/prod Core).
+
+Related changes on the agent routes:
+- `POST /agent/execution/:id/abort` also ends in-flight **foreground** harness runs (via the run
+  record and the harness's own live-child map). Response shape unchanged: `{success, sessionId, reason?}`.
+- `GET /agent/executions` items carry `runner` and `cwd`.
+- `POST /agent/execute` with a harness runner refuses an `executionId` that is invalid
+  (`INVALID_EXECUTION_ID`) or already used on this node (`DUPLICATE_EXECUTION_ID`), as a
+  `success:false` response naming the runner. A `background:true` request for ANY runner is refused
+  with `DUPLICATE_EXECUTION_ID` when its id is a run still in flight (a finished id may be reused
+  by the Claude runners, as before).
+
 ### SSE Streams
 | Method | Endpoint | Description |
 |--------|----------|-------------|

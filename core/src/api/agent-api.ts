@@ -29,6 +29,9 @@ import * as cc from '../terminal/cc';
 import { getHarness } from '../harness/registry';
 import { abortHarnessRun } from '../harness/abort';
 import type { AgentHarness } from '../harness/types';
+import { RUN_ID_RE } from '../harness/run-types';
+import { findRun, findRunBySessionId, hasRun, isRunInFlight } from '../harness/run-store';
+import { duplicateExecutionIdError, invalidExecutionIdError, refusalResponse } from '../harness/run-recorder';
 
 export interface AgentApiDeps {
   sdkRunner: ClaudeSdkRunner;
@@ -447,6 +450,20 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
         // Convert request to SDK options
         const sdkOptions = convertToSdkOptions(request, executionId, projectPath);
 
+        // Every background branch below keys backgroundExecutions by this id. A
+        // background request that reuses the id of a run still in flight — whatever
+        // either runner is — would replace that run's entry, and /abort would then
+        // stop the newcomer and answer success while the original (a qwen/opencode
+        // child, say) runs on. Refused for EVERY runner here; the harness branch adds
+        // its stricter checks (id shape, any recorded run) below. Only in-flight ids:
+        // an SDK caller reusing a FINISHED id keeps working as before.
+        if (
+          request.background
+          && (backgroundExecutions.get(executionId)?.handle.isRunning() || isRunInFlight(executionId))
+        ) {
+          return refusalResponse(request.runner ?? 'sdk', executionId, duplicateExecutionIdError(executionId));
+        }
+
         // Background + tmux runner — handled in-process via the warm-CC
         // runner (no detached CLI). Must intercept BEFORE the SDK
         // detached path below, which assumes an SDK CLI process.
@@ -461,6 +478,16 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
         // durable across a Core restart — declared as such in capabilities).
         const harness = request.runner ? getHarness(request.runner) : undefined;
         if (harness) {
+          // The executionId names the run's directory and keys both the
+          // background map and the harness's own live-child map. A reused id
+          // would overwrite another run's entry in each — after which /abort
+          // kills the wrong child, or none. Refuse before anything is keyed by it.
+          if (!RUN_ID_RE.test(executionId)) {
+            return refusalResponse(harness.id, executionId, invalidExecutionIdError(executionId));
+          }
+          if (backgroundExecutions.has(executionId) || hasRun(executionId)) {
+            return refusalResponse(harness.id, executionId, duplicateExecutionIdError(executionId));
+          }
           return request.background
             ? startHarnessBackground(harness, request, executionId)
             : await harness.execute(request, executionId);
@@ -872,6 +899,10 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
           claudeSessionUrl: entry.handle.sessionId
             ? `/sessions/${entry.handle.sessionId}`
             : undefined,
+          // Without the runner a qwen run's sessionId looks like a Claude Code
+          // session and claudeSessionUrl points at nothing.
+          runner: entry.request.runner,
+          cwd: entry.request.cwd,
         });
       }
 
@@ -1017,6 +1048,20 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
           entry.handle.abort();
           backgroundExecutions.delete(execId);
           return { success: true, sessionId };
+        }
+      }
+
+      // A FOREGROUND harness run is in no map here — its caller is still
+      // awaiting it — so before the run store existed this fell through to
+      // sdkRunner.kill() and answered "could not abort" while the child ran on.
+      // The record finds the runner; the harness's own live map does the kill
+      // (process group, in memory). Nothing is ever signalled by a stored pid.
+      const rec = findRun(sessionId) ?? findRunBySessionId(sessionId);
+      if (rec && rec.executionId && isRunInFlight(rec.id)) {
+        const harness = getHarness(rec.runner);
+        if (harness) {
+          const outcome = await abortHarnessRun(harness, rec.executionId, false);
+          return outcome.success ? { success: true, sessionId } : { success: false, sessionId, reason: outcome.reason };
         }
       }
 

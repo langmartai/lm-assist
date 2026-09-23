@@ -16,6 +16,7 @@
  */
 
 import type { AgentHarness, HarnessCapabilities, HarnessError } from './types';
+import { withRunRecording } from './run-recorder';
 
 /**
  * Runners implemented directly inside agent-api.ts. They are legal `runner`
@@ -51,9 +52,16 @@ const BUILTIN_CAPABILITIES: Record<string, HarnessCapabilities> = {
 
 const registry = new Map<string, AgentHarness>();
 
-/** Register a pluggable harness. Later registrations replace earlier ones by id. */
+/**
+ * Register a pluggable harness. Later registrations replace earlier ones by id.
+ *
+ * Every registered harness is stored wrapped by the run recorder, so each of its
+ * runs — foreground or background, whichever caller dispatches it — leaves a
+ * durable record. Wrapping here rather than at each registration site means a
+ * new harness cannot be added unrecorded by forgetting a step.
+ */
 export function registerHarness(harness: AgentHarness): void {
-  registry.set(harness.id, harness);
+  registry.set(harness.id, withRunRecording(harness));
 }
 
 /** The AgentHarness for an id, or undefined for builtins and unknown ids. */

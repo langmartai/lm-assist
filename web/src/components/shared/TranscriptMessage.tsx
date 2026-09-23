@@ -15,13 +15,15 @@ interface ToolCall { name: string; input?: unknown; result?: string; isError?: b
  * A transcript message. `compact` renders tool calls as claude.ai/code does — one grouped
  * summary line ("Ran 2 commands, read a file") that expands to the individual tool cards —
  * instead of one card per call. Opt-in so the cowork page (also a consumer) is unchanged.
+ * `assistantLabel` names the non-user side for transcripts that are not cloud Claude
+ * (e.g. a Qwen Code / OpenCode harness run); the default keeps ccr + cowork as they were.
  */
-export function TranscriptMessage({ m, compact = false }: { m: { role: string; type: string; text: string; tools?: string[]; thinking?: string; toolCalls?: ToolCall[] }; compact?: boolean }) {
+export function TranscriptMessage({ m, compact = false, assistantLabel = 'cloud claude' }: { m: { role: string; type: string; text: string; tools?: string[]; thinking?: string; toolCalls?: ToolCall[] }; compact?: boolean; assistantLabel?: string }) {
   const isUser = m.type === 'user';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: isUser ? 'flex-end' : 'stretch' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: 'var(--color-text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
-        {isUser ? <User size={11} /> : <Cloud size={11} />}{isUser ? 'you' : 'cloud claude'}
+        {isUser ? <User size={11} /> : <Cloud size={11} />}{isUser ? 'you' : assistantLabel}
       </div>
       {!isUser && m.thinking ? <ThinkBlock text={m.thinking} /> : null}
       {m.text && (
