@@ -232,6 +232,40 @@ Related changes on the agent routes:
   with `DUPLICATE_EXECUTION_ID` when its id is a run still in flight (a finished id may be reused
   by the Claude runners, as before).
 
+### Data bundles (export / import, backup)
+
+**Topic file:** [`docs/data-export-import.md`](./data-export-import.md) — what is stored where, why
+replication is not backup, import policies, ownership rules, takeover and the recovery runbooks.
+
+Every path sits under `/data`, so the hub relay reaches it; the API token or the relay is the auth
+boundary, and the work runs as the local principal. `:id` is a bundleId
+(`^lmb-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$`, else `BUNDLE_ID_INVALID`) — never a path. These routes are
+matched BEFORE the generic `/data/:dataset/*` routes, and `bundles` is a reserved dataset id.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/data/bundles/inventory` | What an export would hold: per-dataset owned/replica, origin + `originOnline` (`null` = roster unavailable), records, tombstones, size, `export: default\|opt-in\|never`; orphans; config/files sections; never-exported list; last sync status; stored-bundle count |
+| GET | `/data/bundles` | Stored bundles, newest first: id, size, createdAt, source node, note, section summaries, `imported?` |
+| POST | `/data/bundles` | Create an export `{sections?, datasets?, includeReplicas?, includeKnowledge?, includeClaudeMemory?, note?}` (default: owned datasets + config). Synchronous. Returns `{bundleId, path, sizeBytes, sha256, sections, totals, excluded, warnings, pruned, next}` |
+| GET | `/data/bundles/:id` | Inspect: the manifest (fast read, no integrity check) + `imported?` |
+| GET | `/data/bundles/:id/chunk?offset=&length=` | `{offset, length, total, dataB64, done}`; `length` ≤ 512 KiB so relayed callers stay under the relay limits |
+| GET | `/data/bundles/:id/download` | Raw `application/gzip` attachment, for direct (non-relayed) callers |
+| DELETE | `/data/bundles/:id` | Delete a stored bundle (and its import sidecar) |
+| POST | `/data/bundles/upload` | Chunked upload `{uploadId?, index, total, name?, dataB64, sha256?}` — ≤ 700 KB base64 per chunk, idempotent per `(uploadId, index)`; chunk 0 without `uploadId` mints one; the last chunk verifies and stores the file under a NEW bundleId. Partial uploads are swept after 1 h |
+| POST | `/data/bundles/fetch` | `{fromNode, bundleId}` — pull a peer's stored bundle over the hub proxy chunk by chunk, verify it, store it locally |
+| POST | `/data/bundles/received/:name` | Import one file from the `transfer_send_file` inbox (`~/.lm-assist/received/`); `name` matches `^[A-Za-z0-9._-]{1,128}$` |
+| POST | `/data/bundles/:id/plan` | Dry run `{policy?: merge\|add-missing\|replace, sections?, datasets?, takeOwnership?, force?}` → per section: `action`, counts (`add, update, skipOlder, skipIdentical, skipExists, tooLarge, neutralized, …`), ≤ 10 sample ids per bucket, `refused{code, reason}`, warnings |
+| POST | `/data/bundles/:id/apply` | Same body **plus `confirm: true`** (else `CONFIRM_REQUIRED`); returns the plan shape with `applied` counts |
+| POST | `/data/datasets/:id/takeover` | `{force?}` — promote a local replica to owner. Refused `NOT_A_REPLICA`, `ORIGIN_ONLINE` (force never overrides), `ROSTER_UNAVAILABLE` (unless `force`) |
+
+Errors carry `error.code`: `BUNDLE_NOT_FOUND`, `BUNDLE_ID_INVALID`, `BUNDLE_CORRUPT` (names the failed
+check), `BUNDLE_FORMAT`, `BUNDLE_TOO_LARGE`, `DISK_LOW` (with `freeBytes`/`requiredBytes`),
+`EXPORT_INCOMPLETE`, `INVALID_RANGE`, `UPLOAD_*`, `RECEIVED_*`, `FETCH_FAILED`, `CONFIRM_REQUIRED`,
+`BAD_REQUEST`. Per-dataset refusals inside a plan: `REPLICA_READ_ONLY`, `OWNER_ONLINE`,
+`ORIGIN_ONLINE`, `ROSTER_UNAVAILABLE`. MCP: `data_export` / `data_import` (see the topic file). The
+built-in scheduled job `data-snapshot` (disabled by default) runs the default export daily:
+`PUT /scheduler/jobs/data-snapshot {"enabled": true}`.
+
 ### SSE Streams
 | Method | Endpoint | Description |
 |--------|----------|-------------|

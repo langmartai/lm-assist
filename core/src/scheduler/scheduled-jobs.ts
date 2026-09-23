@@ -262,7 +262,8 @@ export function formatShellResult(r: { code: number | null; stdout: string; stde
  * that kills/reaps/deletes (executor-reaper, worktree-gc's delete action,
  * cleanup-test-conversations) — ships DISARMED (disabled and/or dryRun:true) and is armed by
  * a human. Observational/recovery monitors (stall-monitor, auth-monitor, mission-controller)
- * ship enabled, matching their prod reality.
+ * ship enabled, matching their prod reality. A built-in that WRITES to disk on every node
+ * (data-snapshot) ships disabled too.
  */
 export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
   const at = iso(nowMs);
@@ -357,6 +358,27 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
         graceMinutes: 30,
         maxReapsPerRun: 10,
       },
+      lastRunAt: null,
+      lastResult: null,
+      lastStatus: null,
+      builtin: true,
+      createdAt: at,
+      updatedAt: at,
+    },
+    {
+      id: 'data-snapshot',
+      name: 'Data snapshot',
+      description:
+        'Write a point-in-time bundle of this node\'s lm-assist data — the default export (owned datasets + sanitized config) with note "scheduled" — then prune to the newest bundleRetention (default 20). Replication is not backup: this is the restore point. Ships DISABLED — it writes to disk on every node; enable it per node.',
+      type: 'data-snapshot',
+      // DISABLED BY DEFAULT — a built-in that writes to disk must not self-arm on every node
+      // the build reaches. load() seeds it into an existing store with these values; a saved
+      // entry (once the operator arms it) wins from then on.
+      enabled: false,
+      intervalMinutes: 1440,
+      // The same opt-ins an interactive export offers, visible so they can be flipped here;
+      // all off, so a seeded run IS the default export (see scheduler/data-snapshot.ts).
+      config: { includeReplicas: false, includeKnowledge: false, includeClaudeMemory: false },
       lastRunAt: null,
       lastResult: null,
       lastStatus: null,
@@ -504,6 +526,11 @@ export class ScheduledJobs {
     {
       const { registerAuthMonitor } = require('../monitor/auth-monitor');
       registerAuthMonitor(this);
+    }
+
+    {
+      const { registerDataSnapshot } = require('./data-snapshot');
+      registerDataSnapshot(this);
     }
   }
 
