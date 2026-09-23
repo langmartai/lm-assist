@@ -37,6 +37,10 @@ type View = 'health' | 'export' | 'bundles' | 'import';
 /** A bundle copied to another node, to open in that node's Import view once it is selected. */
 interface Handoff { machineId: string; bundleId: string }
 
+/** The machine serving this page. With no hub the client lists it as `{id:'localhost'}` and no
+ *  `isLocal` flag, so both forms count — else every hub-less install warns about itself. */
+const isLocalMachine = (m: Machine | null | undefined): boolean => !!m && (m.isLocal === true || m.id === 'localhost');
+
 export function BackupTab() {
   const { apiClient, proxy, mode } = useAppMode();
   const { machines, onlineMachines, selectedMachineId, selectedMachine, setSelectedMachineId } = useMachineContext();
@@ -48,8 +52,8 @@ export function BackupTab() {
   // selection settling from null to the local id does not re-read the inventory.
   let targetId: string | undefined;
   if (proxy.isProxied && proxy.machineId) targetId = proxy.machineId; // a proxied page is pinned to its machine
-  else if (crossNode && selectedMachineId && !machines.find((m) => m.id === selectedMachineId)?.isLocal) targetId = selectedMachineId;
-  const target: Machine | null = (targetId ? machines.find((m) => m.id === targetId) : machines.find((m) => m.isLocal)) ?? null;
+  else if (crossNode && selectedMachineId && !isLocalMachine(machines.find((m) => m.id === selectedMachineId))) targetId = selectedMachineId;
+  const target: Machine | null = (targetId ? machines.find((m) => m.id === targetId) : machines.find(isLocalMachine)) ?? null;
   const shownId = targetId ?? target?.id;
 
   const apiFor = useCallback((machineId?: string): BundlesApi => {
@@ -73,7 +77,7 @@ export function BackupTab() {
 
   return (
     <div>
-      {!crossNode && selectedMachine && !selectedMachine.isLocal && (
+      {!crossNode && selectedMachine && !isLocalMachine(selectedMachine) && (
         <Notice tone="warn">
           {selectedMachine.hostname} is selected, but this browser session has no hub connection, so Backup shows the node serving this page.
         </Notice>

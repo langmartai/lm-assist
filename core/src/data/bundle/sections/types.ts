@@ -109,6 +109,11 @@ export { canonicalJson, canonicalEqual } from '../../canonical';
 // service treats as secret is dropped from config sections too (spec §2), and one widening
 // there widens both.
 
+/** A key that NAMES a secret's location (`tokenFile`, `keyPath`, `secretsDir`) holds a path, not
+ *  the secret — dropping it would lose e.g. a machine-access profile's token-file reference on
+ *  restore while protecting nothing. */
+export const PATH_VALUED_KEY_RE = /(file|path|dir)$/i;
+
 /**
  * Deep-copy `value` without secret-named keys. Returns the dotted paths of every dropped key
  * (array elements appear as their index), so the loss is visible and never silent.
@@ -121,7 +126,7 @@ export function stripSecretKeys<T>(value: T, prefix = ''): { value: T; redactedK
       const out: Record<string, unknown> = {};
       for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
         const p = at ? `${at}.${k}` : k;
-        if (SECRET_KEY_RE.test(k)) { redactedKeys.push(p); continue; }
+        if (SECRET_KEY_RE.test(k) && !PATH_VALUED_KEY_RE.test(k)) { redactedKeys.push(p); continue; }
         out[k] = walk(x, p);
       }
       return out;

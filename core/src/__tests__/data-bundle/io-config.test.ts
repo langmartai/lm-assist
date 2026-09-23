@@ -330,7 +330,7 @@ test('scheduled-jobs + machine-access: a replace of an UNCHANGED item keeps its 
   ] }));
   const ma = createMachineAccessProvider({ file: f });
   const md = (await ma.collect()).data as any;
-  assert.equal(md.machines[0].passwordFile, undefined, 'stripped on export');
+  assert.equal(md.machines[0].passwordFile, '/secret/pw', 'a path TO a secret is a path, not the secret — it travels');
   assert.equal((await ma.plan(md, 'replace')).counts.skipIdentical, 1);
   await ma.apply({ machines: [{ ...md.machines[0], name: 'Box 2' }] }, 'replace');
   const saved = JSON.parse(fs.readFileSync(f, 'utf8')).machines[0];

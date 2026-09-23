@@ -393,7 +393,7 @@ const ERROR_FIX: Record<string, string> = {
   ROSTER_UNAVAILABLE: 'the fleet roster could not be read — retry once the hub is reachable; force:true ONLY if you know the origin is gone',
   NOT_A_REPLICA: 'this node already owns that dataset — nothing to take over',
   NOT_FOUND: 'check the id: data_export({action:"inventory"}) lists this node\'s datasets',
-  CONFIRM_REQUIRED: 'run action:"plan" first, then repeat action:"apply" with confirm:true (a delete: repeat it with confirm:true)',
+  CONFIRM_REQUIRED: 'repeat the same call with confirm:true (for an import, action:"plan" shows what apply would write)',
 };
 
 /** `CODE: message` plus the next step — the text of every failed call. */
@@ -556,7 +556,9 @@ export function renderList(bundles: readonly StoredBundleView[], opts: { node?: 
     if (b.error) {
       return row([clamp(b.bundleId, ID_CHARS), '—', size(b.sizeBytes), '—', '—', `UNREADABLE ${clamp(b.error.code, 32)}: ${clamp(b.error.message, 80)}`]);
     }
-    const src = b.source ? `${clamp(b.source.hostname || b.source.nodeId, HOST_CHARS)} (${b.source.mode})` : '—';
+    const srcHost = b.source ? String(b.source.hostname || b.source.nodeId) : '';
+    // A dev node's hub hostname already carries "(dev)" — do not print the mode twice.
+    const src = b.source ? `${clamp(srcHost, HOST_CHARS)}${srcHost.endsWith(`(${b.source.mode})`) ? '' : ` (${b.source.mode})`}` : '—';
     const note = [
       b.note ? `"${clamp(b.note, 60)}"` : '',
       b.imported ? `imported via ${b.imported.via}${b.imported.fromNode ? ` from ${clamp(b.imported.fromNode, HOST_CHARS)}` : ''}` : '',

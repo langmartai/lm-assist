@@ -8,7 +8,7 @@
  * and counts. Nothing is written before that confirm.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CloudDownload, FileSearch, PackageOpen, Play, Upload } from 'lucide-react';
 import {
   GROUP_LABEL, IMPORT_POLICIES, POLICY_HELP, bundleContents, confirmLines, defaultImportSelection, formatBytes,
@@ -47,6 +47,16 @@ export function ImportPanel({
   crossNode: boolean;
 }) {
   const [source, setSource] = useState<Source>('stored');
+  // Pre-select the newest stored bundle ONCE, so the panel opens on something plannable; a
+  // later explicit "Choose a bundle…" stays empty instead of snapping back.
+  const autoPicked = useRef(false);
+  useEffect(() => {
+    if (autoPicked.current || bundleId || source !== 'stored') return;
+    const newest = bundles.find((b) => !b.error);
+    if (!newest) return;
+    autoPicked.current = true;
+    onSelectBundle(newest.bundleId);
+  }, [bundles, bundleId, source, onSelectBundle]);
   const [notice, setNotice] = useState<string | null>(null);
 
   // ── the selected bundle ──
