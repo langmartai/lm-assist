@@ -132,6 +132,7 @@ export interface ImportedMeta {
   at: string;
   name?: string;
   fromNode?: string;
+  sourceBundleId?: string;
 }
 
 export interface StoredBundleInfo {

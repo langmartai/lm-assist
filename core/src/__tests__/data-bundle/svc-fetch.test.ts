@@ -58,6 +58,8 @@ test('fetch: chunked pull through the proxy, verified, stored under a new id wit
   assert.equal(res.imported.via, 'fetch');
   assert.equal(res.imported.fromNode, PEER);
   assert.equal(res.imported.importedFrom, exp.bundleId);
+  assert.equal(res.imported.sourceBundleId, exp.bundleId, 'the peer\'s stored id is persisted too');
+  assert.equal(store.getImportedMeta(res.bundleId)?.sourceBundleId, exp.bundleId);
   assert.equal((await store.verify(res.bundleId)).manifest.bundleId, exp.bundleId);
   assert.deepEqual(leftovers(store), []);
 

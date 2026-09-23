@@ -86,8 +86,10 @@ from a caller). No tar, so no member paths to traverse. Inspect one with
 - Written `0600` in a `0700` dir. **No encryption at rest** — a bundle holds private user data
   unredacted. Treat it like the data dir itself.
 - Retention: exports and imports share the dir; the newest 20 are kept (`bundleRetention` in
-  project-settings overrides). An imported bundle is stored byte-for-byte under a NEW id with a
-  `<id>.meta.json` sidecar (`importedFrom`, `via: upload|received|fetch`).
+  project-settings overrides; `PUT /project-settings {bundleRetention}` sets it, clamped 1–1000).
+  An imported bundle is stored byte-for-byte under a NEW id with a `<id>.meta.json` sidecar
+  (`importedFrom` = the manifest's original id, `via: upload|received|fetch`, and for a fetch
+  `fromNode` + `sourceBundleId`, the id the peer stored it under).
 
 ## What travels, and what never does
 

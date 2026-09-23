@@ -127,7 +127,7 @@ export async function fetchFromPeer(
     }
     fs.closeSync(fd!);
     fd = null;
-    const stored = await store.importFile(tmp, { via: 'fetch', fromNode });
+    const stored = await store.importFile(tmp, { via: 'fetch', fromNode, sourceBundleId: bundleId });
     return { ...stored, fromNode, sourceBundleId: bundleId, chunks };
   } finally {
     if (fd !== null) { try { fs.closeSync(fd); } catch { /* ignore */ } }

@@ -41,6 +41,12 @@ export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] 
           const n = Number(body.authMonitorIntervalMin);
           if (Number.isFinite(n)) authMonitorIntervalMin = Math.max(1, Math.min(1440, Math.round(n)));
         }
+        // bundleRetention — data bundles kept in the bundle store; a positive integer, clamped.
+        let bundleRetention: number | undefined;
+        if (body.bundleRetention !== undefined) {
+          const n = Number(body.bundleRetention);
+          if (Number.isFinite(n)) bundleRetention = Math.max(1, Math.min(1000, Math.round(n)));
+        }
         const updated = saveProjectSettings({
           excludedPaths: body.excludedPaths,
           knowledgeEnabled: body.knowledgeEnabled,
@@ -52,6 +58,7 @@ export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] 
           ruleSyncEnabled: body.ruleSyncEnabled,
           busEnabled: body.busEnabled,
           dataSyncViaFabric: body.dataSyncViaFabric,
+          bundleRetention,
         });
 
         // Live-apply the memory-sync toggle: re-resolve the autosync daemon mode (no restart).

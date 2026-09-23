@@ -78,6 +78,9 @@ export interface ImportedMeta {
   name?: string;
   /** e.g. the node a fetch came from. */
   fromNode?: string;
+  /** For a fetch: the bundleId the peer stored it under (differs from importedFrom when the
+   *  peer's copy was itself an import). */
+  sourceBundleId?: string;
 }
 
 export interface StoredBundleInfo {

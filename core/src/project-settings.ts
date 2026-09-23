@@ -96,6 +96,8 @@ export interface ProjectSettings {
   /** Wave 4 (spec §5 S2): carry data-service sync (manifest/export/fetch) over the fabric with a
    *  peer principal, else the legacy hub-HTTPS path. Default false — opt-in; off = pure legacy sync. */
   dataSyncViaFabric: boolean;
+  /** Data bundles kept in the bundle store (exports + imports); the oldest are pruned. Default 20. */
+  bundleRetention: number;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -139,7 +141,11 @@ export const DEFAULTS: ProjectSettings = {
   fabricRelayBulkCapMBps: 5,
   busEnabled: true,
   dataSyncViaFabric: false,
+  bundleRetention: 20,
 };
+
+/** A retention count must be a positive integer; anything else falls back. */
+const isRetention = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1;
 
 // ── Mtime Cache ──────────────────────────────────────────
 
@@ -197,6 +203,7 @@ export function getProjectSettings(): ProjectSettings {
       fabricRelayBulkCapMBps: typeof data.fabricRelayBulkCapMBps === 'number' ? data.fabricRelayBulkCapMBps : DEFAULTS.fabricRelayBulkCapMBps,
       busEnabled: typeof data.busEnabled === 'boolean' ? data.busEnabled : DEFAULTS.busEnabled,
       dataSyncViaFabric: typeof data.dataSyncViaFabric === 'boolean' ? data.dataSyncViaFabric : DEFAULTS.dataSyncViaFabric,
+      bundleRetention: isRetention(data.bundleRetention) ? data.bundleRetention : DEFAULTS.bundleRetention,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -250,6 +257,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     fabricRelayBulkCapMBps: typeof partial.fabricRelayBulkCapMBps === 'number' ? partial.fabricRelayBulkCapMBps : current.fabricRelayBulkCapMBps,
     busEnabled: typeof partial.busEnabled === 'boolean' ? partial.busEnabled : current.busEnabled,
     dataSyncViaFabric: typeof partial.dataSyncViaFabric === 'boolean' ? partial.dataSyncViaFabric : current.dataSyncViaFabric,
+    bundleRetention: isRetention(partial.bundleRetention) ? partial.bundleRetention : current.bundleRetention,
   };
 
   // Ensure parent directory exists
