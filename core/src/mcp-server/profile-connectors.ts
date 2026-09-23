@@ -121,10 +121,18 @@ export function preferredConnector<T extends ConnectorLike>(conns: OurConnector<
 const LOG = '[profile-connectors]';
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 /** The org bootstrap behind /claude-ai/mcp/servers may take up to its own 30 s abort; the default
- *  loopback GET gives up at 15 s. Background upkeep has no relay deadline to meet. */
-const LIST_TIMEOUT_MS = 35_000;
-/** The batch reads the bootstrap (≤30 s), then the account map, then PATCHes it. */
-const BATCH_TIMEOUT_MS = 75_000;
+ *  loopback GET gives up at 15 s. Background upkeep has no relay deadline to meet. Also the
+ *  loopback budget of every connector-management tool that lists (refresh-connector.ts,
+ *  mcp-connectors.ts). */
+export const CONNECTOR_LIST_TIMEOUT_MS = 35_000;
+const LIST_TIMEOUT_MS = CONNECTOR_LIST_TIMEOUT_MS;
+/** The batch reads the bootstrap (≤30 s), then the account map, then PATCHes it — behind any
+ *  queued writer. Also the budget of the tools' tool-access / auto-approve writes. */
+export const CONNECTOR_WRITE_TIMEOUT_MS = 75_000;
+const BATCH_TIMEOUT_MS = CONNECTOR_WRITE_TIMEOUT_MS;
+/** POST / DELETE /mcp/profile-connectors: the org list (≤30 s), the claude.ai create or delete
+ *  (≤20 s each), and on a create a re-list (≤30 s), serialized behind other connector writes. */
+export const CONNECTOR_MANAGE_TIMEOUT_MS = 90_000;
 
 /**
  * The node default changed, so what the UNPINNED connectors advertise changed with it, and

@@ -13,8 +13,8 @@
  * Endpoints captured via lm-proxy 2026-06-20; see the claude.ai routes. Registered in
  * EXPANDED_TOOL_DEFS + EXPANDED_HANDLERS.
  */
-import { ok, err, workerGet, workerPost, type McpToolResult } from './_passthrough';
-import { mcpBase, ourConnectors } from '../profile-connectors';
+import { ok, err, workerGetLong, workerPost, workerPostLong, isLoopbackTimeout, type McpToolResult } from './_passthrough';
+import { CONNECTOR_LIST_TIMEOUT_MS, CONNECTOR_WRITE_TIMEOUT_MS, mcpBase, ourConnectors } from '../profile-connectors';
 import { parseAutoApproveTools } from '../../utils/claudeai-session';
 
 export const listClaudeaiConnectorsToolDef = {
@@ -125,14 +125,23 @@ interface ConnectorEntry {
   tools?: string[];
 }
 
+/** The org bootstrap behind this route may run to its own 30 s abort — past workerGet's 15 s. */
 async function listConnectors(): Promise<ConnectorEntry[]> {
-  const list = (await workerGet('/claude-ai/mcp/servers')) as { servers?: ConnectorEntry[] };
+  const list = await workerGetLong<{ servers?: ConnectorEntry[] }>('/claude-ai/mcp/servers', CONNECTOR_LIST_TIMEOUT_MS);
   return list.servers || [];
 }
 
 interface Target { uuid: string; label: string }
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+/** A WRITE's failure text. A loopback timeout is not a refusal: the route keeps running behind
+ *  any queued claude.ai writer, and the write — always-approve included, which removes the human
+ *  approval gate — may still land. Say so, instead of reporting a failure that did not happen. */
+const writeErrText = (e: unknown): string =>
+  isLoopbackTimeout(e)
+    ? `${errText(e)} — Core did not answer in time, but the claude.ai write MAY STILL LAND (it runs behind any ` +
+      'queued connector write). Check with list_claudeai_connectors or a fresh conversation before retrying.'
+    : errText(e);
 const describeTargets = (ts: Target[]): string => ts.map((t) => `"${t.label}" (${t.uuid})`).join(', ');
 
 /**
@@ -221,7 +230,7 @@ async function handleRefreshConnectorTools(args: Record<string, unknown>): Promi
       await workerPost(`/claude-ai/mcp/servers/${encodeURIComponent(t.uuid)}/clear-cache`, {});
       done.push(t);
     } catch (e) {
-      failed.push(`"${t.label}" (${t.uuid}): ${errText(e)}`);
+      failed.push(`"${t.label}" (${t.uuid}): ${writeErrText(e)}`);
     }
   }
   if (done.length === 0) return err(`Could not clear the tool cache — ${failed.join('; ')}`);
@@ -248,10 +257,8 @@ async function handleSetConnectorToolAccess(args: Record<string, unknown>): Prom
   try {
     if (r.targets.length === 1) {
       const t = r.targets[0];
-      const res = (await workerPost(`/claude-ai/mcp/servers/${encodeURIComponent(t.uuid)}/tool-access`, { enable, block })) as {
-        changed?: Record<string, boolean>;
-        totalKeys?: number;
-      };
+      const res = await workerPostLong<{ changed?: Record<string, boolean>; totalKeys?: number }>(
+        `/claude-ai/mcp/servers/${encodeURIComponent(t.uuid)}/tool-access`, { enable, block }, CONNECTOR_WRITE_TIMEOUT_MS);
       const n = res.changed ? Object.keys(res.changed).length : 0;
       return ok(
         `Updated tool access on connector "${t.label}" (${t.uuid}): ${what}. ` +
@@ -262,15 +269,16 @@ async function handleSetConnectorToolAccess(args: Record<string, unknown>): Prom
     const access: Record<string, boolean> = {};
     for (const t of block) access[t] = false;
     for (const t of enable) access[t] = true; // enable wins, as on the per-connector route
-    const res = (await workerPost('/claude-ai/mcp/tool-settings/batch', {
+    // The same budget connector-sync.ts gives this route: bootstrap + account map + PATCH, queued.
+    const res = await workerPostLong<{ totalKeys?: number }>('/claude-ai/mcp/tool-settings/batch', {
       updates: r.targets.map((t) => ({ connectorUuid: t.uuid, access })),
-    })) as { totalKeys?: number };
+    }, CONNECTOR_WRITE_TIMEOUT_MS);
     return ok(
       `Updated tool access on ${r.targets.length} connectors (${describeTargets(r.targets)}) in one write: ${what}. ` +
         `${res.totalKeys ?? '?'} total settings preserved. Reload the tool menu to see it take effect.`,
     );
   } catch (e) {
-    return err(errText(e));
+    return err(writeErrText(e));
   }
 }
 
@@ -287,9 +295,8 @@ async function handleSetConnectorAutoApprove(args: Record<string, unknown>): Pro
   try {
     if (r.targets.length === 1) {
       const t = r.targets[0];
-      const res = (await workerPost(`/claude-ai/mcp/servers/${encodeURIComponent(t.uuid)}/auto-approve`, { enable, tools })) as {
-        changed?: string[]; skipped?: string[]; totalKeys?: number;
-      };
+      const res = await workerPostLong<{ changed?: string[]; skipped?: string[]; totalKeys?: number }>(
+        `/claude-ai/mcp/servers/${encodeURIComponent(t.uuid)}/auto-approve`, { enable, tools }, CONNECTOR_WRITE_TIMEOUT_MS);
       const n = res.changed?.length || 0;
       return ok(
         `${enable ? 'Enabled' : 'Disabled'} auto-approval on connector "${t.label}" (${t.uuid}) for ${n} tool(s)${scope}. ` +
@@ -298,9 +305,10 @@ async function handleSetConnectorAutoApprove(args: Record<string, unknown>): Pro
           'gate (use a fresh conversation to see it take effect).',
       );
     }
-    const res = (await workerPost('/claude-ai/mcp/tool-settings/batch', {
-      updates: r.targets.map((t) => ({ connectorUuid: t.uuid, autoApprove: { enable, ...(tools ? { tools } : {}) } })),
-    })) as { results?: Array<{ connectorUuid: string; approved?: string[]; error?: string }>; totalKeys?: number };
+    const res = await workerPostLong<{ results?: Array<{ connectorUuid: string; approved?: string[]; error?: string }>; totalKeys?: number }>(
+      '/claude-ai/mcp/tool-settings/batch', {
+        updates: r.targets.map((t) => ({ connectorUuid: t.uuid, autoApprove: { enable, ...(tools ? { tools } : {}) } })),
+      }, CONNECTOR_WRITE_TIMEOUT_MS);
     const parts = (res.results || []).map((x) => {
       const label = r.targets.find((t) => t.uuid === x.connectorUuid)?.label || x.connectorUuid;
       return x.error ? `"${label}": ${x.error}` : `"${label}": ${x.approved?.length ?? 0} tool(s)`;
@@ -310,7 +318,7 @@ async function handleSetConnectorAutoApprove(args: Record<string, unknown>): Pro
         `${res.totalKeys ?? '?'} total settings preserved. Use a fresh conversation to see it take effect.`,
     );
   } catch (e) {
-    return err(errText(e));
+    return err(writeErrText(e));
   }
 }
 

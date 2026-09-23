@@ -100,3 +100,28 @@ test('an unknown action is refused without a call', async () => {
   assert.equal(res.isError, true);
   assert.equal(calls.length, 0);
 });
+
+// ── a slow create is not a failed create ────────────────────────────────────────────────────────
+// POST /mcp/profile-connectors lists, creates and may re-list, serialized behind other connector
+// writes. A loopback give-up means Core is still working: the connector may well be created.
+
+function timingOut(): void {
+  // @ts-expect-error test stub
+  global.fetch = async (url: string, opts?: { method?: string }) => {
+    calls.push({ method: opts?.method || 'GET', url: String(url) });
+    throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+  };
+}
+
+test('create / delete that time out on loopback say the change MAY STILL LAND and point at list', async () => {
+  timingOut();
+  for (const action of ['create', 'delete']) {
+    const res = await MCP_CONNECTORS_HANDLERS.mcp_connectors({ action, profile: 'basic' });
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, new RegExp(`the ${action} for profile "basic" MAY STILL LAND`));
+    assert.match(res.content[0].text, /mcp_connectors \{action:"list"\}/);
+  }
+  const list = await MCP_CONNECTORS_HANDLERS.mcp_connectors({});
+  assert.equal(list.isError, true);
+  assert.doesNotMatch(list.content[0].text, /MAY STILL LAND/, 'a read has nothing to land');
+});

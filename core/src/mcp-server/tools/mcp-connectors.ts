@@ -8,7 +8,8 @@
  * bounded by construction: one line per profile, never tool names. Registered in
  * EXPANDED_TOOL_DEFS + EXPANDED_HANDLERS.
  */
-import { ok, err, workerGet, workerPost, workerDelete, type McpToolResult } from './_passthrough';
+import { ok, err, workerGetLong, workerPostLong, workerDelete, isLoopbackTimeout, type McpToolResult } from './_passthrough';
+import { CONNECTOR_LIST_TIMEOUT_MS, CONNECTOR_MANAGE_TIMEOUT_MS } from '../profile-connectors';
 
 export const mcpConnectorsToolDef = {
   name: 'mcp_connectors',
@@ -51,7 +52,8 @@ function describe(c: ConnView | null): string {
 }
 
 async function handleList(): Promise<McpToolResult> {
-  const d = await workerGet<ListData>('/mcp/profile-connectors');
+  // The route reads the org bootstrap, which may run to its own 30 s abort (past workerGet's 15 s).
+  const d = await workerGetLong<ListData>('/mcp/profile-connectors', CONNECTOR_LIST_TIMEOUT_MS);
   const lines = [`lm-assist connectors on ${d.base} (node default profile: ${d.nodeDefault})`];
   if (!d.claudeai.ok) lines.push(`WARNING: claude.ai is not readable from this node (${d.claudeai.error}) — the URLs below are still valid.`);
   lines.push(`- unpinned  ${d.unpinned.url} → ${describe(d.unpinned.connector)} (follows the node default)`);
@@ -68,8 +70,9 @@ async function handleList(): Promise<McpToolResult> {
 }
 
 async function handleCreate(profile: string): Promise<McpToolResult> {
-  const d = await workerPost<{ created: boolean; profile: string; url: string; connector: ConnView | null; nextStep: string | null }>(
-    '/mcp/profile-connectors', { profile });
+  // List, create, maybe re-list — serialized behind other connector writes (CONNECTOR_MANAGE_TIMEOUT_MS).
+  const d = await workerPostLong<{ created: boolean; profile: string; url: string; connector: ConnView | null; nextStep: string | null }>(
+    '/mcp/profile-connectors', { profile }, CONNECTOR_MANAGE_TIMEOUT_MS);
   return ok([
     d.created
       ? `Created the claude.ai connector for profile "${d.profile}".`
@@ -82,7 +85,7 @@ async function handleCreate(profile: string): Promise<McpToolResult> {
 
 async function handleDelete(profile: string): Promise<McpToolResult> {
   const d = await workerDelete<{ profile: string; url: string; removed: Array<{ uuid: string; name: string }>; failed: Array<{ uuid: string; error: string }> }>(
-    `/mcp/profile-connectors/${encodeURIComponent(profile)}`);
+    `/mcp/profile-connectors/${encodeURIComponent(profile)}`, undefined, CONNECTOR_MANAGE_TIMEOUT_MS);
   return ok(
     `Removed ${d.removed.length} claude.ai connector(s) for profile "${d.profile}" (${d.url}): ` +
       d.removed.map((r) => `"${r.name}"`).join(', ') +
@@ -101,7 +104,17 @@ async function handleMcpConnectors(args: Record<string, unknown>): Promise<McpTo
     }
     return err(`unknown action "${action}" — use list, create or delete.`);
   } catch (e) {
-    return err(e instanceof Error ? e.message : String(e));
+    const msg = e instanceof Error ? e.message : String(e);
+    // A loopback timeout is not a failure of the change: the route keeps running (serialized
+    // behind other connector writes), so a create or delete may still land. Say so — the first
+    // answer must not report a failure for a connector that was created.
+    if (isLoopbackTimeout(e) && (action === 'create' || action === 'delete')) {
+      return err(
+        `${msg} — Core did not answer in time, but the ${action} for profile "${profile}" MAY STILL LAND. ` +
+          'Call mcp_connectors {action:"list"} to see the result before retrying (create is idempotent by URL).',
+      );
+    }
+    return err(msg);
   }
 }
 

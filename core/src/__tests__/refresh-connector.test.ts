@@ -225,3 +225,51 @@ test('set_connector_auto_approve: omitted `tools` = every tool; a named list is 
   batch = bodies.filter((b) => b.url.endsWith('/claude-ai/mcp/tool-settings/batch'));
   for (const u of batch[0].body.updates) assert.deepEqual(u.autoApprove, { enable: true, tools: ['search'] });
 });
+
+// ── a slow write is not a failed write ─────────────────────────────────────────────────────────
+// The batch route reads the org bootstrap (≤30 s), then the account map, then PATCHes — behind any
+// queued writer. A loopback give-up (AbortSignal.timeout ⇒ TimeoutError) means Core is still
+// working, and an always-approve write may still land: the tool must say so, not report failure.
+
+function timingOutOn(servers: unknown[], slow: (url: string) => boolean): void {
+  // @ts-expect-error stub
+  global.fetch = async (url: string, opts?: { method?: string }) => {
+    calls.push({ method: opts?.method || 'GET', url: String(url) });
+    if (slow(String(url))) throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    const env = { success: true, data: String(url).endsWith('/claude-ai/mcp/servers') ? { servers } : { totalKeys: 1, results: [] } };
+    const text = JSON.stringify(env);
+    return { ok: true, status: 200, async text() { return text; }, async json() { return env; } };
+  };
+}
+
+test('set_connector_auto_approve: a batch that times out on loopback says the write MAY STILL LAND', async () => {
+  timingOutOn(MULTI, (u) => u.endsWith('/tool-settings/batch'));
+  const res = await REFRESH_CONNECTOR_HANDLERS.set_connector_auto_approve({});
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /MAY STILL LAND/);
+  assert.match(res.content[0].text, /aborted due to timeout/, 'the underlying error is kept');
+});
+
+test('set_connector_tool_access: single and batched writes that time out say the write MAY STILL LAND', async () => {
+  timingOutOn(MULTI, (u) => u.endsWith('/tool-settings/batch') || u.endsWith('/tool-access'));
+  const batched = await REFRESH_CONNECTOR_HANDLERS.set_connector_tool_access({ block: ['agent_execute'] });
+  assert.match(batched.content[0].text, /MAY STILL LAND/);
+  const single = await REFRESH_CONNECTOR_HANDLERS.set_connector_tool_access({ block: ['agent_execute'], server_uuid: U });
+  assert.match(single.content[0].text, /MAY STILL LAND/);
+});
+
+test('a write REFUSED by Core keeps its plain error — no "may still land"', async () => {
+  // @ts-expect-error stub
+  global.fetch = async (url: string, opts?: { method?: string }) => {
+    calls.push({ method: opts?.method || 'GET', url: String(url) });
+    const env = String(url).endsWith('/claude-ai/mcp/servers')
+      ? { success: true, data: { servers: MULTI } }
+      : { success: false, error: { code: 'INVALID_INPUT', message: 'bad batch' } };
+    const text = JSON.stringify(env);
+    return { ok: true, status: 200, async text() { return text; }, async json() { return env; } };
+  };
+  const res = await REFRESH_CONNECTOR_HANDLERS.set_connector_auto_approve({});
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /bad batch/);
+  assert.doesNotMatch(res.content[0].text, /MAY STILL LAND/);
+});
