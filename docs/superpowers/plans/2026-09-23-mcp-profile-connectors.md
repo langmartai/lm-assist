@@ -9765,11 +9765,11 @@ EOF
 
 **Interfaces:**
 - **Consumes** (Task 11, spec §7.3). The wire shape is Task 11's, unchanged — `mcp_connectors` renders from the same richer body, so the UI adapts to it instead of the other way round (decision M1):
-  - `GET /mcp-tools/profile-connectors` → `data = { base, hub, nodeDefault, claudeai: {ok, error?}, unpinned: {url, suggestedName, connector, duplicates}, profiles: [{profile, url, suggestedName, connector, duplicates}], unknownPins: [{profile, url, connector}] }`, where `connector = {uuid: string|null, name, connected, authStatus: string|null, toolCount: number|null} | null`. It never carries tool names. `claudeai.ok: false` means claude.ai could not be read; the URLs are still valid.
+  - `GET /mcp/profile-connectors` → `data = { base, hub, nodeDefault, claudeai: {ok, error?}, unpinned: {url, suggestedName, connector, duplicates}, profiles: [{profile, url, suggestedName, connector, duplicates}], unknownPins: [{profile, url, connector}] }`, where `connector = {uuid: string|null, name, connected, authStatus: string|null, toolCount: number|null} | null`. It never carries tool names. `claudeai.ok: false` means claude.ai could not be read; the URLs are still valid.
   - A node with no hub: the GET fails with code `HUB_NOT_CONFIGURED` (HTTP 400 — Core's default for `success:false`). `errText` keeps only the message, so the page tests the RAW error string for the code.
-  - `POST /mcp-tools/profile-connectors {profile}` → `data = { created, profile, url, connector, nextStep }`. It is idempotent by URL and serialized. `connector.uuid` can be `null` (claude.ai's create response named none and the re-list missed it), and `nextStep` is `null` when the connector already exists and is connected.
-  - `DELETE /mcp-tools/profile-connectors/:profile` → `data = { profile, url, removed: [{uuid,name}], failed: [{uuid,error}] }`. The page treats any 2xx as removed. `NOT_FOUND` (nothing on that URL) is an error and triggers a re-read.
-  - On an older Core, `GET /mcp-tools/profile-connectors` falls through to `GET /mcp-tools/:name` and fails with HTTP 400, code `NOT_FOUND`, message `no advertised tool or registry doc named "profile-connectors"`.
+  - `POST /mcp/profile-connectors {profile}` → `data = { created, profile, url, connector, nextStep }`. It is idempotent by URL and serialized. `connector.uuid` can be `null` (claude.ai's create response named none and the re-list missed it), and `nextStep` is `null` when the connector already exists and is connected.
+  - `DELETE /mcp/profile-connectors/:profile` → `data = { profile, url, removed: [{uuid,name}], failed: [{uuid,error}] }`. The page treats any 2xx as removed. `NOT_FOUND` (nothing on that URL) is an error and triggers a re-read.
+  - On an older Core, `GET /mcp/profile-connectors` falls through to `GET /mcp-tools/:name` and fails with HTTP 400, code `NOT_FOUND`, message `no advertised tool or registry doc named "profile-connectors"`.
   - `GET|POST /mcp-tools/profile` keep their shape, with `active` = the node default.
   - Browser→Core calls reuse the page's existing `apiFetch` (`apiClient.fetchPath` + `proxy.machineId`), which already carries `x-api-key`/`_coreapi` routing. `fetchJson` throws `Error("API <status>: <body>")` on a non-2xx.
 - **Produces** (`web/src/lib/mcp-tools.ts`):
@@ -9849,7 +9849,7 @@ Append at the end of the file. `WIRE_FIXTURE` is Task 11's `WIRE_FIXTURE` from `
 
 // ── one connector per profile ─────────────────────────────────────────────────
 
-/** GET /mcp-tools/profile-connectors → data, copied VERBATIM from the REST task's
+/** GET /mcp/profile-connectors → data, copied VERBATIM from the REST task's
  *  core/src/__tests__/profile-connectors-routes.test.ts `WIRE_FIXTURE` (which that suite deep-equals
  *  against the real handler). If the REST shape changes, that fixture changes, and this copy must
  *  change with it — that is the point of copying it. */
@@ -9961,7 +9961,7 @@ function crow(partial: Partial<ProfileConnectorRow> & { profile: string | null }
 function made(name: string, over: Partial<ClaudeAiConnectorState> = {}): ClaudeAiConnectorState {
   return { uuid: `u-${name}`, name, connected: true, authStatus: 'authenticated', toolCount: 42, ...over };
 }
-/** A connector as POST /mcp-tools/profile-connectors returns it (uuid may be null). */
+/** A connector as POST /mcp/profile-connectors returns it (uuid may be null). */
 function wire(name: string, over: Partial<WireConn> = {}): WireConn {
   return { uuid: `u-${name}`, name, connected: true, authStatus: 'authenticated', toolCount: 42, ...over };
 }
@@ -10153,7 +10153,7 @@ Append after L198:
 
 ```ts
 
-// ── one connector per profile (GET/POST/DELETE /mcp-tools/profile-connectors) ─────
+// ── one connector per profile (GET/POST/DELETE /mcp/profile-connectors) ─────
 // A connector on a profile URL (`https://mcp.<domain>/mcp/<profile>`) advertises THAT profile
 // whatever the node default is; the unpinned `/mcp` URL follows the node default. Core matches
 // claude.ai connectors to profiles by URL against this node's own hub. IO-free, like the above.
@@ -10190,7 +10190,7 @@ export interface ProfileConnectorsStatus {
   claudeaiError?: string | null;
 }
 
-// The REST body (GET /mcp-tools/profile-connectors) keeps the unpinned connector and the
+// The REST body (GET /mcp/profile-connectors) keeps the unpinned connector and the
 // per-profile rows in separate fields, because the mcp_connectors tool renders from that richer
 // shape. The page and the pane want one row list, so this is the ONE place the wire shape
 // becomes the table model — never read the wire fields anywhere else.
@@ -10229,12 +10229,12 @@ export function noHubProfileConnectors(): ProfileConnectorsStatus {
 export function parseProfileConnectors(body: unknown): ProfileConnectorsStatus {
   const w = body as Partial<ProfileConnectorsWire> | null;
   if (!w || typeof w !== 'object' || !w.unpinned || !Array.isArray(w.profiles) || !w.claudeai) {
-    throw new Error(`unexpected /mcp-tools/profile-connectors body: ${String(JSON.stringify(body)).slice(0, 400)}`);
+    throw new Error(`unexpected /mcp/profile-connectors body: ${String(JSON.stringify(body)).slice(0, 400)}`);
   }
   return normalizeProfileConnectors(w as ProfileConnectorsWire);
 }
 
-/** POST /mcp-tools/profile-connectors {profile}. Idempotent by URL: `created:false` means a
+/** POST /mcp/profile-connectors {profile}. Idempotent by URL: `created:false` means a
  *  connector on that URL already existed and is returned as-is. */
 export interface ProfileConnectorCreateResult {
   profile: string;
@@ -10266,7 +10266,7 @@ export type ConnectorTone = 'ok' | 'warn' | 'none' | 'unknown';
 /** claude.ai generates the OAuth `state` in-page, so Connect cannot be completed server-side. */
 export const CONNECT_STEP = 'claude.ai → Customize → Connectors → Connect on that connector';
 
-/** An older Core has no /mcp-tools/profile-connectors: the GET falls through to
+/** An older Core has no /mcp/profile-connectors: the GET falls through to
  *  GET /mcp-tools/:name and fails `NOT_FOUND` on a TOOL named "profile-connectors". That means
  *  "this Core predates the feature" — hide the table, and never POST to it (the POST would land
  *  on POST /mcp-tools/:name). Tolerates the JSON-escaped quote of a raw `API 400: {…}` string. */
@@ -10474,7 +10474,7 @@ const CONN_TONE: Record<ConnectorTone, string> = {
 };
 
 /**
- * One claude.ai connector per profile, backed by /mcp-tools/profile-connectors. Core matches
+ * One claude.ai connector per profile, backed by /mcp/profile-connectors. Core matches
  * connectors to profiles by URL against THIS node's hub, so a dev Core never lists (or deletes)
  * the production connector. The unpinned row is shown, never managed: it is the connector every
  * existing conversation uses.
@@ -10639,7 +10639,7 @@ function ProfilePanel({
   connectors: ProfileConnectorsStatus | null;
   connectorsLoading: boolean;
   connectorsError: string | null;
-  /** The Core predates /mcp-tools/profile-connectors — the table is hidden, never shown broken. */
+  /** The Core predates /mcp/profile-connectors — the table is hidden, never shown broken. */
   connectorsMissing: boolean;
   connectorBusy: string | null;
   connectorMsg: { text: string; err: boolean } | null;
@@ -10733,7 +10733,7 @@ function ProfilePanel({
 
       {connectorsMissing ? (
         <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-          Per-profile connectors need a newer Core on this node — it has no /mcp-tools/profile-connectors route.
+          Per-profile connectors need a newer Core on this node — it has no /mcp/profile-connectors route.
         </div>
       ) : (
         <ConnectorsTable
@@ -10778,7 +10778,7 @@ function ProfilePanel({
 After L284 (`const [profileBusy, setProfileBusy] = useState<string | null>(null);`), insert:
 
 ```tsx
-  // One connector per profile (GET /mcp-tools/profile-connectors). Read lazily — it walks
+  // One connector per profile (GET /mcp/profile-connectors). Read lazily — it walks
   // claude.ai's connector bootstrap, which can take seconds — and never on the 10s poll.
   const [connectors, setConnectors] = useState<ProfileConnectorsStatus | null>(null);
   const [connectorsLoading, setConnectorsLoading] = useState(false);
@@ -10817,7 +10817,7 @@ with the block below. Every path renders lines, never throws out of `loadStatus`
 ```tsx
     // Every lm-assist connector of THIS hub (Core matches them by URL), one line each.
     try {
-      s.connectors = connectorStatusLines(parseProfileConnectors(unwrap(await apiFetch<unknown>('/mcp-tools/profile-connectors'))));
+      s.connectors = connectorStatusLines(parseProfileConnectors(unwrap(await apiFetch<unknown>('/mcp/profile-connectors'))));
     } catch (e) {
       const raw = String(e);
       const msg = errText(e);
@@ -10841,7 +10841,7 @@ After L408 (`useEffect(() => { void loadProfile(); }, [loadProfile]);`), insert 
   const loadConnectors = useCallback(async () => {
     setConnectorsLoading(true);
     try {
-      setConnectors(parseProfileConnectors(unwrapBody(await apiFetch<unknown>('/mcp-tools/profile-connectors'))));
+      setConnectors(parseProfileConnectors(unwrapBody(await apiFetch<unknown>('/mcp/profile-connectors'))));
       setConnectorsError(null);
       setConnectorsMissing(false);
     } catch (e) {
@@ -10871,7 +10871,7 @@ After L408 (`useEffect(() => { void loadProfile(); }, [loadProfile]);`), insert 
     setConnectorBusy(name);
     setConnectorMsg(null);
     try {
-      const r = unwrapBody(await apiFetch<ProfileConnectorCreateResult>('/mcp-tools/profile-connectors', { method: 'POST', body: { profile: name } }));
+      const r = unwrapBody(await apiFetch<ProfileConnectorCreateResult>('/mcp/profile-connectors', { method: 'POST', body: { profile: name } }));
       setConnectors((cur) => (cur ? applyCreateResult(cur, r) : cur));
       setConnectorMsg({ text: createConnectorMessage(r), err: false });
     } catch (e) {
@@ -10887,7 +10887,7 @@ After L408 (`useEffect(() => { void loadProfile(); }, [loadProfile]);`), insert 
     setConnectorBusy(name);
     setConnectorMsg(null);
     try {
-      await apiFetch(`/mcp-tools/profile-connectors/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      await apiFetch(`/mcp/profile-connectors/${encodeURIComponent(name)}`, { method: 'DELETE' });
       setConnectors((cur) => (cur ? applyDeleteResult(cur, name) : cur));
       setConnectorMsg({ text: `Deleted the ${name} connector from claude.ai. Conversations that had it lose its tools.`, err: false });
     } catch (e) {
@@ -11016,7 +11016,7 @@ feat(web/mcp-tools): node-default wording + one-connector-per-profile table
 
 The Profile panel now says what the setting is: the NODE DEFAULT, applied
 to unpinned clients only. A Connectors table (GET/POST/DELETE
-/mcp-tools/profile-connectors) lists this hub's URL per profile, claude.ai's
+/mcp/profile-connectors) lists this hub's URL per profile, claude.ai's
 state for each (connected/authStatus/toolCount, "not created", or unknown
 when claude.ai is unreadable), and offers Create/Delete one at a time. The
 unpinned connector is shown but never managed here.
@@ -11067,17 +11067,17 @@ EOF
 - **Consumes:**
   - The Task 11 routes and bodies listed under Task 13 Consumes, including `HUB_NOT_CONFIGURED` and the `NOT_FOUND` fall-through on an older Core. The pane's `api()` returns `{ok, data}` or `{ok:false, error:{code, message}}`, so here the code is read directly as `r.error.code`.
   - Three properties of Task 11's routes that the README's "bounded reach" argument rests on, confirmed against Task 11's handlers:
-    1. Neither `/mcp-tools/profile-connectors` route calls `requireLoopback`, so granting them defeats no locality control.
+    1. Neither `/mcp/profile-connectors` route calls `requireLoopback`, so granting them defeats no locality control.
     2. POST accepts only a *known* profile (`canonicalProfileName`, `UNKNOWN_PROFILE` otherwise) and registers only `connectorUrlFor(profile, base)` of this node's hub.
     3. DELETE accepts only a pin-grammar segment and removes only connectors whose URL pins that profile on this hub; the unpinned connector (`profile === null`) is never matched.
   - The shim (`assets/lmui.js`) is **not** touched. The only new request field is the POST body `{profile}` on a new route, so the "new fields optional" rule is met trivially.
 - **Produces:**
   - Grant rules:
-    - `{node, /mcp-tools/profile-connectors, [GET, POST], exact}`
-    - `{node, /mcp-tools/profile-connectors/*, [DELETE], exact}`
+    - `{node, /mcp/profile-connectors, [GET, POST], exact}`
+    - `{node, /mcp/profile-connectors/*, [DELETE], exact}`
   - Pane state: `conn` (the normalised table model), `connErr`, `connMissing`, `connBusy`, `connArmed`, `connMsg`.
   - Pane functions: `connNormalize` (the same mapping as Task 13's `normalizeProfileConnectors`; returns `null` for a body that is not the wire shape), `connNoHub`, `connRouteMissing`, `connOrder`, `connState`, `connCreateMsg`, `connStatusLines`, `legacyConnLine`, `connSection`, `connRow`, `loadConnectors`, `createConnector`, `deleteConnector`, `copyUrl`. These mirror the web lib helpers; a pane cannot import them.
-  - The README text Task 15's `docs-mcp-profile-connectors.test.ts` checks: the grant block equal to `lmui.config.json`'s `grant` (14 rules, same order), "these fourteen rules", "the fourteen rules are evaluated", `/mcp-tools/profile-connectors`, and no `**node-global**`. Ledger counts: twelve writes, nine held, three withheld, "Held (9)".
+  - The README text Task 15's `docs-mcp-profile-connectors.test.ts` checks: the grant block equal to `lmui.config.json`'s `grant` (14 rules, same order), "these fourteen rules", "the fourteen rules are evaluated", `/mcp/profile-connectors`, and no `**node-global**`. Ledger counts: twelve writes, nine held, three withheld, "Held (9)".
 
 - [ ] **Step 1: Write the failing test**
 
@@ -11104,17 +11104,17 @@ with:
       ['GET', '/mcp-tools/profile'], ['POST', '/mcp-tools/profile'],
       // One connector per profile: list, create, delete ONE (app.js loadConnectors /
       // createConnector / deleteConnector).
-      ['GET', '/mcp-tools/profile-connectors'], ['POST', '/mcp-tools/profile-connectors'],
-      ['DELETE', '/mcp-tools/profile-connectors/basic']],
+      ['GET', '/mcp/profile-connectors'], ['POST', '/mcp/profile-connectors'],
+      ['DELETE', '/mcp/profile-connectors/basic']],
     mustNot: [['POST', '/mcp-plugins'], ['POST', '/health'], ['POST', '/claude-ai/mcp/servers'],
       // The generic claude.ai connector writes take ANY url / uuid. The profile route is the only
       // connector write this pane holds, and it can only reach this hub's own profile URLs.
       ['DELETE', '/claude-ai/mcp/servers/u-1'], ['POST', '/claude-ai/mcp/servers/u-1/clear-cache'],
       ['POST', '/claude-ai/mcp/servers/u-1/tool-access'], ['POST', '/mcp-plugins/sync-connector'],
       // Near misses of the DELETE leaf, one segment at a time.
-      ['DELETE', '/mcp-tools/profile-connectors'], ['DELETE', '/mcp-tools/profile-connectors/basic/extra'],
+      ['DELETE', '/mcp/profile-connectors'], ['DELETE', '/mcp/profile-connectors/basic/extra'],
       ['DELETE', '/mcp-tools/some_tool'], ['DELETE', '/mcp-tools/profile'],
-      ['PUT', '/mcp-tools/profile-connectors'], ['POST', '/mcp-tools/profile-connectors/basic']],
+      ['PUT', '/mcp/profile-connectors'], ['POST', '/mcp/profile-connectors/basic']],
   },
 ```
 
@@ -11123,7 +11123,7 @@ Append after L497:
 ```ts
 /**
  * Connector create/delete ride their OWN exact rules, not the one-segment `/mcp-tools/*` POST
- * shape. That shape happens to cover `POST /mcp-tools/profile-connectors` too, which is exactly
+ * shape. That shape happens to cover `POST /mcp/profile-connectors` too, which is exactly
  * why it cannot be the authority of record: narrowing it later would silently take connector
  * management away, and widening it is how a future sibling would inherit it unreviewed.
  * No other pane may create or delete a claude.ai connector at all.
@@ -11132,17 +11132,17 @@ test('assist-mcp-tools: connector create/delete hold their own leaf rules, and n
   const root = path.join(__dirname, '../../../../../ui-apps');
   const grant = readDeclaredGrant(path.join(root, 'assist-mcp-tools'));
 
-  const own = grant.filter((r) => r.pathPrefix.startsWith('/mcp-tools/profile-connectors'));
+  const own = grant.filter((r) => r.pathPrefix.startsWith('/mcp/profile-connectors'));
   assert.ok(own.length > 0, 'the pane must name the connector routes explicitly');
   assert.ok(own.every((r) => r.exact), 'every connector rule is a LEAF');
-  assert.ok(grantAllows(own, 'node', '/mcp-tools/profile-connectors', 'GET'));
-  assert.ok(grantAllows(own, 'node', '/mcp-tools/profile-connectors', 'POST'));
+  assert.ok(grantAllows(own, 'node', '/mcp/profile-connectors', 'GET'));
+  assert.ok(grantAllows(own, 'node', '/mcp/profile-connectors', 'POST'));
   for (const p of ['basic', 'platform', 'extended', 'admin']) {
-    assert.ok(grantAllows(own, 'node', `/mcp-tools/profile-connectors/${p}`, 'DELETE'), `DELETE ${p}`);
+    assert.ok(grantAllows(own, 'node', `/mcp/profile-connectors/${p}`, 'DELETE'), `DELETE ${p}`);
   }
 
   // The pane's ONLY delete authority is that one leaf.
-  assert.deepEqual(grant.filter((r) => r.verbs.includes('DELETE')).map((r) => r.pathPrefix), ['/mcp-tools/profile-connectors/*']);
+  assert.deepEqual(grant.filter((r) => r.verbs.includes('DELETE')).map((r) => r.pathPrefix), ['/mcp/profile-connectors/*']);
 
   // It never reaches the generic claude.ai connector writes, which take an arbitrary url/uuid.
   assert.ok(!grantAllows(grant, 'node', '/claude-ai/mcp/servers', 'POST'));
@@ -11152,8 +11152,8 @@ test('assist-mcp-tools: connector create/delete hold their own leaf rules, and n
     .filter((n) => n !== 'assist-mcp-tools' && fs.existsSync(path.join(root, n, 'lmui.config.json')));
   for (const pane of siblings) {
     const g = readDeclaredGrant(path.join(root, pane));
-    assert.ok(!grantAllows(g, 'node', '/mcp-tools/profile-connectors', 'POST'), `${pane} can create a connector`);
-    assert.ok(!grantAllows(g, 'node', '/mcp-tools/profile-connectors/basic', 'DELETE'), `${pane} can delete a connector`);
+    assert.ok(!grantAllows(g, 'node', '/mcp/profile-connectors', 'POST'), `${pane} can create a connector`);
+    assert.ok(!grantAllows(g, 'node', '/mcp/profile-connectors/basic', 'DELETE'), `${pane} can delete a connector`);
   }
 });
 ```
@@ -11165,7 +11165,7 @@ cd /home/ubuntu/lm-assist/.claude/worktrees/mcp-profile-connectors/core && npm r
 ```
 
 Expected: 2 failures.
-- `assist-mcp-tools: DELETE /mcp-tools/profile-connectors/basic must be GRANTED`
+- `assist-mcp-tools: DELETE /mcp/profile-connectors/basic must be GRANTED`
 - `the pane must name the connector routes explicitly`
 
 - [ ] **Step 3: Implement**
@@ -11180,8 +11180,8 @@ after:
 
 ```json
     { "service": "node", "pathPrefix": "/mcp-tools/*/rollback", "verbs": ["POST"], "exact": true },
-    { "service": "node", "pathPrefix": "/mcp-tools/profile-connectors", "verbs": ["GET", "POST"], "exact": true },
-    { "service": "node", "pathPrefix": "/mcp-tools/profile-connectors/*", "verbs": ["DELETE"], "exact": true },
+    { "service": "node", "pathPrefix": "/mcp/profile-connectors", "verbs": ["GET", "POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mcp/profile-connectors/*", "verbs": ["DELETE"], "exact": true },
 ```
 
 `assets/app.js` header, L5-10. Before:
@@ -11204,8 +11204,8 @@ after:
  *   node:/mcp-tools/{id}               [POST] leaf description override, enable/disable,
  *                                                  AND the node-default profile — see below
  *   node:/mcp-tools/{id}/rollback      [POST] leaf roll a tool doc back to an earlier rev
- *   node:/mcp-tools/profile-connectors [GET, POST] leaf  list / create ONE per-profile connector
- *   node:/mcp-tools/profile-connectors/{profile} [DELETE] leaf  delete ONE profile's connector
+ *   node:/mcp/profile-connectors [GET, POST] leaf  list / create ONE per-profile connector
+ *   node:/mcp/profile-connectors/{profile} [DELETE] leaf  delete ONE profile's connector
 ```
 
 Wire shapes in the same header: extend L73 (the `POST /mcp-tools/profile {profile}` line) with the three connector routes, so nobody reads the REST fields anywhere but `connNormalize`.
@@ -11220,13 +11220,13 @@ after:
 
 ```js
  *   POST /mcp-tools/profile {profile} → data = the SAME shape (sizes recounted) — no re-read needed
- *   GET  /mcp-tools/profile-connectors → data = { base, hub, nodeDefault, claudeai:{ ok, error? },
+ *   GET  /mcp/profile-connectors → data = { base, hub, nodeDefault, claudeai:{ ok, error? },
  *                                   unpinned:{ url, suggestedName, connector, duplicates },
  *                                   profiles:[{ profile, url, suggestedName, connector, duplicates }], unknownPins:[…] }
  *                                   connector = { uuid|null, name, connected, authStatus|null, toolCount|null } | null
  *                                   ⚠ connNormalize() flattens it to ONE row list — never read these fields elsewhere
- *   POST /mcp-tools/profile-connectors {profile} → data = { created, profile, url, connector, nextStep|null }
- *   DELETE /mcp-tools/profile-connectors/:profile → data = { profile, url, removed:[…], failed:[…] }
+ *   POST /mcp/profile-connectors {profile} → data = { created, profile, url, connector, nextStep|null }
+ *   DELETE /mcp/profile-connectors/:profile → data = { profile, url, removed:[…], failed:[…] }
 ```
 
 Ledger comment, L92. Before:
@@ -11254,9 +11254,9 @@ after:
 ```js
     ['Tool loading profile', 'POST /mcp-tools/profile', 'Sets the NODE DEFAULT — what unpinned clients advertise in '
       + 'tools/list. Advertise-only: hidden tools stay callable. Connectors pinned to a profile are unaffected.'],
-    ['Create a profile connector', 'POST /mcp-tools/profile-connectors', 'Adds the claude.ai connector for ONE profile '
+    ['Create a profile connector', 'POST /mcp/profile-connectors', 'Adds the claude.ai connector for ONE profile '
       + 'URL of this hub (idempotent by URL). Connect stays one browser step in claude.ai.'],
-    ['Delete a profile connector', 'DELETE /mcp-tools/profile-connectors/{profile}', 'Removes that profile’s claude.ai '
+    ['Delete a profile connector', 'DELETE /mcp/profile-connectors/{profile}', 'Removes that profile’s claude.ai '
       + 'connector. The unpinned connector is never offered.'],
   ];
 ```
@@ -11276,7 +11276,7 @@ after:
     profileArmed: '',                 // two-click arming, kept out of state.armed so a detail
                                       // repaint cannot disarm a node-default switch mid-decision
     profileMsg: null,                 // { text, err } — the OUTCOME of the last switch
-    conn: null,                       // connNormalize(GET /mcp-tools/profile-connectors → data)
+    conn: null,                       // connNormalize(GET /mcp/profile-connectors → data)
     connErr: '',                      // the server's own text when that read fails
     connMissing: false,               // an older Core has no such route — the table is hidden
     connBusy: '',                     // profile a create/delete is in flight for (one at a time)
@@ -11465,7 +11465,7 @@ Insert after the end of `setProfile` at L1160, before `// ── status`. `connN
   // follows the default. Create/Delete ride their own LEAF grants (see lmui.config.json).
   var CONNECT_STEP = 'claude.ai → Customize → Connectors → Connect on that connector';
 
-  /** GET /mcp-tools/profile-connectors → the table model. The REST body keeps the unpinned
+  /** GET /mcp/profile-connectors → the table model. The REST body keeps the unpinned
    *  connector and the per-profile rows apart (the mcp_connectors tool renders from that shape);
    *  the table wants ONE row list, unpinned first as profile:null. The same mapping as
    *  normalizeProfileConnectors in web/src/lib/mcp-tools.ts — keep the two in step. Returns null
@@ -11488,7 +11488,7 @@ Insert after the end of `setProfile` at L1160, before `// ── status`. `connN
   /** A node with no hub refuses the GET with HUB_NOT_CONFIGURED: it has no public MCP URL, so
    *  the table is empty and says so — that is a state, not an error. */
   function connNoHub() { return { base: null, nodeDefault: '', connectors: [], claudeaiError: null }; }
-  /** An older Core has no /mcp-tools/profile-connectors: the GET falls through to
+  /** An older Core has no /mcp/profile-connectors: the GET falls through to
    *  GET /mcp-tools/:name and fails NOT_FOUND on a TOOL named "profile-connectors". Hide the
    *  table then — never post to it (the POST would land on POST /mcp-tools/:name). */
   function connRouteMissing(r) {
@@ -11572,7 +11572,7 @@ Insert after the end of `setProfile` at L1160, before `// ── status`. `connN
   function connSection() {
     if (state.connMissing) {
       return '<div class="hint">Per-profile connectors need a newer Core on this node — it has no '
-        + '/mcp-tools/profile-connectors route.</div>';
+        + '/mcp/profile-connectors route.</div>';
     }
     var d = state.conn;
     var m = state.connMsg;
@@ -11595,7 +11595,7 @@ Insert after the end of `setProfile` at L1160, before `// ── status`. `connN
       + '</tbody></table>';
   }
   function loadConnectors() {
-    return api('node', '/mcp-tools/profile-connectors').then(function (r) {
+    return api('node', '/mcp/profile-connectors').then(function (r) {
       if (!r.ok) {
         if (r.error.code === 'HUB_NOT_CONFIGURED') {
           state.connMissing = false; state.connErr = ''; state.conn = connNoHub();
@@ -11610,7 +11610,7 @@ Insert after the end of `setProfile` at L1160, before `// ── status`. `connN
       }
       var n = connNormalize(r.data);
       if (!n) {
-        state.connErr = 'Unexpected /mcp-tools/profile-connectors body — ' + String(JSON.stringify(r.data)).slice(0, 200);
+        state.connErr = 'Unexpected /mcp/profile-connectors body — ' + String(JSON.stringify(r.data)).slice(0, 200);
         paintProfile();
         return;
       }
@@ -11627,7 +11627,7 @@ Insert after the end of `setProfile` at L1160, before `// ── status`. `connN
     state.connBusy = profile; state.connArmed = ''; state.connMsg = null;
     paintProfile();
     say('creating the ' + profile + ' connector in claude.ai…');
-    api('node', '/mcp-tools/profile-connectors', { method: 'POST', body: { profile: profile } }).then(function (r) {
+    api('node', '/mcp/profile-connectors', { method: 'POST', body: { profile: profile } }).then(function (r) {
       state.connBusy = '';
       if (!r.ok) {
         state.connMsg = { text: 'Create for "' + profile + '" failed — ' + r.error.code + ': ' + r.error.message
@@ -11654,7 +11654,7 @@ Insert after the end of `setProfile` at L1160, before `// ── status`. `connN
     state.connBusy = profile; state.connArmed = ''; state.connMsg = null;
     paintProfile();
     say('deleting the ' + profile + ' connector from claude.ai…');
-    api('node', '/mcp-tools/profile-connectors/' + encodeURIComponent(profile), { method: 'DELETE' }).then(function (r) {
+    api('node', '/mcp/profile-connectors/' + encodeURIComponent(profile), { method: 'DELETE' }).then(function (r) {
       state.connBusy = '';
       if (!r.ok) {
         state.connMsg = { text: 'Delete for "' + profile + '" failed — ' + r.error.code + ': ' + r.error.message
@@ -11712,7 +11712,7 @@ Replace `paintStatus` and `loadStatus`, L1167-1211, with:
           h ? (h.error || ((h.authenticated ? 'authenticated' : h.connected ? 'connected (not authed)'
             : h.configured ? 'configured, offline' : 'not configured')
             + (h.hubUrl ? ' · ' + String(h.hubUrl).replace(/^wss?:\/\//, '') : ''))) : '…')
-      + '<div class="hint">Four independent probes: /health, /mcp-plugins, /mcp-tools/profile-connectors (on an older '
+      + '<div class="hint">Four independent probes: /health, /mcp-plugins, /mcp/profile-connectors (on an older '
       + 'Core, /claude-ai/mcp/servers) and /hub/status. Each is reported on its own — one failing probe never blanks '
       + 'the others.</div>';
     reportHeight();
@@ -11725,11 +11725,11 @@ Replace `paintStatus` and `loadStatus`, L1167-1211, with:
       api('node', '/health').then(function (r) { s.core = r.ok ? (r.data || {}) : { error: r.error.code + ': ' + r.error.message }; }),
       api('node', '/mcp-plugins').then(function (r) { s.plugins = r.ok ? (r.data || {}) : { error: r.error.code + ': ' + r.error.message }; }),
       api('node', '/hub/status').then(function (r) { s.hub = r.ok ? (r.data || {}) : { error: r.error.code + ': ' + r.error.message }; }),
-      api('node', '/mcp-tools/profile-connectors').then(function (r) {
+      api('node', '/mcp/profile-connectors').then(function (r) {
         if (r.ok) {
           var n = connNormalize(r.data);
           s.connectors = n ? connStatusLines(n)
-            : [{ label: 'Connector', ok: false, detail: 'unexpected /mcp-tools/profile-connectors body' }];
+            : [{ label: 'Connector', ok: false, detail: 'unexpected /mcp/profile-connectors body' }];
           return;
         }
         if (r.error.code === 'HUB_NOT_CONFIGURED') { s.connectors = connStatusLines(connNoHub()); return; }
@@ -11855,8 +11855,8 @@ after:
   { "service": "node", "pathPrefix": "/mcp-tools",                      "verbs": ["GET"] },
   { "service": "node", "pathPrefix": "/mcp-tools/*",                    "verbs": ["POST"], "exact": true },
   { "service": "node", "pathPrefix": "/mcp-tools/*/rollback",           "verbs": ["POST"], "exact": true },
-  { "service": "node", "pathPrefix": "/mcp-tools/profile-connectors",   "verbs": ["GET", "POST"], "exact": true },
-  { "service": "node", "pathPrefix": "/mcp-tools/profile-connectors/*", "verbs": ["DELETE"], "exact": true },
+  { "service": "node", "pathPrefix": "/mcp/profile-connectors",   "verbs": ["GET", "POST"], "exact": true },
+  { "service": "node", "pathPrefix": "/mcp/profile-connectors/*", "verbs": ["DELETE"], "exact": true },
   { "service": "node", "pathPrefix": "/mcp-plugins",                    "verbs": ["GET"] },
   { "service": "node", "pathPrefix": "/mcp/access",                     "verbs": ["GET"] },
   { "service": "node", "pathPrefix": "/mcp/access/tool-gate",           "verbs": ["PUT"],  "exact": true },
@@ -11880,7 +11880,7 @@ Before:
 after:
 
 ```markdown
-- `/mcp-tools/profile-connectors` **GET, POST** and `/mcp-tools/profile-connectors/*` **DELETE** —
+- `/mcp/profile-connectors` **GET, POST** and `/mcp/profile-connectors/*` **DELETE** —
   the Profile tab's **Connectors** table: list this hub's per-profile connector URLs with
   claude.ai's state for each, create the claude.ai connector for ONE profile, delete ONE
   profile's connector. GET and POST were already reachable — GET through the `/mcp-tools` read
@@ -11916,7 +11916,7 @@ after:
 
 ```markdown
 the audit fixture in `core/src/ui-pages/local-tier/__tests__/grants.test.ts` is where that
-exclusion belongs. `POST /mcp-tools/profile-connectors` is the second route with that shape. It
+exclusion belongs. `POST /mcp/profile-connectors` is the second route with that shape. It
 is in scope (see *Which writes are held*), and it has its own named rule above, so the decision
 is visible here rather than inherited by accident.
 ```
@@ -11967,7 +11967,7 @@ after:
   what `tools/list` returns and nothing about who may call what, one click reverses it, and the
   surface it can reach is bounded by the profiles Core defines. It reaches every unpinned client
   on the node, which is why it asks twice.
-- ✅ `POST /mcp-tools/profile-connectors {profile}` and `DELETE /mcp-tools/profile-connectors/*` —
+- ✅ `POST /mcp/profile-connectors {profile}` and `DELETE /mcp/profile-connectors/*` —
   create or delete the claude.ai connector for one profile URL. These DO write the operator's
   claude.ai account, like the withheld Sync; the difference is the locality control. Neither
   route carries `requireLoopback`, and the shipped web page performs both over the hub relay, so
@@ -12042,7 +12042,7 @@ after:
     connector); and it is **not instant** (a local Claude Code session picks it up within ~30s;
     an unpinned claude.ai connector's cached `tools/list` is cleared automatically when the node
     holds a claude.ai session, and otherwise stays until it is refreshed).
-  - The table reads `GET /mcp-tools/profile-connectors`, whose body keeps the unpinned connector
+  - The table reads `GET /mcp/profile-connectors`, whose body keeps the unpinned connector
     and the per-profile rows apart; `connNormalize()` in `assets/app.js` flattens it to one row
     list, and nothing else reads the wire fields. A node with no hub answers `HUB_NOT_CONFIGURED`,
     and the table says the node has no public MCP URL rather than showing an error.
@@ -12065,7 +12065,7 @@ after:
 
 ```markdown
 - **Status** tab — four independent probes (`/health`, `/mcp-plugins`,
-  `/mcp-tools/profile-connectors`, `/hub/status`), each reported separately so one failure never
+  `/mcp/profile-connectors`, `/hub/status`), each reported separately so one failure never
   blanks the others. The connector probe shows every claude.ai connector whose URL points at
   this node's hub (the unpinned one and each profile's), one row each — it no longer stops at the
   first connector whose name happens to match. On a Core without that route it falls back to
@@ -12089,11 +12089,11 @@ after:
 - **Grant** — the fourteen rules are evaluated with the *shipped* evaluator
   (`core/dist/ui-pages/local-tier/grants.js`), not a reimplementation, over a table of
   allow/deny cases: `POST /mcp/pending/<id>/confirm|deny`, `PUT /mcp/access/tool-gate`,
-  `GET|POST /mcp-tools/profile-connectors` and `DELETE /mcp-tools/profile-connectors/<profile>`
+  `GET|POST /mcp/profile-connectors` and `DELETE /mcp/profile-connectors/<profile>`
   allow; `POST /mcp/pending`, `POST /mcp/pending/<id>`, `.../confirm/extra`,
   `PUT /mcp/access`, `POST /mcp-plugins/*/enable|disable`, `POST /mcp-plugins/sync-connector`,
-  `POST /mcp-plugins/call`, `DELETE /mcp-tools/profile-connectors`,
-  `DELETE /mcp-tools/profile-connectors/<profile>/extra` and `DELETE /claude-ai/mcp/servers/<uuid>`
+  `POST /mcp-plugins/call`, `DELETE /mcp/profile-connectors`,
+  `DELETE /mcp/profile-connectors/<profile>/extra` and `DELETE /claude-ai/mcp/servers/<uuid>`
   deny.
 ```
 
@@ -12122,7 +12122,7 @@ not nest a second `assist-mcp-tools/` inside it. `panes sync` only ever re-copie
 `env -u API_PORT ./core.sh panes sync` only when `panes check` reports drift. (`env -u API_PORT`
 keeps a shell that inherited the prod `API_PORT` from steering `core.sh`.) For a dev Core from
 this repo, restart with `env -u API_PORT ./core.sh restart` instead of `lm-assist restart`. The
-Connectors table needs a Core with `/mcp-tools/profile-connectors`; against an older Core it
+Connectors table needs a Core with `/mcp/profile-connectors`; against an older Core it
 hides itself, so the pane can be deployed before the Core.
 ````
 
@@ -12138,7 +12138,7 @@ Expected:
 - Both suites pass. The shim-identity test stays green because `lmui.js` is untouched.
 - `node --check` is silent, and the config check prints `config ok`.
 - `leak-grep exit=1`. app.js L27 and README L43 already name a private path; those lines are pre-existing, unchanged by this diff, and must not be copied into new lines.
-- Measured on a scratch copy with these edits applied: the new must/mustNot lists and the leaf-rule test hold under the shipped evaluator (14 rules, the only DELETE rule is `/mcp-tools/profile-connectors/*`, no sibling pane holds either write); the README satisfies Task 15's checks; and the connector block, run in a stub harness against Task 11's `WIRE_FIXTURE` body, renders the table, maps `HUB_NOT_CONFIGURED` to the no-hub state, hides on the `NOT_FOUND` fall-through, patches a create with a `null` uuid to `''`, and escapes a hostile connector name.
+- Measured on a scratch copy with these edits applied: the new must/mustNot lists and the leaf-rule test hold under the shipped evaluator (14 rules, the only DELETE rule is `/mcp/profile-connectors/*`, no sibling pane holds either write); the README satisfies Task 15's checks; and the connector block, run in a stub harness against Task 11's `WIRE_FIXTURE` body, renders the table, maps `HUB_NOT_CONFIGURED` to the no-hub state, hides on the `NOT_FOUND` fall-through, patches a create with a `null` uuid to `''`, and escapes a hostile connector name.
 
 The live pane check (deploy to `~/.lmui/apps`, open the Profile and Status tabs, Create/Delete) is **Task 16, Step 6**. It runs against Task 16's throwaway worktree Core, never a `./core.sh restart`: 🔴 never run `./core.sh restart` from `.claude/worktrees/…` — dev `:3200/:3948` belong to the MAIN checkout (another session's Core), and a restart from here `kill -9`s them. Create/Delete need a claude.ai cookie, which lives on 107, so those clicks are part of Task 16's claude.ai step.
 
@@ -12156,8 +12156,8 @@ body; HUB_NOT_CONFIGURED renders as "no hub", and on an older Core the table
 hides itself. The Status tab lists every connector of this hub, falling back
 to the single legacy pick on an older Core.
 
-Grants: exact leaf rules for GET|POST /mcp-tools/profile-connectors and
-DELETE /mcp-tools/profile-connectors/*, so connector management is not
+Grants: exact leaf rules for GET|POST /mcp/profile-connectors and
+DELETE /mcp/profile-connectors/*, so connector management is not
 riding the one-segment /mcp-tools/* shape. The audit pins the DELETE leaf's
 near misses, the generic claude.ai connector writes staying denied, and that
 no sibling pane may create or delete a connector. README: fourteen rules,
@@ -12205,7 +12205,7 @@ EOF
     - Task 6: `gateKeyFor`. The bootstrap identity block stays profile-unaware.
     - Task 10: `mcp_profile get` makes no claude.ai call. It returns `connectorsHint`: 'For claude.ai connector status per profile, call mcp_connectors {action:"list"}.'
   - The documented surfaces:
-    - the routes `GET|POST /mcp-tools/profile-connectors` and `DELETE /mcp-tools/profile-connectors/:profile`, with Task 11's wire shape: `{ base, hub, nodeDefault, claudeai: {ok, error?}, unpinned, profiles[], unknownPins[] }`, `HUB_NOT_CONFIGURED` on a node without a hub, POST idempotent by URL and serialised, and DELETE never removing the unpinned connector;
+    - the routes `GET|POST /mcp/profile-connectors` and `DELETE /mcp/profile-connectors/:profile`, with Task 11's wire shape: `{ base, hub, nodeDefault, claudeai: {ok, error?}, unpinned, profiles[], unknownPins[] }`, `HUB_NOT_CONFIGURED` on a node without a hub, POST idempotent by URL and serialised, and DELETE never removing the unpinned connector;
     - the tool `mcp_connectors {action?: list|create|delete, profile?}`, which has scope `admin` and category `claudeai`;
     - the CLI commands `lm-assist mcp add|remove --profile` (`--profile` is required) and `lm-assist login --mcp-profile`.
   - The test imports `readDeclaredGrant` and `grantAllows` from `core/src/ui-pages/local-tier/grants.ts`. Both exist unchanged (`readDeclaredGrant(appDir)` at L92, `grantAllows(grant, service, pathName, method)` at L230).
@@ -12299,7 +12299,7 @@ test('mcp-connector.md: "One connector per profile" — URL contract, create flo
     '`/mcp?profile=<profile>`',
     '`LM_MCP_PROFILE=<profile>`',
     '/.well-known/oauth-protected-resource/mcp/<profile>',
-    '`/mcp-tools/profile-connectors`',
+    '`/mcp/profile-connectors`',
     '`mcp_connectors`',
     '`lm-assist langmart basic`',
     'lm-assist mcp add --profile',
@@ -12397,18 +12397,18 @@ test('assist-mcp-tools README: its grant block IS the pane grant, the rule count
   assert.ok(word, `add a word for ${config.grant.length}`);
   assert.ok(md.includes(`these ${word} rules`), `README says "these ${word} rules"`);
   assert.ok(md.includes(`the ${word} rules are evaluated`), `README says "the ${word} rules are evaluated"`);
-  assert.ok(md.includes('/mcp-tools/profile-connectors'));
+  assert.ok(md.includes('/mcp/profile-connectors'));
   assert.doesNotMatch(md, /\*\*node-global\*\*/, 'the profile is the node DEFAULT now, not node-global');
 });
 
 test('assist-mcp-tools README: its profile-connector grant claims hold under the real evaluator', () => {
   const grant = readDeclaredGrant(path.join(ROOT, 'ui-apps', 'assist-mcp-tools'));
   const cases: Array<[string, string, boolean]> = [
-    ['GET', '/mcp-tools/profile-connectors', true],
-    ['POST', '/mcp-tools/profile-connectors', true],
-    ['DELETE', '/mcp-tools/profile-connectors/basic', true],
-    ['DELETE', '/mcp-tools/profile-connectors', false],
-    ['DELETE', '/mcp-tools/profile-connectors/basic/extra', false],
+    ['GET', '/mcp/profile-connectors', true],
+    ['POST', '/mcp/profile-connectors', true],
+    ['DELETE', '/mcp/profile-connectors/basic', true],
+    ['DELETE', '/mcp/profile-connectors', false],
+    ['DELETE', '/mcp/profile-connectors/basic/extra', false],
     ['POST', '/claude-ai/mcp/servers', false],
   ];
   for (const [verb, p, want] of cases) {
@@ -12429,7 +12429,7 @@ The six that fail, with their first failing assertion:
 1. `missing ## One connector per profile`.
 2. `the Claude Code entry IS written by lm-assist login — say so`. Today's text splits `` `lm-assist login `` and `` <keypack>` `` across two lines.
 3. The mcp-surfaces test, on the missing `tool-loading-profiles-and-the-per-request-pin` anchor.
-4. The api-endpoints test: no `| GET | `/mcp-tools/profile-connectors` |` row.
+4. The api-endpoints test: no `| GET | `/mcp/profile-connectors` |` row.
 5. `exactly one index row` (actual 0).
 6. The README.md test: `checkProfileLinks('README.md') >= 1` fails, because there are 0 links.
 
@@ -12527,7 +12527,7 @@ and every Claude surface signed in to that account shows it:
 - **From lm-assist.** This creates the connector for a profile. Use *Create* on that profile's
   row of the MCP Tools page (*Profile → Connectors*), or call `mcp_connectors` with action
   `create` and the profile from a session that already has lm-assist, or send
-  `POST /mcp-tools/profile-connectors {"profile": "<name>"}`. The node needs a claude.ai
+  `POST /mcp/profile-connectors {"profile": "<name>"}`. The node needs a claude.ai
   browser session for this ([how to give it one](../examples/claudeai-browser-auth/)). Creating
   is idempotent by URL: asking twice returns the connector that already exists.
 
@@ -12544,7 +12544,7 @@ browser session:
 1. **Status.** The MCP Tools page's *Profile → Connectors* table lists every claude.ai
    connector whose URL points at this node's hub: one row per profile, plus the unpinned one.
    Each row shows the connection state and tool count, read from
-   `/mcp-tools/profile-connectors`, and has a *Delete* action.
+   `/mcp/profile-connectors`, and has a *Delete* action.
 2. **Upkeep as tools change.** When a plugin adds or removes tools, the node:
    - clears claude.ai's cached tool list on **every** lm-assist connector for this hub;
    - forces the bootstrap refetch;
@@ -12608,7 +12608,7 @@ for.
      fleet;
    - `mcp_connectors` with action `create` and the profile (it is a claude.ai tool, so only
      `admin` lists it);
-   - `POST /mcp-tools/profile-connectors {"profile": "basic"}`.
+   - `POST /mcp/profile-connectors {"profile": "basic"}`.
 
    The reply gives the connector's uuid, its auth status, and the step that is left.
 2. **Connect** it: in claude.ai, go to *Connectors → lm-assist langmart basic → Connect*, then
@@ -12617,8 +12617,8 @@ for.
 3. Create the next connector only after this one is connected.
 
 To see which profiles already have a connector, use the same table, `mcp_connectors` with action
-`list`, or `GET /mcp-tools/profile-connectors`. To remove one, use *Delete* on the same row,
-`mcp_connectors` with action `delete`, or `DELETE /mcp-tools/profile-connectors/<profile>`.
+`list`, or `GET /mcp/profile-connectors`. To remove one, use *Delete* on the same row,
+`mcp_connectors` with action `delete`, or `DELETE /mcp/profile-connectors/<profile>`.
 Every route acts only on the connector whose URL is this node's hub plus that profile, and
 none of them removes the unpinned connector. A development node therefore never touches a
 production connector, and a production node never touches a development one.
@@ -12907,9 +12907,9 @@ pin either of them, and never rename the `lm-assist-hub` Claude Code entry.
 | POST | `/mcp-call` | stdio shim `{tool, args}`. The header `x-lm-mcp-profile` carries the stdio process's `LM_MCP_PROFILE` pin |
 | GET | `/mcp-tools/profile` | The node default (`nodeDefault`, also `active`: what unpinned clients get), every profile with its tool count on this node and any unmatched selectors, the known selectors, and this hub's connector URL for each profile |
 | POST | `/mcp-tools/profile` | Set the node default `{profile}`. Applies to unpinned clients only; pinned connectors are unaffected. Also clears the unpinned claude.ai connectors' cached tool list (fire-and-forget) |
-| GET | `/mcp-tools/profile-connectors` | `{base, hub, nodeDefault, claudeai: {ok, error?}, unpinned, profiles[], unknownPins[]}`. Each row has the URL on this node's hub, the suggested connector name, the claude.ai connector for that URL (`{uuid, name, connected, authStatus, toolCount}`, or `null`) and a count of duplicates. `unknownPins` are connectors on this hub whose profile this node does not define. When claude.ai cannot be read, the URLs still come back with `claudeai.ok: false`. Never lists tool names. `HUB_NOT_CONFIGURED` on a node without a hub |
-| POST | `/mcp-tools/profile-connectors` | Create the claude.ai connector for `{profile}` (an alias is canonicalised), named `lm-assist <hub> <profile>`. Idempotent by URL and serialised: an existing connector is returned. Replies `{created, profile, url, connector, nextStep}`, where `nextStep` is *Connect* in claude.ai. Needs a claude.ai session on the node (`CLAUDEAI_UNAVAILABLE` otherwise) |
-| DELETE | `/mcp-tools/profile-connectors/:profile` | Remove every claude.ai connector whose URL is this node's hub `/mcp/<profile>`. Replies `{profile, url, removed, failed}`. The unpinned connector cannot be removed through this route |
+| GET | `/mcp/profile-connectors` | `{base, hub, nodeDefault, claudeai: {ok, error?}, unpinned, profiles[], unknownPins[]}`. Each row has the URL on this node's hub, the suggested connector name, the claude.ai connector for that URL (`{uuid, name, connected, authStatus, toolCount}`, or `null`) and a count of duplicates. `unknownPins` are connectors on this hub whose profile this node does not define. When claude.ai cannot be read, the URLs still come back with `claudeai.ok: false`. Never lists tool names. `HUB_NOT_CONFIGURED` on a node without a hub |
+| POST | `/mcp/profile-connectors` | Create the claude.ai connector for `{profile}` (an alias is canonicalised), named `lm-assist <hub> <profile>`. Idempotent by URL and serialised: an existing connector is returned. Replies `{created, profile, url, connector, nextStep}`, where `nextStep` is *Connect* in claude.ai. Needs a claude.ai session on the node (`CLAUDEAI_UNAVAILABLE` otherwise) |
+| DELETE | `/mcp/profile-connectors/:profile` | Remove every claude.ai connector whose URL is this node's hub `/mcp/<profile>`. Replies `{profile, url, removed, failed}`. The unpinned connector cannot be removed through this route |
 ````
 
 **3d. `docs/README.md` L50-51.** Before:
@@ -13065,7 +13065,7 @@ docs(mcp): one connector per profile — pin, URLs, create + Connect; drop the a
   contract, advertise-only, gate key, mcp_profile semantics (get makes no claude.ai call and
   points at mcp_connectors {action:"list"}).
 - api-endpoints.md: /mcp?profile=, the /mcp-call header, /mcp-tools/profile and
-  /mcp-tools/profile-connectors rows.
+  /mcp/profile-connectors rows.
 - CLAUDE.md index row; README, docs/README and the connector example.
 - docs-mcp-profile-connectors.test.ts: anchors resolve, rows present, the false claim stays
   gone, and the assist-mcp-tools README (written with the pane change) matches its real grant
@@ -13163,7 +13163,7 @@ Expected: the basic count and a banner naming `profile basic`.
 ```bash
 cd /home/ubuntu/lm-assist/.claude/worktrees/mcp-profile-connectors
 cp -r ui-apps/assist-mcp-tools $LMT_DIR/apps/assist-mcp-tools
-curl -s localhost:3290/mcp-tools/profile-connectors | python3 -c "import sys,json;d=json.load(sys.stdin)['data'];print(d['base'],d['nodeDefault'],d['claudeai'],[p['profile'] for p in d['profiles']])"
+curl -s localhost:3290/mcp/profile-connectors | python3 -c "import sys,json;d=json.load(sys.stdin)['data'];print(d['base'],d['nodeDefault'],d['claudeai'],[p['profile'] for p in d['profiles']])"
 curl -s -X POST localhost:3290/ui-pages/local-url -H 'content-type: application/json' -d '{"uiId":"assist-mcp-tools"}'; echo
 ```
 Expected: `https://mcp.langmart.ai admin {'ok': False, 'error': …} ['basic', 'platform', 'extended', 'admin']`
@@ -13193,7 +13193,7 @@ Expected: `/mcp` = full, `/mcp/basic` ≈ 42, `/mcp/extended` ≈ 168 — the pi
 
 - [ ] **Step 9: claude.ai connector (on 107, which holds the IP-pinned claude.ai cookie)**
 
-Create `lm-assist langmart basic` through the create flow (`POST /mcp-tools/profile-connectors {profile:"basic"}`
+Create `lm-assist langmart basic` through the create flow (`POST /mcp/profile-connectors {profile:"basic"}`
 on a new-build Core that holds a valid claude.ai cookie — or, on 107's current build, the existing
 `POST /claude-ai/mcp/servers {url:"https://mcp.langmart.ai/mcp/basic", name:"lm-assist langmart basic"}`),
 then Connect it with the validated `claude --chrome -p` recipe on 107 (click Connect on THAT connector only). The pane's Create/Delete clicks from Task 14 are exercised here, on a Core that holds the cookie.

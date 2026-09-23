@@ -195,14 +195,15 @@ It replaces every first-match `/langmart/i` pick:
 
 ### 7.3 Create / list / delete
 
-- REST (new path, so an older Core answers 404 instead of misreading a new field):
-  - `GET /mcp-tools/profile-connectors` → per profile: URL, claude.ai `{uuid, name, connected,
+- REST under `/mcp/` (a path no older Core routes: it answers 404, where `/mcp-tools/<x>` would be read
+    as the registry's `/mcp-tools/:name` and write a junk tool doc):
+  - `GET /mcp/profile-connectors` → per profile: URL, claude.ai `{uuid, name, connected,
     authStatus, toolCount}` or `null`, plus the unpinned connector.
-  - `POST /mcp-tools/profile-connectors {profile}` → **idempotent by URL**: if a server with that URL
+  - `POST /mcp/profile-connectors {profile}` → **idempotent by URL**: if a server with that URL
     exists, return it; otherwise `POST /claude-ai/mcp/servers {url, name}` with the name
     `lm-assist <hub-label> <profile>` (e.g. `lm-assist langmart basic`). Returns the uuid, its
     `authStatus`, and the one remaining step.
-  - `DELETE /mcp-tools/profile-connectors/:profile` → removes the claude.ai server for that URL.
+  - `DELETE /mcp/profile-connectors/:profile` → removes the claude.ai server for that URL.
 - MCP tool `mcp_connectors` (`list | create | delete`), category `claudeai`, scope `admin` (it writes the
   user's claude.ai account). Registered in all four places a new tool needs: `TOOL_SCOPES`, the category
   map, `EXPANDED_HANDLERS`, `tool-output-budget.ts`.
@@ -228,9 +229,9 @@ It replaces every first-match `/langmart/i` pick:
 - **MCP Tools page, Profile panel** (`web/src/components/mcp-tools/McpToolsPage.tsx`,
   `web/src/lib/mcp-tools.ts`): "Node-global" becomes **Node default** (and says it applies to unpinned
   clients only), and a **Connectors** table is added — profile, URL (copy), claude.ai status, tool
-  count, Create / Delete — backed by `/mcp-tools/profile-connectors`.
+  count, Create / Delete — backed by `/mcp/profile-connectors`.
 - **`ui-apps/assist-mcp-tools` pane**: the same table. Its grants gain exact rules for
-  `GET|POST /mcp-tools/profile-connectors` and `DELETE /mcp-tools/profile-connectors/*`; any new request
+  `GET|POST /mcp/profile-connectors` and `DELETE /mcp/profile-connectors/*`; any new request
   field is optional (four deployed panes inline the shim), and it ships via `./core.sh panes sync`.
 
 ## 10. Docs
