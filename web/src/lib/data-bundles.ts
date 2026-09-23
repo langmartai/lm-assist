@@ -526,10 +526,20 @@ export async function downloadBundleBytes(
   return { parts, total };
 }
 
+/** A client-minted upload id (`upl-` + 16 hex). getRandomValues works in an insecure LAN
+ *  context, where crypto.randomUUID does not. */
+export function newUploadId(): string {
+  const rnd = new Uint8Array(8);
+  globalThis.crypto.getRandomValues(rnd);
+  return `upl-${Array.from(rnd, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
 /**
- * Upload a local `.lmbundle.gz` in chunks. Index 0 mints the uploadId; each later chunk
- * carries it. A chunk is idempotent per index on the Core, so a transient failure is
- * retried in place; a coded refusal (UPLOAD_CONFLICT, BUNDLE_CORRUPT, DISK_LOW…) is not.
+ * Upload a local `.lmbundle.gz` in chunks. The uploadId is minted HERE and sent on every
+ * chunk, index 0 included: a chunk is idempotent per (uploadId, index) on the Core, so a
+ * transient failure is retried in place — even on index 0 of a one-chunk bundle, where a
+ * lost reply used to make the retry mint a second upload and store a duplicate bundle.
+ * A coded refusal (UPLOAD_CONFLICT, BUNDLE_CORRUPT, DISK_LOW…) is not retried.
  * The last answer is the stored bundle (`done:true`, `bundleId`).
  */
 export async function uploadBundleFile(
@@ -550,14 +560,14 @@ export async function uploadBundleFile(
   const total = Math.ceil(file.size / size);
   const retries = opts.retries ?? 2;
   const delay = opts.retryDelayMs ?? 1000;
-  let uploadId: string | undefined;
+  let uploadId = newUploadId();
   let last: UploadChunkResult | null = null;
   for (let index = 0; index < total; index++) {
     const start = index * size;
     const end = Math.min(file.size, start + size);
     const dataB64 = bytesToBase64(new Uint8Array(await file.slice(start, end).arrayBuffer()));
     const input: UploadChunkInput = {
-      ...(uploadId ? { uploadId } : {}),
+      uploadId,
       index,
       total,
       ...(opts.name ? { name: opts.name } : {}),

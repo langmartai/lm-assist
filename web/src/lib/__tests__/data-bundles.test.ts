@@ -303,8 +303,9 @@ describe('uploadBundleFile', () => {
     expect(r.bundleId).toBe('lmb-20260923-101010-abcdef');
     expect(got.map((g) => g.index)).toEqual([0, 1, 2]);
     expect(got.every((g) => g.total === 3)).toBe(true);
-    expect(got[0].uploadId).toBeUndefined();
-    expect(got[1].uploadId).toBe('upl-0123456789abcdef');
+    // The id is minted client-side and sent from index 0 on, so every retry is idempotent.
+    expect(got[0].uploadId).toMatch(/^upl-[0-9a-f]{16}$/);
+    expect(got[1].uploadId).toBe(got[0].uploadId);
     expect(got[0].name).toBe('x.lmbundle.gz');
     expect(got[0].sha256).toBe('a'.repeat(64));
     const joined = got.map((g) => Array.from(base64ToBytes(g.dataB64))).flat();
@@ -327,6 +328,23 @@ describe('uploadBundleFile', () => {
     expect(r.done).toBe(true);
     expect(calls.length).toBe(4);
     expect(got.map((g) => g.index)).toEqual([0, 1, 2]);
+  });
+
+  it('a retry of a one-chunk upload whose reply was lost re-sends the SAME uploadId (no duplicate bundle)', async () => {
+    const file = new Blob([bytes(10) as Uint8Array<ArrayBuffer>]);
+    const seen: UploadChunkInput[] = [];
+    let n = 0;
+    const { call } = fakeCall((_path, o) => {
+      const input = o!.body as UploadChunkInput;
+      seen.push(input);
+      if (n++ === 0) return new TypeError('Failed to fetch'); // stored on the Core, reply lost
+      return { uploadId: input.uploadId!, received: 1, total: 1, done: true, bundleId: 'lmb-20260923-101010-abcdef', sizeBytes: 1, sha256: 'x' };
+    });
+    const r = await uploadBundleFile(createBundlesApi(call), file, { retryDelayMs: 0 });
+    expect(r.bundleId).toBe('lmb-20260923-101010-abcdef');
+    expect(seen.length).toBe(2);
+    expect(seen[0].uploadId).toMatch(/^upl-[0-9a-f]{16}$/);
+    expect(seen[1].uploadId).toBe(seen[0].uploadId);
   });
 
   it('does not retry a coded refusal', async () => {
