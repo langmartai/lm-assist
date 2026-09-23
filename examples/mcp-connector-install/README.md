@@ -1,15 +1,17 @@
-# The MCP connector — installed for you, relayed by the hub
+# The MCP connector — added once, relayed by the hub
 
 Goal: every capability of your fleet — sessions, search, memory, terminal driving, missions,
 connectors, VMs, containers — available as tools inside **claude.ai conversations**, **Cowork
 sessions**, the **Claude desktop app**, and **Claude Code**. This is the main door; the
 architecture behind it is in [`docs/mcp-connector.md`](../../docs/mcp-connector.md).
 
-## You don't install it — lm-assist does
+## Adding it
 
-Connect a node to the hub once and the connector is provisioned for you. In the Claude desktop
-app (Settings → Connectors) it appears as **lm-assist langmart** — *Web · Custom* — with a green
-check the moment it's connected:
+Claude Code gets the connector when you enroll a node. claude.ai, Cowork and the Claude app get
+it once per account: add a custom connector with `https://mcp.<your-hub-domain>/mcp` (or create a
+per-profile one from the node's **MCP Tools** page), then click **Connect**, which is a one-time
+OAuth step in the browser. In the Claude desktop app (Settings → Connectors) it appears as
+**lm-assist langmart** — *Web · Custom* — with a green check the moment it's connected:
 
 ![Claude desktop app — Settings → Connectors showing lm-assist langmart connected](./claude-app-connectors.png)
 
@@ -18,17 +20,19 @@ The same connector is what you toggle inside any conversation, from the composer
 
 ![claude.ai conversation — the Connectors submenu with lm-assist langmart enabled](./claudeai-connector-menu-masked.png)
 
-How it got there, in plain terms:
+What enrollment does, in plain terms:
 
 > **You:** *(on a fresh machine)* `lm-assist login <keypack>` — the one-time keypack minted on an enrolled node
 >
-> **lm-assist:** `OK — authenticated.` The node now holds one outbound WebSocket to the hub; the
-> connector for your user is provisioned on the hub, and the hub MCP server is registered for
-> Claude Code in `~/.claude.json` (owner-only) — worker tools load in NEW sessions.
+> **lm-assist:** `OK — authenticated.` The node now holds one outbound WebSocket to the hub, and
+> the hub MCP server is registered for Claude Code in `~/.claude.json` (owner-only) — worker
+> tools load in NEW sessions.
 
-Enrollment covers both doors at once: claude.ai / the Claude app see the connector on the
-hub's public MCP endpoint, and Claude Code on that machine gets the same server locally
-(`--no-mcp` opts out). Nothing to paste, no URL to add by hand.
+Enrollment covers Claude Code on that machine (`--no-mcp` opts out). It adds nothing to your
+claude.ai account. That side is the one-time add and **Connect** above; after that, the same
+connector shows in every Claude app signed in to the account. Want a lighter tool list in some
+conversations? Add a second connector pinned to a smaller profile:
+[one connector per profile](../../docs/mcp-connector.md#one-connector-per-profile).
 
 ## Why the hub relays
 
@@ -74,9 +78,10 @@ overrides and enable/disable, synced fleet-wide through the registry:
 
 ![MCP Tools page with the bootstrap tool selected](./mcp-tools-bootstrap.png)
 
-And when a plugin adds tools, you don't touch claude.ai's settings — lm-assist keeps the
-connector current (cache refresh, tool access, auto-approval) as long as the node holds a
-claude.ai session ([claudeai-browser-auth](../claudeai-browser-auth/)):
+And when a plugin adds tools, you don't touch claude.ai's settings. As long as the node holds a
+claude.ai session ([claudeai-browser-auth](../claudeai-browser-auth/)), lm-assist keeps every
+lm-assist connector on your hub up to date: it refreshes the cache, and it turns on tool access
+and auto-approval for the tools each connector's profile lists:
 
 > **You:** I enabled the new plugin on the linux box — do its tools show up in claude.ai yet?
 >

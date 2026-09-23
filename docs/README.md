@@ -47,8 +47,8 @@ from elsewhere); this page is the navigation layer.
 
 ## MCP & plugins
 
-- [mcp-connector.md](./mcp-connector.md) — **the main door**: what the connector is, auto-provisioning after the hub connect, why the hub relays, bootstrap, governance, troubleshooting
-- [mcp-surfaces.md](./mcp-surfaces.md) — the MCP server: tool registration, resolver hot path, description budgets
+- [mcp-connector.md](./mcp-connector.md) — **the main door**: what the connector is, how to add it (Claude Code at enrollment, claude.ai once per account), one connector per tool loading profile, why the hub relays, bootstrap, governance, troubleshooting
+- [mcp-surfaces.md](./mcp-surfaces.md) — the MCP server: tool registration, resolver hot path, description budgets, tool loading profiles and the per-request pin
 - [mcp-plugins-bundled.md](./mcp-plugins-bundled.md) — bundled first-party plugins: vendoring, trust, checksums, opt-out
 - [mcp-plugin-contract.md](./mcp-plugin-contract.md) — the ext-plugin contract (`ext__<plugin>__<tool>`) + [JSON schema](./mcp-plugin.schema.json)
 - [plugin-and-hooks.md](./plugin-and-hooks.md) — the Claude Code plugin, hooks, statusline, slash commands
