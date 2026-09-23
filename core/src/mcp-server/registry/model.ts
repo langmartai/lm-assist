@@ -40,8 +40,8 @@ const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /** Literal segments under /mcp-tools/ — a doc with one of these names would be
  *  unreachable (its GET is shadowed by the literal route) and mintable by a
- *  mistaken POST against the read endpoint. */
-const RESERVED_NAMES: ReadonlySet<string> = new Set(['overlay']);
+ *  mistaken POST against the read endpoint. Keep in step with createMcpToolsRoutes. */
+const RESERVED_NAMES: ReadonlySet<string> = new Set(['overlay', 'rev', 'profile', 'profile-connectors']);
 
 export type Validation = GenericValidation;
 

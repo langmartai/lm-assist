@@ -367,6 +367,9 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
     'windows_terminal_launch', 'windows_terminal_create', 'windows_terminal_send',
     'windows_terminal_auto_handle', 'windows_terminal_close', 'github_mutate',
     'refresh_connector_tools', 'set_connector_tool_access', 'set_connector_auto_approve',
+    // create/delete write the claude.ai account; `list` is bounded by construction (one line per
+    // profile, never tool names), but the guard must not auto-invoke a tool that can create.
+    'mcp_connectors',
     'claudeai_add_marketplace', 'claudeai_remove_marketplace', 'claudeai_set_plugin_enabled',
     'claudeai_login', 'browser_task',
   ].map((n) => [n, 'destructive/lifecycle: starts, stops or reconfigures real resources']),

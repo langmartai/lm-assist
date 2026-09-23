@@ -192,6 +192,9 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   refresh_connector_tools: 'write',
   set_connector_tool_access: 'write',
   set_connector_auto_approve: 'write',
+  // Creates/deletes connectors on the user's claude.ai account — admin, like other account writes
+  // with lasting effect. A missing entry here CRASHES Core on tools/list (assertScopesCoverTools).
+  mcp_connectors: 'admin',
   scheduler_jobs: 'write',
   agent_abort: 'write',
   agent_resume: 'write',

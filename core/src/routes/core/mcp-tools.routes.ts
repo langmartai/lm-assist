@@ -22,8 +22,13 @@ import { currentToolsRev } from '../../mcp-server/registry/tools-rev';
 import {
   PROFILE_DEFINITIONS, activeProfileName, readProfileState,
   resolveProfileTools, unmatchedSelectors, knownSelectors,
+  canonicalProfileName, isValidPinSyntax,
 } from '../../mcp-server/registry/profiles';
 import { profileReport, setNodeDefaultProfile } from '../../mcp-server/registry/profile-report';
+import {
+  mcpBase, connectorUrlFor, connectorNameFor, hubLabelFor, ourConnectors, type ConnectorLike,
+} from '../../mcp-server/profile-connectors';
+import { listMcpRemoteServers, createMcpRemoteServer, deleteMcpRemoteServer } from '../../utils/claudeai-session';
 import { sharedLiveOverlay, overlayDigest } from '../../mcp-server/registry/overlay-live';
 import { createHash } from 'crypto';
 import type { ToolRegistryDoc } from '../../mcp-server/registry/model';
@@ -275,6 +280,204 @@ export async function handleProfileSet(body: Record<string, unknown>, actor?: st
   return got.success ? ok({ ...(got.data as Record<string, unknown>), note }) : got;
 }
 
+// --- per-profile claude.ai connectors (spec §7.3) ---
+
+/** The seam the connector handlers work through; tests inject a fake claude.ai roster. */
+export interface ProfileConnectorDeps {
+  /** THIS node's public MCP base ('' = no hub configured). */
+  base(): string;
+  /** claude.ai's connector roster for the account (throws when this node has no cookie). */
+  listServers(): Promise<ConnectorLike[]>;
+  createServer(url: string, name: string): Promise<{ status: number; body: unknown }>;
+  deleteServer(uuid: string): Promise<{ status: number; body: unknown }>;
+}
+
+export function realProfileConnectorDeps(): ProfileConnectorDeps {
+  return {
+    base: () => mcpBase(),
+    listServers: async () => {
+      const r = await listMcpRemoteServers();
+      if (r.status >= 400) throw new Error(`claude.ai responded ${r.status} ${r.statusText}`);
+      return r.body.servers;
+    },
+    createServer: async (url, name) => {
+      const r = await createMcpRemoteServer({ url, name });
+      return { status: r.status, body: r.body };
+    },
+    deleteServer: async (uuid) => {
+      const r = await deleteMcpRemoteServer(uuid);
+      return { status: r.status, body: r.body };
+    },
+  };
+}
+
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const NO_HUB = 'this node has no hub configured, so it has no public MCP URL for claude.ai to connect to';
+const CONNECT_STEP =
+  'Connect it once in a browser: claude.ai → Customize → Connectors → "Connect" on this connector ' +
+  '(claude.ai generates the OAuth state in-page, so this step cannot be done server-side).';
+
+/** A pinned profile as the node serves it (alias → canonical; an unknown pin stays as-is). */
+const canonPin = (p: string): string => canonicalProfileName(p) ?? p;
+
+/** The bounded view of one claude.ai connector — never its tool names. */
+function connectorView(c: ConnectorLike | undefined) {
+  if (!c) return null;
+  return {
+    uuid: c.uuid ?? null,
+    name: c.name ?? '',
+    connected: !!c.connected,
+    authStatus: c.authStatus ?? null,
+    toolCount: typeof c.toolCount === 'number' ? c.toolCount : null,
+  };
+}
+
+/** claude.ai's create and the hub's client registration are both read-modify-writes, and
+ *  concurrent registrations can lose a client — so create/delete run one at a time. */
+let connectorWriteChain: Promise<unknown> = Promise.resolve();
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const run = connectorWriteChain.then(() => fn());
+  connectorWriteChain = run.catch(() => undefined);
+  return run;
+}
+
+/** GET /mcp-tools/profile-connectors — per profile: its URL on this hub and its claude.ai
+ *  connector (or null), plus the unpinned one. Bounded by construction: one row per profile. */
+export async function handleProfileConnectorsList(deps: ProfileConnectorDeps = realProfileConnectorDeps()): Promise<Envelope> {
+  const base = deps.base();
+  if (!base) return fail('HUB_NOT_CONFIGURED', NO_HUB);
+  let servers: ConnectorLike[] = [];
+  let claudeai: { ok: boolean; error?: string } = { ok: true };
+  try {
+    servers = await deps.listServers();
+  } catch (e) {
+    // The URLs are still worth showing: they are what a user pastes into claude.ai by hand.
+    claudeai = { ok: false, error: errMsg(e) };
+  }
+  const mine = ourConnectors(servers, base);
+  const pinned = (profile: string) => mine.filter((c) => c.profile !== null && canonPin(c.profile) === profile);
+  const unpinned = mine.filter((c) => c.profile === null);
+  return ok({
+    base,
+    hub: hubLabelFor(base),
+    nodeDefault: activeProfileName(),
+    claudeai,
+    unpinned: {
+      url: connectorUrlFor(null, base),
+      suggestedName: connectorNameFor(null, base),
+      connector: connectorView(unpinned[0]),
+      duplicates: Math.max(0, unpinned.length - 1),
+    },
+    profiles: Object.keys(PROFILE_DEFINITIONS).map((profile) => {
+      const hits = pinned(profile);
+      return {
+        profile,
+        url: connectorUrlFor(profile, base),
+        suggestedName: connectorNameFor(profile, base),
+        connector: connectorView(hits[0]),
+        duplicates: Math.max(0, hits.length - 1),
+      };
+    }),
+    // Pinned to a name this node does not know (a newer profile, a typo): it is served the node default.
+    unknownPins: mine
+      .filter((c) => c.profile !== null && !canonicalProfileName(c.profile))
+      .map((c) => ({ profile: c.profile as string, url: c.url ?? '', connector: connectorView(c) })),
+  });
+}
+
+/** POST /mcp-tools/profile-connectors {profile} — idempotent by URL: an existing connector for
+ *  that profile's URL is returned, otherwise one is registered on claude.ai as
+ *  `lm-assist <hub> <profile>`. The OAuth Connect stays one browser step (named in `nextStep`). */
+export async function handleProfileConnectorCreate(
+  body: Record<string, unknown>, deps: ProfileConnectorDeps = realProfileConnectorDeps(),
+): Promise<Envelope> {
+  const known = Object.keys(PROFILE_DEFINITIONS).join(', ');
+  const raw = typeof body.profile === 'string' ? body.profile.trim() : '';
+  if (!raw) return fail('INVALID_PROFILE', `body.profile is required (one of: ${known})`);
+  const profile = canonicalProfileName(raw);
+  if (!profile) return fail('UNKNOWN_PROFILE', `unknown profile "${raw}". Known profiles: ${known}.`);
+  const base = deps.base();
+  if (!base) return fail('HUB_NOT_CONFIGURED', NO_HUB);
+  const url = connectorUrlFor(profile, base);
+  const name = connectorNameFor(profile, base);
+  return serialized(async () => {
+    let servers: ConnectorLike[];
+    try {
+      servers = await deps.listServers();
+    } catch (e) {
+      return fail('CLAUDEAI_UNAVAILABLE', errMsg(e));
+    }
+    const existing = ourConnectors(servers, base).find((c) => c.profile !== null && canonPin(c.profile) === profile);
+    if (existing) {
+      return ok({ created: false, profile, url: existing.url ?? url, connector: connectorView(existing), nextStep: existing.connected ? null : CONNECT_STEP });
+    }
+    let r: { status: number; body: unknown };
+    try {
+      r = await deps.createServer(url, name);
+    } catch (e) {
+      return fail('CLAUDEAI_UNAVAILABLE', errMsg(e));
+    }
+    if (r.status >= 400) {
+      return fail(`UPSTREAM_${r.status}`, `claude.ai refused to create the connector: ${JSON.stringify(r.body ?? null).slice(0, 300)}`);
+    }
+    const b = (r.body && typeof r.body === 'object' ? r.body : {}) as Record<string, unknown>;
+    let uuid = typeof b.uuid === 'string' ? b.uuid : null;
+    if (!uuid) {
+      // The create response's shape is claude.ai's, not ours: re-list once to name the new uuid.
+      try {
+        uuid = ourConnectors(await deps.listServers(), base).find((c) => c.profile !== null && canonPin(c.profile) === profile)?.uuid ?? null;
+      } catch {
+        /* it exists; its uuid shows on the next list */
+      }
+    }
+    return ok({
+      created: true, profile, url,
+      connector: { uuid, name, connected: false, authStatus: null, toolCount: null },
+      nextStep: CONNECT_STEP,
+    });
+  });
+}
+
+/** DELETE /mcp-tools/profile-connectors/:profile — removes the claude.ai connector(s) pinned to
+ *  that profile's URL. The unpinned connector is not deletable through this route. */
+export async function handleProfileConnectorDelete(
+  rawProfile: string, deps: ProfileConnectorDeps = realProfileConnectorDeps(),
+): Promise<Envelope> {
+  let seg = rawProfile;
+  try { seg = decodeURIComponent(rawProfile); } catch { /* keep raw — the grammar check below refuses it */ }
+  if (!isValidPinSyntax(seg)) {
+    return fail('INVALID_PROFILE', `"${seg}" is not a profile name (want ^[a-z][a-z0-9-]{0,31}$). The unpinned connector is not deleted through this route.`);
+  }
+  const base = deps.base();
+  if (!base) return fail('HUB_NOT_CONFIGURED', NO_HUB);
+  const want = canonPin(seg);
+  return serialized(async () => {
+    let servers: ConnectorLike[];
+    try {
+      servers = await deps.listServers();
+    } catch (e) {
+      return fail('CLAUDEAI_UNAVAILABLE', errMsg(e));
+    }
+    const hits = ourConnectors(servers, base).filter(
+      (c): c is typeof c & { uuid: string } => c.profile !== null && canonPin(c.profile) === want && typeof c.uuid === 'string',
+    );
+    if (hits.length === 0) return fail('NOT_FOUND', `no claude.ai connector points at ${connectorUrlFor(want, base)}`);
+    const removed: Array<{ uuid: string; name: string }> = [];
+    const failed: Array<{ uuid: string; error: string }> = [];
+    for (const c of hits) {
+      try {
+        const r = await deps.deleteServer(c.uuid);
+        if (r.status >= 400) failed.push({ uuid: c.uuid, error: `claude.ai responded ${r.status}` });
+        else removed.push({ uuid: c.uuid, name: c.name ?? '' });
+      } catch (e) {
+        failed.push({ uuid: c.uuid, error: errMsg(e) });
+      }
+    }
+    if (removed.length === 0) return fail('DELETE_FAILED', failed.map((f) => `${f.uuid}: ${f.error}`).join('; '));
+    return ok({ profile: want, url: connectorUrlFor(want, base), removed, failed });
+  });
+}
+
 export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
   const wrapped = (run: (req: Parameters<RouteHandler['handler']>[0]) => Promise<Envelope>): RouteHandler['handler'] =>
     async (req) => { const start = Date.now(); return toApi(await run(req), start); };
@@ -290,6 +493,12 @@ export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
     // as a tool name — the same reason /overlay and /rev sit up here.
     { method: 'GET', pattern: /^\/mcp-tools\/profile$/, handler: wrapped(() => handleProfileGet()) },
     { method: 'POST', pattern: /^\/mcp-tools\/profile$/, handler: wrapped((req) => handleProfileSet((req.body || {}) as Record<string, unknown>)) },
+    // Per-profile claude.ai connectors (spec §7.3). Literal segment: MUST precede the /(?<name>)/
+    // patterns — a POST here would otherwise land in handleToolSet and mint a registry doc named
+    // "profile-connectors" (RESERVED_NAMES refuses that name too).
+    { method: 'GET', pattern: /^\/mcp-tools\/profile-connectors$/, handler: wrapped(() => handleProfileConnectorsList()) },
+    { method: 'POST', pattern: /^\/mcp-tools\/profile-connectors$/, handler: wrapped((req) => handleProfileConnectorCreate((req.body || {}) as Record<string, unknown>)) },
+    { method: 'DELETE', pattern: /^\/mcp-tools\/profile-connectors\/(?<profile>[^/]+)$/, handler: wrapped((req) => handleProfileConnectorDelete(req.params.profile)) },
     { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/history$/, handler: wrapped((req) => handleToolHistory(req.params.name, req.query ?? {})) },
     { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/rollback$/, handler: wrapped((req) => handleToolRollback(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor())) },
     { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: wrapped((req) => handleToolGet(req.params.name)) },
