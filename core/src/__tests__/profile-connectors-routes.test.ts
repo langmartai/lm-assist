@@ -1,9 +1,13 @@
 /**
- * /mcp-tools/profile-connectors — one claude.ai connector per profile (spec §7.3).
+ * /mcp/profile-connectors — one claude.ai connector per profile (spec §7.3, amended d7a4d0c: the
+ * REST surface lives under /mcp/, not /mcp-tools/, so an older Core answers a clean 404 instead
+ * of misrouting the request into its /mcp-tools/:name tool-registry handler).
  *
- * Port-injected (fake claude.ai roster), like the other /mcp-tools handler tests. Pins: the list
- * is bounded (never tool names), create is idempotent by URL and serialized, a dev hub's connector
- * is never counted as ours, and the literal route cannot fall into /mcp-tools/:name.
+ * The handlers stay in mcp-tools.routes.ts (their dependencies already live there) — only the
+ * route table entries are anchored to /mcp/profile-connectors. Port-injected (fake claude.ai
+ * roster), like the other /mcp-tools handler tests. Pins: the list is bounded (never tool names),
+ * create is idempotent by URL and serialized, a dev hub's connector is never counted as ours, and
+ * the new patterns don't collide with anything under /mcp-tools/ or /mcp/.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -209,14 +213,34 @@ test('DELETE removes the connector pinned to that profile — and only a pinned 
   assert.deepEqual(deleted, [B], 'the unpinned connector is never deleted');
 });
 
-test('the literal routes precede /mcp-tools/:name (a POST would otherwise mint a registry doc)', () => {
+test('the OLD /mcp-tools/profile-connectors route is gone — an older Core must 404 on the new path, not silently accept the old one (spec §7.3, amended d7a4d0c)', () => {
+  const routes = createMcpToolsRoutes({} as never);
+  // No pattern in the table literally names /mcp-tools/profile-connectors any more — a GET/POST
+  // there now falls through to the generic /mcp-tools/(?<name>)/ tool-registry routes, same as
+  // any other unrelated tool name (no special profile-connectors handling left at that path).
+  assert.ok(
+    !routes.some((r) => r.pattern.source.includes('mcp-tools\\/profile-connectors')),
+    'no /mcp-tools/profile-connectors pattern should remain in the route table',
+  );
+  const generic = (method: string, p: string) => routes.find((r) => r.method === method && r.pattern.test(p));
+  assert.match(String(generic('GET', '/mcp-tools/profile-connectors')?.pattern), /\(\?<name>/, 'GET falls through to handleToolGet');
+  assert.match(String(generic('POST', '/mcp-tools/profile-connectors')?.pattern), /\(\?<name>/, 'POST falls through to handleToolSet');
+});
+
+test('the NEW /mcp/profile-connectors patterns match', () => {
   const routes = createMcpToolsRoutes({} as never);
   const first = (method: string, p: string) => routes.find((r) => r.method === method && r.pattern.test(p));
   for (const [m, p] of [
-    ['GET', '/mcp-tools/profile-connectors'],
-    ['POST', '/mcp-tools/profile-connectors'],
-    ['DELETE', '/mcp-tools/profile-connectors/basic'],
+    ['GET', '/mcp/profile-connectors'],
+    ['POST', '/mcp/profile-connectors'],
+    ['DELETE', '/mcp/profile-connectors/basic'],
   ] as const) {
-    assert.match(String(first(m, p)?.pattern), /profile-connectors/, `${m} ${p} must hit the profile-connectors route`);
+    const hit = first(m, p);
+    assert.ok(hit, `${m} ${p} must match a route`);
+    assert.match(String(hit!.pattern), /profile-connectors/, `${m} ${p} must hit the profile-connectors route`);
   }
+  // Confirms there is no /mcp/<x> catch-all in this table to out-order: an unrelated /mcp/<x>
+  // literal (from mcp-api.routes.ts, not this file) wouldn't collide with these patterns either,
+  // since every /mcp/* route anywhere in the app is a literal, never a capturing catch-all.
+  assert.equal(first('GET', '/mcp/something-else'), undefined);
 });

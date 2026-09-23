@@ -116,7 +116,7 @@ export async function syncConnectorForPluginTools(opts: {
       ok: false,
       detail: servers.length === 0
         ? 'no claude.ai MCP connectors found (cookie not configured on this node?)'
-        : `no claude.ai connector points at ${base}/mcp or ${base}/mcp/<profile> — create one with POST /mcp-tools/profile-connectors`,
+        : `no claude.ai connector points at ${base}/mcp or ${base}/mcp/<profile> — create one with POST /mcp/profile-connectors`,
     });
     return { ok: false, steps };
   }

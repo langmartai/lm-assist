@@ -221,7 +221,7 @@ function toApi(e: Envelope, start: number) {
  *
  *  REST carries no pin (it is the node's management surface), so `effective` === `nodeDefault`
  *  and `source` is always 'node-default' here. The fields exist so the UI, `mcp_profile` and
- *  GET /mcp-tools/profile-connectors share one vocabulary. `active` STAYS: deployed panes and
+ *  GET /mcp/profile-connectors share one vocabulary. `active` STAYS: deployed panes and
  *  older UIs read it, and it is — and always was — the node default. */
 export async function handleProfileGet(): Promise<Envelope> {
   // Built-ins AND the ext plugin tools. getToolCatalog() covers only the built-ins, so
@@ -281,6 +281,13 @@ export async function handleProfileSet(body: Record<string, unknown>, actor?: st
 }
 
 // --- per-profile claude.ai connectors (spec §7.3) ---
+// REST for these lives under /mcp/ (§7.3, amended d7a4d0c), NOT /mcp-tools/: an older Core has
+// no /mcp/<x> catch-all (rest-server.ts special-cases only the exact path '/mcp'; every other
+// /mcp/* route in mcp-api.routes.ts is a literal), so it answers a clean 404 instead of a mistaken
+// Core reading POST /mcp-tools/profile-connectors as the registry's POST /mcp-tools/:name and
+// minting a junk tool doc. The handlers stay in THIS file (their dependencies — profiles.ts,
+// profile-connectors.ts, claudeai-session.ts — are already imported above); only the route
+// patterns below are anchored to /mcp/profile-connectors.
 
 /** The seam the connector handlers work through; tests inject a fake claude.ai roster. */
 export interface ProfileConnectorDeps {
@@ -341,7 +348,7 @@ function serialized<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** GET /mcp-tools/profile-connectors — per profile: its URL on this hub and its claude.ai
+/** GET /mcp/profile-connectors — per profile: its URL on this hub and its claude.ai
  *  connector (or null), plus the unpinned one. Bounded by construction: one row per profile. */
 export async function handleProfileConnectorsList(deps: ProfileConnectorDeps = realProfileConnectorDeps()): Promise<Envelope> {
   const base = deps.base();
@@ -385,7 +392,7 @@ export async function handleProfileConnectorsList(deps: ProfileConnectorDeps = r
   });
 }
 
-/** POST /mcp-tools/profile-connectors {profile} — idempotent by URL: an existing connector for
+/** POST /mcp/profile-connectors {profile} — idempotent by URL: an existing connector for
  *  that profile's URL is returned, otherwise one is registered on claude.ai as
  *  `lm-assist <hub> <profile>`. The OAuth Connect stays one browser step (named in `nextStep`). */
 export async function handleProfileConnectorCreate(
@@ -438,7 +445,7 @@ export async function handleProfileConnectorCreate(
   });
 }
 
-/** DELETE /mcp-tools/profile-connectors/:profile — removes the claude.ai connector(s) pinned to
+/** DELETE /mcp/profile-connectors/:profile — removes the claude.ai connector(s) pinned to
  *  that profile's URL. The unpinned connector is not deletable through this route. */
 export async function handleProfileConnectorDelete(
   rawProfile: string, deps: ProfileConnectorDeps = realProfileConnectorDeps(),
@@ -493,15 +500,19 @@ export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
     // as a tool name — the same reason /overlay and /rev sit up here.
     { method: 'GET', pattern: /^\/mcp-tools\/profile$/, handler: wrapped(() => handleProfileGet()) },
     { method: 'POST', pattern: /^\/mcp-tools\/profile$/, handler: wrapped((req) => handleProfileSet((req.body || {}) as Record<string, unknown>)) },
-    // Per-profile claude.ai connectors (spec §7.3). Literal segment: MUST precede the /(?<name>)/
-    // patterns — a POST here would otherwise land in handleToolSet and mint a registry doc named
-    // "profile-connectors" (RESERVED_NAMES refuses that name too).
-    { method: 'GET', pattern: /^\/mcp-tools\/profile-connectors$/, handler: wrapped(() => handleProfileConnectorsList()) },
-    { method: 'POST', pattern: /^\/mcp-tools\/profile-connectors$/, handler: wrapped((req) => handleProfileConnectorCreate((req.body || {}) as Record<string, unknown>)) },
-    { method: 'DELETE', pattern: /^\/mcp-tools\/profile-connectors\/(?<profile>[^/]+)$/, handler: wrapped((req) => handleProfileConnectorDelete(req.params.profile)) },
     { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/history$/, handler: wrapped((req) => handleToolHistory(req.params.name, req.query ?? {})) },
     { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/rollback$/, handler: wrapped((req) => handleToolRollback(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor())) },
     { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: wrapped((req) => handleToolGet(req.params.name)) },
     { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: wrapped((req) => handleToolSet(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor())) },
+    // Per-profile claude.ai connectors (spec §7.3, amended d7a4d0c): a DIFFERENT prefix
+    // (/mcp/, not /mcp-tools/) on purpose — an older Core has no /mcp/<x> catch-all (only the
+    // literal /mcp/* routes in mcp-api.routes.ts, plus the exact-path '/mcp' MCP-protocol
+    // special-case in rest-server.ts), so it answers a clean 404 here instead of misrouting
+    // into handleToolSet/handleToolGet above and minting a junk registry doc named
+    // "profile-connectors". No ordering concern versus the /mcp-tools/(?<name>)/ patterns
+    // above: different literal prefix, so these can sit anywhere in this file's route list.
+    { method: 'GET', pattern: /^\/mcp\/profile-connectors$/, handler: wrapped(() => handleProfileConnectorsList()) },
+    { method: 'POST', pattern: /^\/mcp\/profile-connectors$/, handler: wrapped((req) => handleProfileConnectorCreate((req.body || {}) as Record<string, unknown>)) },
+    { method: 'DELETE', pattern: /^\/mcp\/profile-connectors\/(?<profile>[^/]+)$/, handler: wrapped((req) => handleProfileConnectorDelete(req.params.profile)) },
   ];
 }

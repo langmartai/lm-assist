@@ -7,7 +7,7 @@
  * node DEFAULT belongs to the node (a file). Writes only ever touch the default — a pin is never
  * written anywhere. Reads never touch the network: the connector URLs are derived from this
  * node's public MCP base, and whether claude.ai actually holds a connector for each profile is
- * `mcp_connectors {action:"list"}` / GET /mcp-tools/profile-connectors, which make that call.
+ * `mcp_connectors {action:"list"}` / GET /mcp/profile-connectors, which make that call.
  * After a write, the refresh of the UNPINNED claude.ai connectors is profile-connectors.ts's
  * onNodeDefaultProfileChanged: fire-and-forget, never throws, never real under node --test.
  */

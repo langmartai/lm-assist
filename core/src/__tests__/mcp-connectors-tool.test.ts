@@ -1,5 +1,7 @@
 /**
- * mcp_connectors — the MCP face of /mcp-tools/profile-connectors. Registered in all four places a
+ * mcp_connectors — the MCP face of /mcp/profile-connectors (spec §7.3, amended d7a4d0c: under
+ * /mcp/, not /mcp-tools/, so an older Core 404s instead of misrouting the request). Registered in
+ * all four places a
  * new tool needs (a missing TOOL_SCOPES entry CRASHES Core on tools/list), admin-only by category,
  * and its output is one line per profile, never tool names.
  */
@@ -63,7 +65,7 @@ test('list renders one line per profile — URL and claude.ai status', async () 
   assert.match(t, /basic\s+https:\/\/mcp\.langmart\.ai\/mcp\/basic → "lm-assist langmart basic" \[NOT connected, auth_required\]/);
   assert.match(t, /extended\s+https:\/\/mcp\.langmart\.ai\/mcp\/extended → no claude\.ai connector/);
   assert.ok(calls.every((c) => c.method === 'GET'), 'list never writes');
-  assert.match(calls[0].url, /\/mcp-tools\/profile-connectors$/);
+  assert.match(calls[0].url, /\/mcp\/profile-connectors$/);
 });
 
 test('create requires a profile and posts exactly {profile}', async () => {
@@ -78,17 +80,17 @@ test('create requires a profile and posts exactly {profile}', async () => {
   const res = await MCP_CONNECTORS_HANDLERS.mcp_connectors({ action: 'create', profile: 'extended' });
   assert.notEqual(res.isError, true, res.content[0].text);
   const post = calls.find((c) => c.method === 'POST');
-  assert.match(post!.url, /\/mcp-tools\/profile-connectors$/);
+  assert.match(post!.url, /\/mcp\/profile-connectors$/);
   assert.deepEqual(post!.body, { profile: 'extended' });
   assert.match(res.content[0].text, /NEXT: Connect it once in a browser/);
 });
 
-test('delete calls DELETE /mcp-tools/profile-connectors/<profile>', async () => {
+test('delete calls DELETE /mcp/profile-connectors/<profile>', async () => {
   stub(() => ({ profile: 'basic', url: 'https://mcp.langmart.ai/mcp/basic', removed: [{ uuid: 'b-1', name: 'lm-assist langmart basic' }], failed: [] }));
   const res = await MCP_CONNECTORS_HANDLERS.mcp_connectors({ action: 'delete', profile: 'basic' });
   assert.notEqual(res.isError, true, res.content[0].text);
   const del = calls.find((c) => c.method === 'DELETE');
-  assert.match(del!.url, /\/mcp-tools\/profile-connectors\/basic$/);
+  assert.match(del!.url, /\/mcp\/profile-connectors\/basic$/);
   assert.match(res.content[0].text, /Removed 1 claude\.ai connector/);
 });
 

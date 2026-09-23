@@ -2,9 +2,11 @@
  * mcp_connectors — one claude.ai connector per tool-loading profile.
  *
  * A thin client of the REST surface in routes/core/mcp-tools.routes.ts
- * (GET/POST /mcp-tools/profile-connectors, DELETE /mcp-tools/profile-connectors/:profile), reached
- * on loopback like the other claude.ai connector tools. Output is bounded by construction: one
- * line per profile, never tool names. Registered in EXPANDED_TOOL_DEFS + EXPANDED_HANDLERS.
+ * (GET/POST /mcp/profile-connectors, DELETE /mcp/profile-connectors/:profile — spec §7.3, amended
+ * d7a4d0c: /mcp/, not /mcp-tools/, so an older Core 404s instead of misreading it as
+ * /mcp-tools/:name), reached on loopback like the other claude.ai connector tools. Output is
+ * bounded by construction: one line per profile, never tool names. Registered in
+ * EXPANDED_TOOL_DEFS + EXPANDED_HANDLERS.
  */
 import { ok, err, workerGet, workerPost, workerDelete, type McpToolResult } from './_passthrough';
 
@@ -49,7 +51,7 @@ function describe(c: ConnView | null): string {
 }
 
 async function handleList(): Promise<McpToolResult> {
-  const d = await workerGet<ListData>('/mcp-tools/profile-connectors');
+  const d = await workerGet<ListData>('/mcp/profile-connectors');
   const lines = [`lm-assist connectors on ${d.base} (node default profile: ${d.nodeDefault})`];
   if (!d.claudeai.ok) lines.push(`WARNING: claude.ai is not readable from this node (${d.claudeai.error}) — the URLs below are still valid.`);
   lines.push(`- unpinned  ${d.unpinned.url} → ${describe(d.unpinned.connector)} (follows the node default)`);
@@ -67,7 +69,7 @@ async function handleList(): Promise<McpToolResult> {
 
 async function handleCreate(profile: string): Promise<McpToolResult> {
   const d = await workerPost<{ created: boolean; profile: string; url: string; connector: ConnView | null; nextStep: string | null }>(
-    '/mcp-tools/profile-connectors', { profile });
+    '/mcp/profile-connectors', { profile });
   return ok([
     d.created
       ? `Created the claude.ai connector for profile "${d.profile}".`
@@ -80,7 +82,7 @@ async function handleCreate(profile: string): Promise<McpToolResult> {
 
 async function handleDelete(profile: string): Promise<McpToolResult> {
   const d = await workerDelete<{ profile: string; url: string; removed: Array<{ uuid: string; name: string }>; failed: Array<{ uuid: string; error: string }> }>(
-    `/mcp-tools/profile-connectors/${encodeURIComponent(profile)}`);
+    `/mcp/profile-connectors/${encodeURIComponent(profile)}`);
   return ok(
     `Removed ${d.removed.length} claude.ai connector(s) for profile "${d.profile}" (${d.url}): ` +
       d.removed.map((r) => `"${r.name}"`).join(', ') +
