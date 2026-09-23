@@ -782,9 +782,14 @@ export class TierRestServer {
         return;
       }
 
-      let body = '';
-      req.on('data', (chunk) => (body += chunk));
+      // Accumulate BUFFERS and decode once at the end (the mcp.routes readJsonBody
+      // pattern). `body += chunk` decoded every chunk on its own, so a multi-byte
+      // UTF-8 character split across two chunks became U+FFFD — any large CJK/emoji
+      // body, or a bundle upload's JSON wrapper, arrived corrupted.
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       req.on('end', () => {
+        const body = chunks.length ? Buffer.concat(chunks).toString('utf8') : '';
         // Keep the raw bytes alongside the parsed value: HMAC webhook
         // verification (WhatsApp) signs the exact body, which a re-stringify
         // of the parsed object would not reproduce.

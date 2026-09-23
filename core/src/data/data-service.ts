@@ -1,8 +1,9 @@
 // core/src/data/data-service.ts
 import type {
   Principal, DataAction, DataRecord, QuerySpec, SearchSpec, AccessRequest, BackendKind, NodeVisibility, SyncMode,
-  PeerClient, NodeInfo, PutOptions, DatasetDescriptor,
+  PeerClient, NodeInfo, PutOptions, DatasetDescriptor, NodeOrigin, ImportPolicy, ImportBucket, ImportOutcome,
 } from './types';
+import { isNewer, IMPORT_POLICIES, IMPORT_BUCKETS, IMPORT_SAMPLE_MAX } from './types';
 import type { DatasetRegistry } from './dataset-registry';
 import { getDatasetRegistry } from './dataset-registry';
 import type { BackendRegistry } from './backend-registry';
@@ -22,7 +23,7 @@ import { thisNodeId } from './paths';
 import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
 import { FabricPeerClient } from './fabric-peer-client';
-import { SyncEngine } from './sync-engine';
+import { SyncEngine, exportAllRecords } from './sync-engine';
 import { KeyedLocks } from './key-lock';
 
 export interface CallCtx { principal: Principal; keyHeader?: string; }
@@ -41,6 +42,96 @@ export function recordTooLarge(record: DataRecord): string | undefined {
   let n = 0;
   try { n = Buffer.byteLength(JSON.stringify(record) ?? '', 'utf8'); } catch { return 'record is not serializable'; }
   return n > MAX_RECORD_BYTES ? `record is ${n} bytes; the per-record cap is ${MAX_RECORD_BYTES} bytes` : undefined;
+}
+
+/** Backends a bundle cannot round-trip: adapters over stores that are derived and rebuild
+ *  themselves (knowledge, the system vectors index) or are not record stores at all (file).
+ *  Their exportSince/importBatch throw SYNC_NOT_SUPPORTED. */
+const RAW_UNSUPPORTED_BACKENDS: ReadonlySet<BackendKind> = new Set<BackendKind>(['knowledge', 'vectors', 'file']);
+
+/** JSON with object keys sorted at every depth — equal content ⇒ equal string. */
+function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(o[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+/** "Identical content" for import: equal fields, text, metadata and deleted under a
+ *  canonical compare. Version, timestamps and origin are deliberately NOT content. */
+export function sameRecordContent(a: DataRecord, b: DataRecord): boolean {
+  const view = (r: DataRecord) => canonicalJson({ fields: r.fields ?? {}, text: r.text ?? null, metadata: r.metadata ?? null, deleted: r.deleted === true });
+  return view(a) === view(b);
+}
+
+/** Well-formed enough to store: the fields every reader and the LWW compare rely on. */
+function isImportableRecord(r: unknown): r is DataRecord {
+  if (!r || typeof r !== 'object') return false;
+  const x = r as DataRecord;
+  return typeof x.id === 'string' && x.id.length > 0
+    && typeof x.version === 'number' && Number.isFinite(x.version) && x.version >= 0
+    && !!x.fields && typeof x.fields === 'object' && !Array.isArray(x.fields)
+    && typeof x.createdAt === 'string' && typeof x.updatedAt === 'string'
+    && (x.deleted === undefined || typeof x.deleted === 'boolean');
+}
+
+/**
+ * PURE per-record import decision (the spec's policy table). A local TOMBSTONE counts as
+ * present: a deletion is only ever undone by a record that wins on the policy's terms.
+ *  - absent locally           → 'add', written VERBATIM (version/createdAt/updatedAt/deleted
+ *                               kept, origin cleared: the record becomes locally owned);
+ *  - 'merge'                  → bundle wins LWW ⇒ 'update' verbatim; else skip
+ *                               ('skipIdentical' when the content matches, 'skipOlder' otherwise);
+ *  - 'add-missing'            → never touches a present record ('skipIdentical' / 'skipExists');
+ *  - 'replace'                → identical content ⇒ 'skipIdentical'; else 'update' AS A NEW
+ *                               VERSION: max(local, bundle)+1 and updatedAt=now, so the restored
+ *                               state out-LWWs every replica.
+ */
+export function planImportRecord(
+  incoming: DataRecord,
+  local: DataRecord | null,
+  policy: ImportPolicy,
+  nowIso: string,
+): { bucket: ImportBucket; write?: DataRecord } {
+  const verbatim: DataRecord = { ...incoming, origin: undefined };
+  if (!local) return { bucket: 'add', write: verbatim };
+  const identical = sameRecordContent(incoming, local);
+  if (policy === 'add-missing') return { bucket: identical ? 'skipIdentical' : 'skipExists' };
+  if (policy === 'merge') {
+    // Origins are stripped on BOTH sides: isNewer's last tie-break is origin.machineId, and
+    // an owned record has none — a bundle copy of the very same write must not "win" on it.
+    if (isNewer(verbatim, { ...local, origin: undefined })) return { bucket: 'update', write: verbatim };
+    return { bucket: identical ? 'skipIdentical' : 'skipOlder' };
+  }
+  if (identical) return { bucket: 'skipIdentical' };
+  return {
+    bucket: 'update',
+    write: { ...verbatim, version: Math.max(local.version, incoming.version) + 1, updatedAt: nowIso },
+  };
+}
+
+/** The CreateDatasetInput a bundle's dataset line produces (spec: "For a created dataset").
+ *  Keeps id/backend/title/scope/syncMode/config/sensitive. visibility/acl come from the
+ *  bundle only when the BUNDLE side owned the dataset; a replica's local-only / empty ACL
+ *  is an artifact of replication, so a replica line defaults to cross-node-readable / []. */
+export function bundleDescriptorToCreateInput(
+  descriptor: DatasetDescriptor,
+  replicaOf?: NodeOrigin | null,
+): import('./dataset-registry').CreateDatasetInput {
+  const bundleOwned = !descriptor.origin && !replicaOf;
+  return {
+    id: descriptor.id,
+    backend: descriptor.backend,
+    title: descriptor.title,
+    scope: descriptor.scope,
+    syncMode: descriptor.syncMode,
+    config: descriptor.config,
+    sensitive: descriptor.sensitive,
+    visibility: bundleOwned ? descriptor.visibility : 'cross-node-readable',
+    acl: bundleOwned ? (Array.isArray(descriptor.acl) ? descriptor.acl : []) : [],
+  };
 }
 
 export class DataService {
@@ -388,6 +479,116 @@ export class DataService {
     }
   }
 
+  // Data bundles (export / import) --------------------------------------------------
+  //
+  // Faithful primitives for point-in-time bundles. Unlike get/query/exportDataset they do
+  // NOT redact (a bundle must round-trip bytes, and redaction would permanently overwrite
+  // the owner's own data on restore) — which is exactly why they are LOCAL-principal only.
+  // The auth boundary for owner/remote callers is the ROUTE, which calls these with the
+  // internal {type:'local'} ctx after its own checks.
+
+  /** Unredacted, tombstone-inclusive full read of one dataset (owned or replica). Pages
+   *  past the backend's 50k export cap; an export that cannot be proven complete is an
+   *  error (EXPORT_INCOMPLETE), never a silently short bundle. */
+  async exportRaw(ctx: CallCtx, datasetId: string): Promise<DataResult<DataRecord[]>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'raw export is local-only' };
+    const d = this.deps.datasets.get(datasetId);
+    if (!d) return { ok: false, code: 'NOT_FOUND', reason: `dataset "${datasetId}" not found` };
+    if (RAW_UNSUPPORTED_BACKENDS.has(d.backend)) {
+      return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${d.backend}" is derived or file-backed and is not exported` };
+    }
+    const backend = this.deps.backends.get(d.backend);
+    if (!backend) return { ok: false, code: 'NO_BACKEND', reason: `backend "${d.backend}" unavailable` };
+    try {
+      const r = await exportAllRecords(backend, datasetId);
+      if (!r.complete) return { ok: false, code: 'EXPORT_INCOMPLETE', reason: r.reason };
+      return { ok: true, value: r.records };
+    } catch (e) {
+      return { ok: false, code: 'EXPORT_FAILED', reason: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /**
+   * Faithful import of bundle records into an OWNED dataset, per `planImportRecord`'s policy
+   * table. Import never deletes: local records absent from `records` are untouched. Each
+   * write runs under the SAME per-key lock put()/del() use, so a concurrent put cannot slip
+   * between the read and the write. After a real apply, ONE batched change-notify fires for
+   * the dataset so peers pull promptly. `dryRun` computes the identical outcome without a
+   * single write. Refuses a replica (READ_ONLY_REPLICA) — taking ownership is a separate,
+   * guarded step (takeover).
+   */
+  async importRaw(
+    ctx: CallCtx,
+    datasetId: string,
+    records: DataRecord[],
+    opts: { policy: ImportPolicy; dryRun: boolean },
+  ): Promise<DataResult<ImportOutcome>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'raw import is local-only' };
+    const policy = opts?.policy;
+    if (!IMPORT_POLICIES.includes(policy)) {
+      return { ok: false, code: 'BAD_REQUEST', reason: `unknown import policy ${JSON.stringify(policy)} (expected ${IMPORT_POLICIES.join(' | ')})` };
+    }
+    if (!Array.isArray(records)) return { ok: false, code: 'BAD_REQUEST', reason: 'records must be an array' };
+    const d = this.deps.datasets.get(datasetId);
+    if (!d) return { ok: false, code: 'NOT_FOUND', reason: `dataset "${datasetId}" not found` };
+    if (d.origin) {
+      return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" is a replica of ${d.origin.hostname || d.origin.machineId} — import on the origin, or take it over first` };
+    }
+    if (d.system) return { ok: false, code: 'FORBIDDEN', reason: `dataset "${datasetId}" is a system dataset` };
+    if (d.readOnly) return { ok: false, code: 'FORBIDDEN', reason: `dataset "${datasetId}" is read-only` };
+    if (RAW_UNSUPPORTED_BACKENDS.has(d.backend)) {
+      return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${d.backend}" is derived or file-backed and is not imported` };
+    }
+    const backend = this.deps.backends.get(d.backend);
+    if (!backend) return { ok: false, code: 'NO_BACKEND', reason: `backend "${d.backend}" unavailable` };
+
+    const dryRun = opts.dryRun !== false; // anything but an explicit false is a plan, never a write
+    const counts = Object.fromEntries(IMPORT_BUCKETS.map((b) => [b, 0])) as Record<ImportBucket, number>;
+    const samples = Object.fromEntries(IMPORT_BUCKETS.map((b) => [b, [] as string[]])) as Record<ImportBucket, string[]>;
+    const note = (bucket: ImportBucket, id: unknown) => {
+      counts[bucket]++;
+      if (samples[bucket].length < IMPORT_SAMPLE_MAX && typeof id === 'string' && id) samples[bucket].push(id);
+    };
+    const written: string[] = [];
+
+    for (const incoming of records) {
+      if (!isImportableRecord(incoming)) { note('invalid', (incoming as { id?: unknown } | null)?.id); continue; }
+      if (recordTooLarge(incoming)) { note('tooLarge', incoming.id); continue; }
+      const step = async (): Promise<ImportBucket> => {
+        const local = await backend.get(datasetId, incoming.id);
+        const plan = planImportRecord(incoming, local, policy, new Date().toISOString());
+        if (plan.write && !dryRun) await backend.put(datasetId, plan.write);
+        return plan.bucket;
+      };
+      const bucket = dryRun ? await step() : await this.withKeyLock(`${datasetId}:${incoming.id}`, step);
+      note(bucket, incoming.id);
+      if (!dryRun && (bucket === 'add' || bucket === 'update')) written.push(incoming.id);
+    }
+
+    if (written.length) this.notifyChange(d, 'changed', written);
+    return { ok: true, value: { dataset: datasetId, policy, dryRun, total: records.length, counts, samples } };
+  }
+
+  /** Create an OWNED dataset from a bundle's descriptor (the rebuilt-origin / new-fleet path)
+   *  and allocate its storage. Local-only, like createDataset. `replicaOf` is the bundle
+   *  line's marker that the exporting node held it as a replica. Whether creating it is
+   *  SAFE (owner online elsewhere ⇒ split brain) is the caller's ownership check. */
+  async createDatasetFromBundle(
+    ctx: CallCtx,
+    descriptor: DatasetDescriptor,
+    opts: { replicaOf?: NodeOrigin | null } = {},
+  ): Promise<DataResult<DatasetDescriptor>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'dataset creation is local-only' };
+    if (!descriptor || typeof descriptor !== 'object' || typeof descriptor.id !== 'string') {
+      return { ok: false, code: 'BAD_REQUEST', reason: 'bundle dataset descriptor is malformed' };
+    }
+    if (descriptor.system) return { ok: false, code: 'FORBIDDEN', reason: `dataset "${descriptor.id}" is a system dataset` };
+    if (RAW_UNSUPPORTED_BACKENDS.has(descriptor.backend)) {
+      return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${descriptor.backend}" is derived or file-backed and is not imported` };
+    }
+    return this.createDataset(ctx, bundleDescriptorToCreateInput(descriptor, opts.replicaOf));
+  }
+
   // M5 sync helpers ----------------------------------------------------------------
 
   /** Returns this node's stable id. */
@@ -416,7 +617,7 @@ export class DataService {
   }
 
   /** Returns descriptor stubs for datasets this node advertises as syncable (syncMode !== 'none'). */
-  syncManifest(p: Principal): Array<{ id: string; syncMode: SyncMode; ownerNode: string; backend: BackendKind; scope: 'cluster' | 'fleet' }> {
+  syncManifest(p: Principal): Array<{ id: string; syncMode: SyncMode; ownerNode: string; backend: BackendKind; scope: 'cluster' | 'fleet'; supersedes?: string }> {
     const readActions: DataAction[] = ['read'];
     const out = [];
     for (const d of this.deps.datasets.list()) {
@@ -425,7 +626,11 @@ export class DataService {
       if (syncMode === 'none') continue;
       const actions = this.deps.manager.evaluateGrants(p, d, readActions);
       if (!actions.length) continue;
-      out.push({ id: d.id, syncMode, ownerNode: d.ownerNode, backend: d.backend, scope: (d.scope ?? 'cluster') });
+      out.push({
+        id: d.id, syncMode, ownerNode: d.ownerNode, backend: d.backend, scope: (d.scope ?? 'cluster'),
+        // A takeover's marker, so the superseded origin can demote itself (SyncEngine).
+        ...(d.supersedes?.machineId ? { supersedes: d.supersedes.machineId } : {}),
+      });
     }
     return out;
   }

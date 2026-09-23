@@ -53,10 +53,22 @@ export interface DatasetDescriptor {
   syncMode?: SyncMode;        // 'none' (default) | 'full' | 'partial'
   scope?: 'cluster' | 'fleet'; // sync reach: 'cluster' (default) only within-cluster; 'fleet' across all clusters
   origin?: NodeOrigin;        // when set, this is a remote replica (read-only; written by sync engine)
+  /** Set by a guarded TAKEOVER (DatasetRegistry.promoteReplica): the origin this node
+   *  replaced. Advertised in the sync manifest so the superseded node, if it ever comes
+   *  back, can demote itself (SyncEngine auto-demotion) instead of staying a second owner. */
+  supersedes?: SupersedesMarker;
   config: BackendConfig;
   acl: AclRule[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** Who a taken-over dataset superseded, and when. Provenance for the operator plus the
+ *  trigger for the returning origin's auto-demotion — never inferred from timing. */
+export interface SupersedesMarker {
+  machineId: string;
+  hostname: string;
+  at: string;
 }
 
 export interface DataRecord {
@@ -160,6 +172,9 @@ export interface ManifestEntry {
   ownerNode: string;
   backend: BackendKind;
   scope?: 'cluster' | 'fleet';
+  /** machineId this owner took the dataset over from (descriptor `supersedes`). Old
+   *  builds ignore the unknown field; the named node demotes itself when safe. */
+  supersedes?: string;
 }
 
 export interface PeerClient {
@@ -197,4 +212,33 @@ export interface StorageBackend {
   exportSince(dataset: string, since?: string): Promise<DataRecord[]>;
   /** LWW-guarded batch import: stamps origin on each record applied. */
   importBatch(dataset: string, records: DataRecord[], origin: NodeOrigin): Promise<{ applied: number; skipped: number }>;
+}
+
+// Data bundles (export / import) ----------------------------------------------------
+
+/** How DataService.importRaw treats a record that already exists locally (records absent
+ *  locally are always written verbatim; records absent from the bundle are never touched):
+ *  - 'merge'       — write verbatim only when the bundle copy wins LWW (`isNewer`);
+ *  - 'add-missing' — never touch a present record;
+ *  - 'replace'     — write the bundle's content AS A NEW VERSION unless the content is identical. */
+export type ImportPolicy = 'merge' | 'add-missing' | 'replace';
+export const IMPORT_POLICIES: readonly ImportPolicy[] = ['merge', 'add-missing', 'replace'];
+
+/** Per-record outcome of an import. `add`/`update` are writes; the rest are skips.
+ *  `invalid` covers records that are not well-formed DataRecords (never written). */
+export type ImportBucket = 'add' | 'update' | 'skipOlder' | 'skipIdentical' | 'skipExists' | 'tooLarge' | 'invalid';
+export const IMPORT_BUCKETS: readonly ImportBucket[] = ['add', 'update', 'skipOlder', 'skipIdentical', 'skipExists', 'tooLarge', 'invalid'];
+/** Sample ids kept per bucket — enough to spot-check a plan, bounded for MCP/relay results. */
+export const IMPORT_SAMPLE_MAX = 10;
+
+export interface ImportOutcome {
+  dataset: string;
+  policy: ImportPolicy;
+  dryRun: boolean;
+  /** Records considered (the input length). */
+  total: number;
+  /** Exact per-bucket counts; every bucket is present (0 when empty). */
+  counts: Record<ImportBucket, number>;
+  /** Up to IMPORT_SAMPLE_MAX record ids per bucket, in input order. */
+  samples: Record<ImportBucket, string[]>;
 }
