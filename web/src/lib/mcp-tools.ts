@@ -153,25 +153,25 @@ export function sortProfiles(profiles: McpProfileSummary[]): McpProfileSummary[]
   return [...profiles].sort((a, b) => (a.tools !== b.tools ? a.tools - b.tools : a.name.localeCompare(b.name)));
 }
 
-/** The row for the profile the server says is active.
+/** The row for the NODE DEFAULT — the profile the server reports as `active`, which is what
+ *  UNPINNED clients get (a connector pinned to a profile URL keeps its own).
  *
  *  Trust `status.active` over the per-row `active` flag, and return null when no row
- *  carries that name: a node running an older build can report an active profile this
- *  build does not define, and inventing a row for it would state a tool count that was
- *  never measured. */
+ *  carries that name: a node running an older build can report a default this build does
+ *  not define, and inventing a row for it would state a tool count that was never measured. */
 export function activeProfileRow(status: McpProfileStatus | null): McpProfileSummary | null {
   if (!status) return null;
   return status.profiles.find((p) => p.name === status.active) ?? null;
 }
 
-/** What switching would cost or save, relative to what is advertised now. Empty for the
- *  active row itself and whenever the active row is unknown — a delta against a guess
- *  would read as measured. */
+/** What making `candidate` the node default would cost or save, relative to the current node
+ *  default. Empty for the default row itself and whenever the default is unknown — a delta
+ *  against a guess would read as measured. */
 export function profileDeltaLabel(active: McpProfileSummary | null, candidate: McpProfileSummary): string {
   if (!active || active.name === candidate.name) return '';
   const d = candidate.tools - active.tools;
-  if (d === 0) return 'same size';
-  return d < 0 ? `${-d} fewer advertised` : `${d} more advertised`;
+  if (d === 0) return 'same size as the node default';
+  return d < 0 ? `${-d} fewer than the node default` : `${d} more than the node default`;
 }
 
 /** A profile whose selectors do not all match is SMALLER than its description implies —
@@ -195,4 +195,227 @@ export function profileUnavailableMessage(raw: string): string {
       + 'The node advertises every tool (the admin default); the control appears once it is upgraded.';
   }
   return `Profile unavailable: ${raw}`;
+}
+
+// ── one connector per profile (GET/POST/DELETE /mcp/profile-connectors) ─────
+// A connector on a profile URL (`https://mcp.<domain>/mcp/<profile>`) advertises THAT profile
+// whatever the node default is; the unpinned `/mcp` URL follows the node default. Core matches
+// claude.ai connectors to profiles by URL against this node's own hub. IO-free, like the above.
+
+/** claude.ai's record of one connector, as the table shows it. */
+export interface ClaudeAiConnectorState {
+  uuid: string;
+  name: string;
+  connected: boolean;
+  /** claude.ai's own word (`authenticated` | `auth_required` | …), passed through. */
+  authStatus?: string | null;
+  /** Tools claude.ai has loaded for it — 0 or null until it is connected. */
+  toolCount?: number | null;
+}
+
+/** One row of the Connectors table (normalizeProfileConnectors builds these). */
+export interface ProfileConnectorRow {
+  /** null = the unpinned `/mcp` URL, which follows the node default. */
+  profile: string | null;
+  url: string;
+  /** The claude.ai name a create uses: `lm-assist <hub> <profile>`. */
+  name: string;
+  /** claude.ai's connector on this URL, or null when there is none — or when claude.ai could not
+   *  be read at all (then `claudeaiError` is set, and null means UNKNOWN). */
+  claudeai: ClaudeAiConnectorState | null;
+}
+
+/** The Connectors table's model: one flat row list, the unpinned row as `profile: null`. */
+export interface ProfileConnectorsStatus {
+  /** This node's public MCP base (`https://mcp.<domain>`); null when the node has no hub. */
+  base: string | null;
+  nodeDefault: string;
+  connectors: ProfileConnectorRow[];
+  claudeaiError?: string | null;
+}
+
+// The REST body (GET /mcp/profile-connectors) keeps the unpinned connector and the
+// per-profile rows in separate fields, because the mcp_connectors tool renders from that richer
+// shape. The page and the pane want one row list, so this is the ONE place the wire shape
+// becomes the table model — never read the wire fields anywhere else.
+export type WireConn = { uuid: string | null; name: string; connected: boolean; authStatus: string | null; toolCount: number | null };
+export interface ProfileConnectorsWire {
+  base: string; hub: string; nodeDefault: string; claudeai: { ok: boolean; error?: string };
+  unpinned: { url: string; suggestedName: string; connector: WireConn | null; duplicates: number };
+  profiles: Array<{ profile: string; url: string; suggestedName: string; connector: WireConn | null; duplicates: number }>;
+  unknownPins: Array<{ profile: string; url: string; connector: WireConn | null }>;
+}
+export function normalizeProfileConnectors(w: ProfileConnectorsWire): ProfileConnectorsStatus {
+  const row = (profile: string | null, r: { url: string; suggestedName: string; connector: WireConn | null }): ProfileConnectorRow => ({
+    profile, url: r.url, name: r.suggestedName,
+    claudeai: r.connector ? { ...r.connector, uuid: r.connector.uuid ?? '' } : null,
+  });
+  return { base: w.base || null, nodeDefault: w.nodeDefault,
+    claudeaiError: w.claudeai.ok ? null : (w.claudeai.error || 'claude.ai unreadable'),
+    connectors: [row(null, w.unpinned), ...w.profiles.map((p) => row(p.profile, p))] };
+}
+
+/** A node with no hub has no public MCP URL, and the GET refuses with `HUB_NOT_CONFIGURED`
+ *  (HTTP 400). `errText` keeps only the message, so test the RAW error string for the code. */
+export function profileConnectorsHubMissing(raw: string): boolean {
+  return /\bHUB_NOT_CONFIGURED\b/.test(raw);
+}
+
+/** What the table shows for such a node: no base, no rows — "no hub on this node". */
+export function noHubProfileConnectors(): ProfileConnectorsStatus {
+  return { base: null, nodeDefault: '', connectors: [], claudeaiError: null };
+}
+
+/** The envelope-free GET body → the table model. A body that is not the wire shape (an error
+ *  envelope a transport passed through as data, or a shape this build does not know) THROWS with
+ *  the body in the message, so the caller's HUB_NOT_CONFIGURED / route-missing checks still see
+ *  its code — instead of the page crashing on `w.claudeai.ok`. */
+export function parseProfileConnectors(body: unknown): ProfileConnectorsStatus {
+  const w = body as Partial<ProfileConnectorsWire> | null;
+  if (!w || typeof w !== 'object' || !w.unpinned || !Array.isArray(w.profiles) || !w.claudeai) {
+    throw new Error(`unexpected /mcp/profile-connectors body: ${String(JSON.stringify(body)).slice(0, 400)}`);
+  }
+  return normalizeProfileConnectors(w as ProfileConnectorsWire);
+}
+
+/** POST /mcp/profile-connectors {profile}. Idempotent by URL: `created:false` means a
+ *  connector on that URL already existed and is returned as-is. */
+export interface ProfileConnectorCreateResult {
+  profile: string;
+  url: string;
+  created: boolean;
+  /** `uuid` is null when claude.ai's create response named none and the re-list missed it. */
+  connector: WireConn;
+  /** The one step left, in the reader's terms; null when the connector exists AND is connected. */
+  nextStep?: string | null;
+}
+
+/** GET /claude-ai/mcp/servers row, as far as the older-Core status fallback needs it. */
+export interface ClaudeAiServerRow {
+  name?: string;
+  url?: string;
+  connected?: boolean;
+  toolCount?: number;
+  tools?: string[];
+}
+
+export interface ConnectorStatusLine {
+  label: string;
+  ok: boolean | null;
+  detail: string;
+}
+
+export type ConnectorTone = 'ok' | 'warn' | 'none' | 'unknown';
+
+/** claude.ai generates the OAuth `state` in-page, so Connect cannot be completed server-side. */
+export const CONNECT_STEP = 'claude.ai → Customize → Connectors → Connect on that connector';
+
+/** An older Core has no /mcp/profile-connectors and no `/mcp/<x>` catch-all, so every method on
+ *  it gets rest-server's generic 404: code `NOT_FOUND`, message
+ *  `Route not found: GET /mcp/profile-connectors`. That means "this Core predates the feature":
+ *  hide the table and post nothing to it. Only that message counts. A `NOT_FOUND` from the route
+ *  itself (a DELETE with nothing on the URL) is a real error, not a missing route. Matches the
+ *  `errText` message and a raw `API 404: {…}` string alike. */
+export function profileConnectorsRouteMissing(raw: string): boolean {
+  return /Route not found:\s*[A-Z]+\s+\/mcp\/profile-connectors(?![\w-])/.test(raw);
+}
+
+/** Unpinned first (the connector every existing conversation uses), then narrow → wide by what
+ *  each profile advertises on this node, profiles with no count last, ties by name. */
+export function orderConnectorRows(rows: ProfileConnectorRow[], profiles: McpProfileSummary[] = []): ProfileConnectorRow[] {
+  const size = new Map(profiles.map((p) => [p.name, p.tools] as const));
+  const rank = (r: ProfileConnectorRow): number =>
+    r.profile === null ? -1 : size.get(r.profile) ?? Number.MAX_SAFE_INTEGER;
+  return [...rows].sort((a, b) => {
+    const d = rank(a) - rank(b);
+    return d !== 0 ? d : (a.profile ?? '').localeCompare(b.profile ?? '');
+  });
+}
+
+/** The claude.ai cell. `claudeai: null` means "not created" only when claude.ai was READ — with
+ *  `claudeaiError` set it means nobody knows, and "not created" would invite a duplicate. */
+export function connectorStateLabel(
+  row: ProfileConnectorRow,
+  claudeaiError?: string | null,
+): { text: string; tone: ConnectorTone } {
+  const c = row.claudeai;
+  if (!c) {
+    return claudeaiError
+      ? { text: 'unknown — claude.ai could not be read', tone: 'unknown' }
+      : { text: 'not created', tone: 'none' };
+  }
+  if (c.connected) return { text: `connected${c.toolCount != null ? ` · ${c.toolCount} tools` : ''}`, tone: 'ok' };
+  return { text: `not connected${c.authStatus ? ` (${c.authStatus})` : ''} — ${CONNECT_STEP}`, tone: 'warn' };
+}
+
+/** Which button a row offers. The unpinned connector is never created or deleted from here —
+ *  it is the one every existing conversation uses. Nothing is offered while claude.ai is
+ *  unreadable, and only one write runs at a time: the hub registers each connector with a
+ *  read-modify-write, and two at once can lose one. */
+export function connectorActions(
+  row: ProfileConnectorRow,
+  ctx: { claudeaiError?: string | null; busy: string | null },
+): { create: boolean; remove: boolean; disabled: boolean } {
+  if (row.profile === null || ctx.claudeaiError) return { create: false, remove: false, disabled: true };
+  return { create: !row.claudeai, remove: !!row.claudeai, disabled: ctx.busy !== null };
+}
+
+/** The outcome line for a create — always names what is still left to do. */
+export function createConnectorMessage(r: ProfileConnectorCreateResult): string {
+  const step = (r.nextStep || CONNECT_STEP).replace(/\.\s*$/, '');
+  const name = r.connector?.name || r.url;
+  if (!r.created) {
+    return r.connector?.connected
+      ? `"${name}" already exists for ${r.url} and is connected — nothing to do.`
+      : `"${name}" already exists for ${r.url} — nothing created. One step left: ${step}.`;
+  }
+  return `Created "${name}" for the ${r.profile} profile. One step left: ${step}.`;
+}
+
+/** Patch the row a create answered for, so the table updates without another claude.ai read.
+ *  The wire `uuid` may be null; the row keeps '' — the next read names it. */
+export function applyCreateResult(status: ProfileConnectorsStatus, r: ProfileConnectorCreateResult): ProfileConnectorsStatus {
+  const claudeai: ClaudeAiConnectorState = { ...r.connector, uuid: r.connector.uuid ?? '' };
+  return {
+    ...status,
+    connectors: status.connectors.map((row) => (row.profile === r.profile ? { ...row, claudeai } : row)),
+  };
+}
+
+export function applyDeleteResult(status: ProfileConnectorsStatus, profile: string): ProfileConnectorsStatus {
+  return {
+    ...status,
+    connectors: status.connectors.map((row) => (row.profile === profile ? { ...row, claudeai: null } : row)),
+  };
+}
+
+/** The Status panel's connector lines: one per lm-assist connector of THIS hub that exists in
+ *  claude.ai, replacing the old first-/langmart/i pick that showed one and hid the rest. */
+export function connectorStatusLines(status: ProfileConnectorsStatus): ConnectorStatusLine[] {
+  if (status.claudeaiError) return [{ label: 'Connector', ok: false, detail: `claude.ai unreadable — ${status.claudeaiError}` }];
+  if (!status.base) return [{ label: 'Connector', ok: null, detail: 'no hub on this node, so no connector URL' }];
+  const existing = status.connectors.filter((r) => r.claudeai);
+  if (!existing.length) return [{ label: 'Connector', ok: false, detail: `none in claude.ai for ${status.base}` }];
+  return existing.map((r) => {
+    const c = r.claudeai as ClaudeAiConnectorState;
+    const state = c.connected ? 'connected' : `not connected${c.authStatus ? ` (${c.authStatus})` : ''}`;
+    return {
+      label: r.profile ? `Connector · ${r.profile}` : 'Connector',
+      ok: c.connected,
+      detail: `${c.name || r.name} · ${state}${c.connected && c.toolCount != null ? ` · ${c.toolCount} tools` : ''}`,
+    };
+  });
+}
+
+/** An older Core: the single pick the Status panel has always shown (first url/name matching
+ *  /langmart/i, else the first server). Kept only for that fallback. */
+export function legacyConnectorLine(servers: ClaudeAiServerRow[]): ConnectorStatusLine {
+  const lm = servers.find((x) => /langmart/i.test(x.url || '') || /langmart/i.test(x.name || '')) || servers[0];
+  if (!lm) return { label: 'Connector', ok: false, detail: 'no connector' };
+  const n = lm.toolCount ?? lm.tools?.length;
+  return {
+    label: 'Connector',
+    ok: !!lm.connected,
+    detail: `${lm.name || 'langmart'} · ${lm.connected ? 'connected' : 'disconnected'}${n != null ? ` · ${n} tools` : ''}`,
+  };
 }

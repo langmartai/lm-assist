@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Wrench, RefreshCw, ShieldAlert, Puzzle, PlugZap, Activity, Layers } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Wrench, RefreshCw, ShieldAlert, Puzzle, PlugZap, Activity, Layers, Copy } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { ConfirmButton, errText, timeAgo } from '@/components/memory/format';
 import {
@@ -14,8 +14,27 @@ import {
   profileUnavailableMessage,
   sortProfiles,
   unmatchedSelectorNote,
+  CONNECT_STEP,
+  applyCreateResult,
+  applyDeleteResult,
+  connectorActions,
+  connectorStateLabel,
+  connectorStatusLines,
+  createConnectorMessage,
+  legacyConnectorLine,
+  noHubProfileConnectors,
+  orderConnectorRows,
+  parseProfileConnectors,
+  profileConnectorsHubMissing,
+  profileConnectorsRouteMissing,
+  type ClaudeAiServerRow,
+  type ConnectorStatusLine,
+  type ConnectorTone,
   type McpProfileStatus,
+  type McpProfileSummary,
   type McpToolRow,
+  type ProfileConnectorCreateResult,
+  type ProfileConnectorsStatus,
   type ToolRegistryDocView,
   type ToolScope,
 } from '@/lib/mcp-tools';
@@ -30,7 +49,8 @@ interface McpStatus {
   core: { status?: string; error?: string } | null;
   plugins: (PluginListResponse & { error?: string }) | { error?: string } | null;
   hub: HubStatus | null;
-  connector: { name?: string; connected?: boolean; toolCount?: number; error?: string } | null;
+  /** One line per lm-assist connector of this hub (older Core: the single legacy pick). */
+  connectors: ConnectorStatusLine[] | null;
 }
 
 function StatusRow({ label, ok, detail }: { label: string; ok: boolean | null; detail: string }) {
@@ -38,7 +58,7 @@ function StatusRow({ label, ok, detail }: { label: string; ok: boolean | null; d
   return (
     <div className="flex items-center gap-2" style={{ fontSize: 12 }}>
       <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
-      <span style={{ color: 'var(--color-text-secondary)', width: 92 }}>{label}</span>
+      <span style={{ color: 'var(--color-text-secondary)', width: 132 }}>{label}</span>
       <span style={{ color: 'var(--color-text-tertiary)' }}>{detail}</span>
     </div>
   );
@@ -48,7 +68,7 @@ function McpStatusPanel({ status, loading, onRefresh }: { status: McpStatus | nu
   const p = status?.plugins as (PluginListResponse & { error?: string }) | { error?: string } | null;
   const counts = p && 'counts' in p ? p.counts : null;
   const hub = status?.hub;
-  const conn = status?.connector;
+  const lines = status?.connectors;
   return (
     <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--color-border-default)', background: 'var(--color-canvas-subtle)', display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div className="flex items-center gap-2" style={{ marginBottom: 2 }}>
@@ -61,22 +81,162 @@ function McpStatusPanel({ status, loading, onRefresh }: { status: McpStatus | nu
         detail={status?.core?.error ? status.core.error : (status?.core?.status || '…')} />
       <StatusRow label="Plugins" ok={p ? !('error' in p && p.error) : null}
         detail={p && 'error' in p && p.error ? p.error : counts ? `${counts.enabled} enabled / ${counts.total} total${counts.unhealthy ? `, ${counts.unhealthy} unhealthy` : ''}` : '…'} />
-      <StatusRow label="Connector" ok={conn ? !conn.error && !!conn.connected : null}
-        detail={conn?.error ? conn.error : conn ? `${conn.name || 'langmart'} · ${conn.connected ? 'connected' : 'disconnected'}${conn.toolCount != null ? ` · ${conn.toolCount} tools` : ''}` : '…'} />
+      {lines
+        ? lines.map((l, i) => <StatusRow key={`${l.label}-${i}`} label={l.label} ok={l.ok} detail={l.detail} />)
+        : <StatusRow label="Connector" ok={null} detail="…" />}
       <StatusRow label="Hub" ok={hub ? !hub.error && !!hub.authenticated : null}
         detail={hub?.error ? hub.error : hub ? `${hub.authenticated ? 'authenticated' : hub.connected ? 'connected (not authed)' : hub.configured ? 'configured, offline' : 'not configured'}${hub.hubUrl ? ` · ${hub.hubUrl.replace(/^wss?:\/\//, '')}` : ''}` : '…'} />
     </div>
   );
 }
 
+const CONN_TH: CSSProperties = { padding: '4px 6px', fontWeight: 600, fontSize: 10, textAlign: 'left' };
+const CONN_TD: CSSProperties = { padding: 6, verticalAlign: 'top', borderTop: '1px solid var(--color-border-default)' };
+const CONN_TONE: Record<ConnectorTone, string> = {
+  ok: 'rgba(74,222,128,0.95)',
+  warn: 'rgba(251,191,36,0.95)',
+  none: 'var(--color-text-tertiary)',
+  unknown: 'var(--color-text-tertiary)',
+};
+
 /**
- * The tool-loading profile: how many tools this node ADVERTISES in `tools/list`.
+ * One claude.ai connector per profile, backed by /mcp/profile-connectors. Core matches
+ * connectors to profiles by URL against THIS node's hub, so a dev Core never lists (or deletes)
+ * the production connector. The unpinned row is shown, never managed: it is the connector every
+ * existing conversation uses.
+ */
+function ConnectorsTable({
+  data,
+  loading,
+  error,
+  busy,
+  msg,
+  profiles,
+  onCreate,
+  onDelete,
+  onCopy,
+}: {
+  data: ProfileConnectorsStatus | null;
+  loading: boolean;
+  error: string | null;
+  /** Profile a create/delete is in flight for — one at a time. */
+  busy: string | null;
+  msg: { text: string; err: boolean } | null;
+  profiles: McpProfileSummary[];
+  onCreate: (profile: string) => void;
+  onDelete: (profile: string) => void;
+  onCopy: (url: string) => void;
+}) {
+  const rows = data ? orderConnectorRows(data.connectors, profiles) : [];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>Connectors — one per profile</span>
+        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+          A connector on a profile URL advertises that profile whatever the node default is.
+        </span>
+      </div>
+      {error && <div style={{ fontSize: 11, color: 'rgba(248,113,113,0.95)' }}>{error}</div>}
+      {msg && (
+        <div style={{ fontSize: 11, color: msg.err ? 'rgba(248,113,113,0.95)' : 'var(--color-text-secondary)' }}>{msg.text}</div>
+      )}
+      {data?.claudeaiError && (
+        <div style={{ fontSize: 11, color: 'rgba(251,191,36,0.95)' }}>
+          claude.ai could not be read from this node ({data.claudeaiError}), so which connectors exist is unknown — Create and
+          Delete stay off until it can be.
+        </div>
+      )}
+      {!data ? (
+        !error && (
+          <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{loading ? 'Reading claude.ai…' : 'Loading…'}</div>
+        )
+      ) : !data.base ? (
+        <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+          This node has no hub connection, so it has no public MCP URL to pin a profile to.
+        </div>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr style={{ color: 'var(--color-text-tertiary)' }}>
+              <th style={CONN_TH}>Profile</th>
+              <th style={CONN_TH}>URL</th>
+              <th style={CONN_TH}>claude.ai</th>
+              <th style={CONN_TH} />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const state = connectorStateLabel(row, data.claudeaiError);
+              const act = connectorActions(row, { claudeaiError: data.claudeaiError, busy });
+              const working = busy !== null && busy === row.profile;
+              return (
+                <tr key={row.profile ?? '(unpinned)'}>
+                  <td style={CONN_TD}>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-primary)' }}>{row.profile ?? 'unpinned'}</span>
+                    {row.profile === null && (
+                      <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>follows the node default ({data.nodeDefault})</div>
+                    )}
+                  </td>
+                  <td style={CONN_TD}>
+                    <span style={{ fontFamily: 'var(--font-mono)', wordBreak: 'break-all', color: 'var(--color-text-secondary)' }}>{row.url}</span>{' '}
+                    <button className="btn btn-xs btn-ghost" onClick={() => onCopy(row.url)} title="Copy this URL">
+                      <Copy size={10} /> Copy
+                    </button>
+                  </td>
+                  <td style={{ ...CONN_TD, color: CONN_TONE[state.tone] }}>
+                    {row.claudeai?.name && <div style={{ color: 'var(--color-text-secondary)' }}>{row.claudeai.name}</div>}
+                    {state.text}
+                  </td>
+                  <td style={{ ...CONN_TD, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {working ? (
+                      <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>Working…</span>
+                    ) : act.create && row.profile ? (
+                      <button
+                        className="btn btn-xs btn-ghost"
+                        disabled={act.disabled}
+                        onClick={() => onCreate(row.profile as string)}
+                        title="Add a claude.ai connector for this profile URL. One at a time — the hub registers each with a read-modify-write."
+                      >
+                        Create
+                      </button>
+                    ) : act.remove && row.profile ? (
+                      act.disabled ? (
+                        <button className="btn btn-xs btn-ghost" disabled>Delete</button>
+                      ) : (
+                        <ConfirmButton
+                          label="Delete"
+                          confirmLabel={`Delete "${row.claudeai?.name ?? row.name}" from claude.ai?`}
+                          onConfirm={() => onDelete(row.profile as string)}
+                          className="btn btn-xs btn-ghost"
+                        />
+                      )
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>
+        Connect is one browser step per connector: {CONNECT_STEP}. Every enabled connector loads its own tool list, so a
+        conversation holding two of them pays for both — keep one per conversation. For Claude Code:{' '}
+        <code style={{ fontFamily: 'var(--font-mono)' }}>lm-assist mcp add --profile &lt;name&gt;</code>.
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The tool-loading profile: how many tools a connector ADVERTISES in `tools/list`.
  *
- * Worth a panel of its own because the cost is invisible and paid unconditionally —
- * `tools/list` is charged to every conversation before it calls anything (admin ≈ 320
- * tools ≈ 80K tokens here, basic ≈ 42 ≈ 12K). The four caveats at the bottom are not
- * decoration: each one is a way an operator can read this control as something it is
- * not (a permission, a per-user setting, an override, an instant change).
+ * Two layers since one-connector-per-profile. The cards set the NODE DEFAULT — what unpinned
+ * clients get. The Connectors table lists one URL per profile; a connector on a profile URL
+ * advertises that profile whatever the default is. Worth a panel of its own because the cost is
+ * invisible and paid unconditionally — `tools/list` is charged to every conversation before it
+ * calls anything (admin ≈ 320 tools ≈ 80K tokens here, basic ≈ 42 ≈ 12K). The caveats at the
+ * bottom are not decoration: each one is a way an operator can read this control as something it
+ * is not (a permission, a per-user setting, an override, an instant change).
  */
 function ProfilePanel({
   status,
@@ -85,14 +245,33 @@ function ProfilePanel({
   busy,
   onRefresh,
   onSelect,
+  connectors,
+  connectorsLoading,
+  connectorsError,
+  connectorsMissing,
+  connectorBusy,
+  connectorMsg,
+  onCreateConnector,
+  onDeleteConnector,
+  onCopyUrl,
 }: {
   status: McpProfileStatus | null;
   loading: boolean;
   error: string | null;
-  /** Name of the profile currently being switched to, if any. */
+  /** Name of the profile currently being made the node default, if any. */
   busy: string | null;
   onRefresh: () => void;
   onSelect: (name: string) => void;
+  connectors: ProfileConnectorsStatus | null;
+  connectorsLoading: boolean;
+  connectorsError: string | null;
+  /** The Core predates /mcp/profile-connectors — the table is hidden, never shown broken. */
+  connectorsMissing: boolean;
+  connectorBusy: string | null;
+  connectorMsg: { text: string; err: boolean } | null;
+  onCreateConnector: (profile: string) => void;
+  onDeleteConnector: (profile: string) => void;
+  onCopyUrl: (url: string) => void;
 }) {
   const active = activeProfileRow(status);
   const rows = status ? sortProfiles(status.profiles) : [];
@@ -101,7 +280,9 @@ function ProfilePanel({
       <div className="flex flex-wrap items-center gap-2">
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>Tool loading profile</span>
         <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-          How many tools this node advertises in <code style={{ fontFamily: 'var(--font-mono)' }}>tools/list</code> — the fixed cost every conversation pays before it calls anything.
+          What a connector advertises in <code style={{ fontFamily: 'var(--font-mono)' }}>tools/list</code> — the fixed cost every
+          conversation pays before it calls anything. The node default applies to unpinned clients; a connector pinned to a
+          profile keeps its own.
         </span>
         <button className="btn btn-xs btn-ghost" style={{ marginLeft: 'auto' }} onClick={onRefresh} disabled={loading}>
           <RefreshCw size={11} className={loading ? 'animate-spin' : undefined} /> Refresh
@@ -136,19 +317,19 @@ function ProfilePanel({
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--color-text-primary)' }}>{p.name}</span>
                   <span className="badge badge-outline" style={{ fontSize: 9 }}>{p.tools} tools</span>
                   {isActive ? (
-                    <span className="badge" style={{ fontSize: 9, ...SCOPE_BADGE_STYLE.read }}>active</span>
+                    <span className="badge" style={{ fontSize: 9, ...SCOPE_BADGE_STYLE.read }}>node default</span>
                   ) : busy ? (
                     <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--color-text-tertiary)' }}>
                       {busy === p.name ? 'Switching…' : ''}
                     </span>
                   ) : (
-                    // The page's own two-click confirm (same one Disable and Restore default
-                    // use). This switch is node-global, so a stray click would narrow the tool
-                    // surface of every other session on this host.
+                    // The page's own two-click confirm (same one Disable and Restore default use).
+                    // The node default reaches every UNPINNED client on this host, so a stray click
+                    // would narrow the surface of sessions that never chose it.
                     <span style={{ marginLeft: 'auto' }}>
                       <ConfirmButton
                         label="Use"
-                        confirmLabel={`Switch this node to ${p.name}?`}
+                        confirmLabel={`Make ${p.name} the node default?`}
                         onConfirm={() => onSelect(p.name)}
                         className="btn btn-xs btn-ghost"
                       />
@@ -171,9 +352,27 @@ function ProfilePanel({
       {status && (
         <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
           {status.setAt
-            ? `Active profile "${status.active}" set ${timeAgo(status.setAt)}${status.setBy ? ` by ${status.setBy}` : ''}.`
-            : `Active profile "${status.active}" — never changed on this node (admin is the default: nothing is hidden until someone chooses).`}
+            ? `Node default "${status.active}" set ${timeAgo(status.setAt)}${status.setBy ? ` by ${status.setBy}` : ''}.`
+            : `Node default "${status.active}" — never changed on this node (admin is the default: nothing is hidden until someone chooses).`}
         </div>
+      )}
+
+      {connectorsMissing ? (
+        <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+          Per-profile connectors need a newer Core on this node — it has no /mcp/profile-connectors route.
+        </div>
+      ) : (
+        <ConnectorsTable
+          data={connectors}
+          loading={connectorsLoading}
+          error={connectorsError}
+          busy={connectorBusy}
+          msg={connectorMsg}
+          profiles={status?.profiles ?? []}
+          onCreate={onCreateConnector}
+          onDelete={onDeleteConnector}
+          onCopy={onCopyUrl}
+        />
       )}
 
       <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>
@@ -182,13 +381,19 @@ function ProfilePanel({
           It secures nothing: the admin gates on this page and the per-tool scopes are the security boundary.
         </div>
         <div>
-          <b>Node-global.</b> One setting for the whole node, not a per-user preference — every other session on this host sees the surface you pick here.
+          <b>Node default.</b> Applies to unpinned clients only — the unpinned <code style={{ fontFamily: 'var(--font-mono)' }}>/mcp</code> connector,
+          local Claude Code over stdio without <code style={{ fontFamily: 'var(--font-mono)' }}>LM_MCP_PROFILE</code>, and any client that names no
+          profile. A connector pinned to a profile keeps that profile whatever is chosen here. Still one setting for the whole
+          node, not a per-user preference.
         </div>
         <div>
-          <b>The per-tool registry wins.</b> A tool switched off on this page stays off in every profile; a profile can only narrow further, never re-enable.
+          <b>The per-tool registry wins.</b> A tool switched off on this page stays off in every profile and on every connector; a profile can only narrow further, never re-enable.
         </div>
         <div>
-          <b>Not instant.</b> A local Claude Code session picks the change up within ~30s; a claude.ai connector caches <code style={{ fontFamily: 'var(--font-mono)' }}>tools/list</code> and needs a <code style={{ fontFamily: 'var(--font-mono)' }}>refresh_connector_tools</code> (or the Sync button) to see it.
+          <b>Not instant.</b> A local Claude Code session picks the change up within ~30s. A claude.ai connector caches
+          <code style={{ fontFamily: 'var(--font-mono)' }}> tools/list</code>: when this node holds a claude.ai cookie, Core clears the unpinned
+          connectors&apos; cache after a node-default change; otherwise run <code style={{ fontFamily: 'var(--font-mono)' }}>refresh_connector_tools</code> (or
+          the Sync button). Pinned connectors never change with the node default.
         </div>
       </div>
     </div>
@@ -282,6 +487,16 @@ export function McpToolsPage() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileBusy, setProfileBusy] = useState<string | null>(null);
+  // One connector per profile (GET /mcp/profile-connectors). Read lazily — it walks
+  // claude.ai's connector bootstrap, which can take seconds — and never on the 10s poll.
+  const [connectors, setConnectors] = useState<ProfileConnectorsStatus | null>(null);
+  const [connectorsLoading, setConnectorsLoading] = useState(false);
+  const [connectorsError, setConnectorsError] = useState<string | null>(null);
+  // An older Core has no such route (its generic 404, `Route not found: GET /mcp/profile-connectors`):
+  // the table is hidden rather than shown broken, and nothing is POSTed or DELETEd to it.
+  const [connectorsMissing, setConnectorsMissing] = useState(false);
+  const [connectorBusy, setConnectorBusy] = useState<string | null>(null);
+  const [connectorMsg, setConnectorMsg] = useState<{ text: string; err: boolean } | null>(null);
   const seqRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
@@ -359,15 +574,28 @@ export function McpToolsPage() {
   const loadStatus = useCallback(async () => {
     setStatusLoading(true);
     const unwrap = <T,>(r: T | { data?: T }): T => ('data' in (r as object) ? (r as { data?: T }).data : r) as T;
-    const s: McpStatus = { core: null, plugins: null, hub: null, connector: null };
+    const s: McpStatus = { core: null, plugins: null, hub: null, connectors: null };
     try { s.core = unwrap(await apiFetch<{ status?: string }>('/health')); } catch (e) { s.core = { error: errText(e) }; }
     try { s.plugins = unwrap(await apiFetch<PluginListResponse>('/mcp-plugins')); } catch (e) { s.plugins = { error: errText(e) }; }
     try { s.hub = unwrap(await apiFetch<HubStatus>('/hub/status')); } catch (e) { s.hub = { error: errText(e) }; }
+    // Every lm-assist connector of THIS hub (Core matches them by URL), one line each.
     try {
-      const c = unwrap(await apiFetch<{ servers?: Array<{ name?: string; url?: string; connected?: boolean; tools?: string[] }> }>('/claude-ai/mcp/servers'));
-      const lm = (c?.servers || []).find((x) => /langmart/i.test(x.url || '') || /langmart/i.test(x.name || '')) || (c?.servers || [])[0];
-      s.connector = lm ? { name: lm.name, connected: lm.connected, toolCount: lm.tools?.length } : { error: 'no connector' };
-    } catch (e) { s.connector = { error: errText(e) }; }
+      s.connectors = connectorStatusLines(parseProfileConnectors(unwrap(await apiFetch<unknown>('/mcp/profile-connectors'))));
+    } catch (e) {
+      const raw = String(e);
+      const msg = errText(e);
+      if (profileConnectorsHubMissing(raw)) {
+        s.connectors = connectorStatusLines(noHubProfileConnectors());
+      } else if (!profileConnectorsRouteMissing(msg)) {
+        s.connectors = [{ label: 'Connector', ok: false, detail: msg }];
+      } else {
+        // An older Core has no such route: show the single pick it has always shown.
+        try {
+          const c = unwrap(await apiFetch<{ servers?: ClaudeAiServerRow[] }>('/claude-ai/mcp/servers'));
+          s.connectors = [legacyConnectorLine(c?.servers || [])];
+        } catch (e2) { s.connectors = [{ label: 'Connector', ok: false, detail: errText(e2) }]; }
+      }
+    }
     setStatus(s);
     setStatusLoading(false);
   }, [apiFetch]);
@@ -406,6 +634,84 @@ export function McpToolsPage() {
   }, [apiFetch, loadProfile]);
 
   useEffect(() => { void loadProfile(); }, [loadProfile]);
+
+  const loadConnectors = useCallback(async () => {
+    setConnectorsLoading(true);
+    try {
+      setConnectors(parseProfileConnectors(unwrapBody(await apiFetch<unknown>('/mcp/profile-connectors'))));
+      setConnectorsError(null);
+      setConnectorsMissing(false);
+    } catch (e) {
+      const raw = String(e);
+      const msg = errText(e);
+      if (profileConnectorsHubMissing(raw)) {
+        // No hub ⇒ no public MCP URL: an empty table that says so, not an error.
+        setConnectors(noHubProfileConnectors());
+        setConnectorsError(null);
+        setConnectorsMissing(false);
+      } else if (profileConnectorsRouteMissing(msg)) {
+        setConnectorsMissing(true);
+        setConnectorsError(null);
+      } else {
+        // Keep the last-known table: a failed read is not evidence that anything was deleted.
+        setConnectorsError(`Connectors unavailable: ${msg}`);
+      }
+    } finally {
+      setConnectorsLoading(false);
+    }
+  }, [apiFetch]);
+
+  // Idempotent by URL server-side, so a retry after a lost response cannot duplicate. The
+  // response patches its row locally; on failure re-read, because the write may have landed.
+  const createConnector = useCallback(async (name: string) => {
+    if (connectorsMissing) return;
+    setConnectorBusy(name);
+    setConnectorMsg(null);
+    try {
+      const r = unwrapBody(await apiFetch<ProfileConnectorCreateResult>('/mcp/profile-connectors', { method: 'POST', body: { profile: name } }));
+      setConnectors((cur) => (cur ? applyCreateResult(cur, r) : cur));
+      setConnectorMsg({ text: createConnectorMessage(r), err: false });
+    } catch (e) {
+      setConnectorMsg({ text: `Create for "${name}" failed: ${errText(e)}. Re-reading claude.ai…`, err: true });
+      await loadConnectors();
+    } finally {
+      setConnectorBusy(null);
+    }
+  }, [apiFetch, connectorsMissing, loadConnectors]);
+
+  const deleteConnector = useCallback(async (name: string) => {
+    if (connectorsMissing) return;
+    setConnectorBusy(name);
+    setConnectorMsg(null);
+    try {
+      await apiFetch(`/mcp/profile-connectors/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      setConnectors((cur) => (cur ? applyDeleteResult(cur, name) : cur));
+      setConnectorMsg({ text: `Deleted the ${name} connector from claude.ai. Conversations that had it lose its tools.`, err: false });
+    } catch (e) {
+      setConnectorMsg({ text: `Delete for "${name}" failed: ${errText(e)}. Re-reading claude.ai…`, err: true });
+      await loadConnectors();
+    } finally {
+      setConnectorBusy(null);
+    }
+  }, [apiFetch, connectorsMissing, loadConnectors]);
+
+  const copyUrl = useCallback(async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setConnectorMsg({ text: `Copied ${url}`, err: false });
+    } catch {
+      // The clipboard API needs a secure context; over plain http on the LAN it is absent.
+      setConnectorMsg({ text: `The browser blocked the clipboard — select the URL and copy it: ${url}`, err: true });
+    }
+  }, []);
+
+  // Opening the panel is what reads claude.ai — same pattern as toggleStatus.
+  const toggleProfile = useCallback(() => {
+    setShowProfile((v) => {
+      if (!v && !connectors && !connectorsMissing) void loadConnectors();
+      return !v;
+    });
+  }, [connectors, connectorsMissing, loadConnectors]);
 
   const toggleStatus = useCallback(() => {
     setShowStatus((v) => {
@@ -455,10 +761,10 @@ export function McpToolsPage() {
           </span>
           <button
             className={`btn btn-sm ${showProfile ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setShowProfile((v) => !v)}
-            title="Tool loading profile: how many tools this node advertises in tools/list. Advertise-only — a narrower profile hides tools from the list, it does not disable them."
+            onClick={toggleProfile}
+            title="Tool loading profile: the node default (what unpinned clients advertise in tools/list) and one connector per profile. Advertise-only — a narrower profile hides tools from the list, it does not disable them."
           >
-            <Layers size={12} /> Profile{profile ? `: ${profile.active}` : ''}
+            <Layers size={12} /> Profile{profile ? ` · default ${profile.active}` : ''}
           </button>
           <button
             className={`btn btn-sm ${showPlugins ? 'btn-primary' : 'btn-ghost'}`}
@@ -471,14 +777,14 @@ export function McpToolsPage() {
             className="btn btn-sm btn-ghost"
             onClick={() => void syncConnector()}
             disabled={syncing}
-            title="Sync plugin tools to the claude.ai connector without a restart (cache-clear → refetch → enable → auto-approve). On-host only."
+            title="Sync plugin tools to every lm-assist claude.ai connector of this hub without a restart (cache-clear → refetch → enable → auto-approve, per each connector's profile). On-host only."
           >
             <PlugZap size={12} className={syncing ? 'animate-pulse' : undefined} /> Sync
           </button>
           <button
             className={`btn btn-sm ${showStatus ? 'btn-primary' : 'btn-ghost'}`}
             onClick={toggleStatus}
-            title="MCP status: /mcp surface, plugin subsystem, claude.ai connector, and hub connection"
+            title="MCP status: /mcp surface, plugin subsystem, every claude.ai connector of this hub, and hub connection"
           >
             <Activity size={12} /> Status
           </button>
@@ -507,11 +813,23 @@ export function McpToolsPage() {
       {showProfile && (
         <ProfilePanel
           status={profile}
-          loading={profileLoading}
+          loading={profileLoading || connectorsLoading}
           error={profileError}
           busy={profileBusy}
-          onRefresh={() => void loadProfile()}
+          onRefresh={() => {
+            void loadProfile();
+            if (!connectorsMissing) void loadConnectors();
+          }}
           onSelect={(name) => void selectProfile(name)}
+          connectors={connectors}
+          connectorsLoading={connectorsLoading}
+          connectorsError={connectorsError}
+          connectorsMissing={connectorsMissing}
+          connectorBusy={connectorBusy}
+          connectorMsg={connectorMsg}
+          onCreateConnector={(name) => void createConnector(name)}
+          onDeleteConnector={(name) => void deleteConnector(name)}
+          onCopyUrl={(url) => void copyUrl(url)}
         />
       )}
 
