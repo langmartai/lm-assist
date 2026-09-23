@@ -22,7 +22,7 @@ export interface IngestResult { applied: number; active: number; inert: number; 
 
 const MAX_RULE_BYTES = 64 * 1024;
 /** Credential-shaped filenames are never read/exported (mirrors memory's export guard). */
-import { CREDENTIAL_PATTERNS } from '../utils/credential-names';
+import { RULE_CREDENTIAL_PATTERNS as CREDENTIAL_PATTERNS } from '../utils/credential-names';
 
 function sha256(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 

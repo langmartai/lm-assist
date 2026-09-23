@@ -104,7 +104,7 @@ const MAP_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'memory-map.js');
 const RECENT_EVENT_CAP = 50;
 
 /** Credential-shaped filename patterns — never synced regardless of shareability. */
-import { CREDENTIAL_PATTERNS } from '../utils/credential-names';
+import { MEMORY_CREDENTIAL_PATTERNS as CREDENTIAL_PATTERNS } from '../utils/credential-names';
 
 // ─── Types ──────────────────────────────────────────────────
 

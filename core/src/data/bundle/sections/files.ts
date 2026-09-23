@@ -31,7 +31,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { getDataDir, getClaudeConfigDir, getProjectsDir } from '../../../utils/path-utils';
 import { safeJoin, UnsafePathError } from '../../../file-transfer/safe-path';
-import { isCredentialName } from '../../../utils/credential-names';
+import { isCredentialMemoryName, isCredentialRuleName } from '../../../utils/credential-names';
 import type { BundleFile, FilesSectionId } from '../format';
 import {
   asApplied, bump, newSectionPlan,
@@ -467,7 +467,7 @@ export function createClaudeMemoryProvider(opts: { projectsDir?: string } = {}):
       allowed: isMemoryPath,
       refuse: (_r, rel) => {
         const name = path.posix.basename(rel);
-        if (isCredentialName(name)) return { bucket: 'skipped', warning: `credential-named: ${rel} is never imported (memory sync keeps such files on their host)` };
+        if (isCredentialMemoryName(name)) return { bucket: 'skipped', warning: `credential-named: ${rel} is never imported (memory sync keeps such files on their host)` };
         if (MEMORY_MANAGED_FILES.has(name) && rel.split('/').length === 3) return { bucket: 'skipped', warning: `managed-file: ${rel} is regenerated per node — never imported` };
         return null;
       },
@@ -488,7 +488,7 @@ export function createClaudeMemoryProvider(opts: { projectsDir?: string } = {}):
         const memDir = path.join(r, s.name, 'memory');
         for (const f of walk(memDir, `${s.name}/memory`, pre, true)) {
           if (!f.endsWith('.md')) continue;
-          if (isCredentialName(path.posix.basename(f))) { pre.push(`credential-named: ${f} not exported`); continue; }
+          if (isCredentialMemoryName(path.posix.basename(f))) { pre.push(`credential-named: ${f} not exported`); continue; }
           rels.push(f);
         }
       }
@@ -527,7 +527,7 @@ export function createClaudeRulesProvider(opts: { rulesDir?: string } = {}): Fil
     {
       id: 'claude-rules', title: 'Claude rules', root, backupOnReplace: true, allowed: isOwnRule,
       refuse: (r, rel, content) => {
-        if (isCredentialName(rel)) return { bucket: 'skipped', warning: `credential-named: ${rel} is never imported (rule sync keeps such files on their host)` };
+        if (isCredentialRuleName(rel)) return { bucket: 'skipped', warning: `credential-named: ${rel} is never imported (rule sync keeps such files on their host)` };
         const m = mirroredBy(r, rel);
         if (m) {
           return {
@@ -545,7 +545,7 @@ export function createClaudeRulesProvider(opts: { rulesDir?: string } = {}): Fil
       const rels: string[] = [];
       for (const e of names.sort((a, b) => a.name.localeCompare(b.name))) {
         if (!e.isFile() || !isOwnRule(e.name)) continue;
-        if (isCredentialName(e.name)) { pre.push(`credential-named: ${e.name} not exported`); continue; }
+        if (isCredentialRuleName(e.name)) { pre.push(`credential-named: ${e.name} not exported`); continue; }
         let size = 0;
         try { size = fs.statSync(path.join(r, e.name)).size; } catch { /* unreadable → collectPaths reports it */ }
         if (size > MAX_RULE_BYTES) { pre.push(`too-large: ${e.name} (${size} bytes > the ${MAX_RULE_BYTES}-byte rule cap)`); continue; }
