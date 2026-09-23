@@ -17,7 +17,8 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   gateKeyFor, evaluateBootstrapGate, recordBootstrapped, isBootstrappedFor, identityHeader, bootstrapGateCheck,
-  __registryLookupForTest, __resetBootstrapRegistryForTest, type CallerCandidates,
+  __registryLookupForTest, __resetBootstrapRegistryForTest, resolveRecencyCandidates, __resetRecencyCacheForTest,
+  type CallerCandidates, type RecencyDeps,
 } from '../mcp-server/mcp-session-resolver';
 import { bootstrapMarkerFile, __flushPersistForTest, __resetPersistForTest } from '../mcp-server/bootstrap-persist';
 import { publishBootstrapToFleet, fleetBootstrappedAt, type FleetBootstrapStore } from '../mcp-server/bootstrap-registry';
@@ -26,8 +27,24 @@ import { playbookTopicForTool } from '../mcp-server/tool-topics';
 import type { McpToolResult } from '../mcp-server/configure';
 import { stopSessionCache } from '../session-cache';
 
-// The seam test at the bottom runs the live identity resolver (as session-resolver.test.ts
-// does). Release the session-cache watcher it starts, or the runner never exits.
+// Hermetic: the seam tests at the bottom go through the identity resolver, whose live deps call
+// claude.ai with the operator's real cookie and walk ~/.claude. Its recency cache is SEEDED with
+// one fixed claude.ai candidate in every beforeEach (the pattern session-status-profile.test.ts
+// uses), so no test here makes a network call or reads this host's sessions. The cache lives 8 s;
+// each test re-seeds it.
+const SEAM_CONV = 'conv-gate-seam';
+const FIXED: RecencyDeps = {
+  conversations: async () => ({
+    status: 200,
+    statusText: 'OK',
+    headers: { 'content-type': 'application/json' },
+    body: { data: [{ uuid: SEAM_CONV, name: 'Gate seam chat', updated_at: '2026-09-23T00:00:00Z' }], has_more: false },
+  }),
+  sessions: () => [],
+};
+
+// Safety net only: with the cache seeded the resolver never builds the SessionCache (a chokidar
+// watcher). If a later change makes it do so, this releases it so the file still exits.
 after(() => stopSessionCache());
 
 process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bgp-'));
@@ -44,11 +61,13 @@ const caller = (id: string): CallerCandidates => ({ claudeAi: { id }, resolvedAt
 const gate = (tool: string, id: string, lookup: (id: string) => St | undefined, profile?: EffectiveProfile) =>
   evaluateBootstrapGate(tool, playbookTopicForTool(tool), caller(id), lookup, profile);
 
-beforeEach(() => {
+beforeEach(async () => {
   process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bgp-'));
   _resetProfileCacheForTests();
   __resetPersistForTest();
   __resetBootstrapRegistryForTest();
+  __resetRecencyCacheForTest();
+  await resolveRecencyCandidates(FIXED); // the seam reads this, never claude.ai or ~/.claude
 });
 
 test('gateKeyFor keeps the bare id for a full profile and suffixes a narrowed one', () => {
@@ -148,6 +167,14 @@ test('the gate seam accepts a profile and still skips uncovered tools without re
   assert.equal(await bootstrapGateCheck('search', BASIC), null);
 });
 
+test('the gate seam passes a covered tool once the caller bootstrapped under that profile', async () => {
+  // The seeded caller bootstrapped under basic: a basic call to a covered tool passes the seam
+  // straight from the registry (no fleet lookup — that is only paid on a would-be refusal).
+  recordBootstrapped(caller(SEAM_CONV), BASIC);
+  assert.equal(await bootstrapGateCheck('list_recent_sessions', BASIC), null);
+  assert.equal(__registryLookupForTest(`${SEAM_CONV}#basic`)?.gateRefusedAt, undefined, 'nothing was stamped as refused');
+});
+
 test('the MCP seam records a bootstrap under the profile it was configured with', async () => {
   const { configureMcpServer } = require('../mcp-server/configure');
   const { CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
@@ -161,4 +188,8 @@ test('the MCP seam records a bootstrap under the profile it was configured with'
   const t = String((res.content[0] as { text: string }).text);
   assert.match(t, /BOOTSTRAP_BODY_MARKER/);
   assert.match(t, /recorded as BOOTSTRAPPED for profile `basic` only/);
+  // The marker went to the SEEDED caller under the narrowed key — and only there.
+  assert.ok(t.includes(SEAM_CONV), 'the identity header names the seeded caller');
+  assert.ok(__registryLookupForTest(`${SEAM_CONV}#basic`)?.bootstrappedAt, 'recorded under <id>#basic');
+  assert.equal(__registryLookupForTest(SEAM_CONV), undefined, 'the bare key is not claimed by a basic bootstrap');
 });
