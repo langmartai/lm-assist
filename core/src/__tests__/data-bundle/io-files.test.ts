@@ -180,11 +180,11 @@ test('claude-memory: the autosync .sync-base/ ancestors and credential-named fil
   const src = tmp();
   put(src, '-slug/memory/a.md', 'L1\nL2\n');
   put(src, '-slug/memory/.sync-base/a.md', 'L1\n');
-  put(src, '-slug/memory/live-oanda-token.md', 'secret');
+  put(src, '-slug/memory/live-broker-token.md', 'secret');
   put(src, '-slug/memory/feedback-api-key.md', 'secret');
   const c = await createClaudeMemoryProvider({ projectsDir: src }).collect();
   assert.deepEqual(c.files.map((f) => f.path), ['-slug/memory/a.md']);
-  assert.ok(c.warnings.some((w) => w === 'credential-named: -slug/memory/live-oanda-token.md not exported'));
+  assert.ok(c.warnings.some((w) => w === 'credential-named: -slug/memory/live-broker-token.md not exported'));
 
   // A crafted bundle cannot plant either: the base keeps its content, nothing lands in a dot-dir.
   const dst = tmp();
@@ -201,12 +201,12 @@ test('claude-memory: the autosync .sync-base/ ancestors and credential-named fil
 test('claude-rules: credential names + oversize not exported, nested rules reported, synced mirrors never re-owned', async () => {
   const src = tmp();
   put(src, 'normal.md', 'n');
-  put(src, 'oanda-token.md', 'secret');
+  put(src, 'broker-token.md', 'secret');
   put(src, 'big.md', 'x'.repeat(64 * 1024 + 1));
   put(src, 'team/nested.md', 'nested');
   const c = await createClaudeRulesProvider({ rulesDir: src }).collect();
   assert.deepEqual(c.files.map((f) => f.path), ['normal.md']);
-  assert.ok(c.warnings.some((w) => w.startsWith('credential-named: oanda-token.md')));
+  assert.ok(c.warnings.some((w) => w.startsWith('credential-named: broker-token.md')));
   assert.ok(c.warnings.some((w) => w.startsWith('too-large: big.md')));
   assert.ok(c.warnings.some((w) => w.startsWith('nested-rule-not-exported: team/nested.md')));
 
