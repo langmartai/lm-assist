@@ -339,6 +339,16 @@ function connectorView(c: ConnectorLike | undefined) {
   };
 }
 
+/** Several claude.ai connectors can share one URL (a duplicate created by hand, or one never
+ *  Connected next to a working one). Whichever is REPORTED must be the one a user would keep: a
+ *  connected one first, then the most tools, then claude.ai's order (the sort is stable). Taking
+ *  bootstrap order instead reported a working profile as "NOT connected" and told the user to
+ *  Connect the dead duplicate. */
+function bestFirst<T extends ConnectorLike>(cs: T[]): T[] {
+  const tools = (c: ConnectorLike): number => (typeof c.toolCount === 'number' ? c.toolCount : -1);
+  return [...cs].sort((a, b) => Number(!!b.connected) - Number(!!a.connected) || tools(b) - tools(a));
+}
+
 /** claude.ai's create and the hub's client registration are both read-modify-writes, and
  *  concurrent registrations can lose a client — so create/delete run one at a time. */
 let connectorWriteChain: Promise<unknown> = Promise.resolve();
@@ -362,8 +372,8 @@ export async function handleProfileConnectorsList(deps: ProfileConnectorDeps = r
     claudeai = { ok: false, error: errMsg(e) };
   }
   const mine = ourConnectors(servers, base);
-  const pinned = (profile: string) => mine.filter((c) => c.profile !== null && canonPin(c.profile) === profile);
-  const unpinned = mine.filter((c) => c.profile === null);
+  const pinned = (profile: string) => bestFirst(mine.filter((c) => c.profile !== null && canonPin(c.profile) === profile));
+  const unpinned = bestFirst(mine.filter((c) => c.profile === null));
   return ok({
     base,
     hub: hubLabelFor(base),
@@ -414,7 +424,9 @@ export async function handleProfileConnectorCreate(
     } catch (e) {
       return fail('CLAUDEAI_UNAVAILABLE', errMsg(e));
     }
-    const existing = ourConnectors(servers, base).find((c) => c.profile !== null && canonPin(c.profile) === profile);
+    // The connected one when there are duplicates, so `nextStep` never says "Connect" while a
+    // working connector for this URL already exists.
+    const existing = bestFirst(ourConnectors(servers, base).filter((c) => c.profile !== null && canonPin(c.profile) === profile))[0];
     if (existing) {
       return ok({ created: false, profile, url: existing.url ?? url, connector: connectorView(existing), nextStep: existing.connected ? null : CONNECT_STEP });
     }

@@ -244,3 +244,44 @@ test('the NEW /mcp/profile-connectors patterns match', () => {
   // since every /mcp/* route anywhere in the app is a literal, never a capturing catch-all.
   assert.equal(first('GET', '/mcp/something-else'), undefined);
 });
+
+// ── duplicates: report the connector a user would keep ────────────────────────────────────────
+// Two claude.ai connectors on ONE URL — an old one never Connected, listed FIRST, and a working
+// one. Bootstrap order made the profile read "NOT connected (+1 duplicate)" and told the user to
+// Connect the dead one.
+
+const DEAD_BASIC: Server = { uuid: '6e6e6e6e-0000-4000-8000-00000000000e', name: 'lm-assist langmart basic (old)', url: `${PROD}/mcp/basic`, connected: false, authStatus: 'auth_required', toolCount: 0 };
+const DEAD_UNPINNED: Server = { uuid: '7f7f7f7f-0000-4000-8000-00000000000f', name: 'lm-assist langmart (old)', url: `${PROD}/mcp`, connected: false, authStatus: 'auth_required', toolCount: 0 };
+
+test('GET with duplicates shows the CONNECTED connector, and still counts the duplicate', async () => {
+  const { deps } = fakeDeps([DEAD_UNPINNED, DEAD_BASIC, ...ROSTER]);
+  const d = (await handleProfileConnectorsList(deps)).data as any;
+  const basic = d.profiles.find((p: any) => p.profile === 'basic');
+  assert.equal(basic.connector.uuid, B, 'the connected one, not the first listed');
+  assert.equal(basic.connector.connected, true);
+  assert.equal(basic.duplicates, 1);
+  assert.equal(d.unpinned.connector.uuid, U);
+  assert.equal(d.unpinned.duplicates, 1);
+});
+
+test('among connected duplicates, the one with more tools is reported; ties keep claude.ai order', async () => {
+  const small: Server = { uuid: '8a8a8a8a-0000-4000-8000-00000000000a', name: 'small', url: `${PROD}/mcp/basic`, connected: true, authStatus: 'authenticated', toolCount: 0 };
+  const { deps } = fakeDeps([small, ...ROSTER]);
+  const d = (await handleProfileConnectorsList(deps)).data as any;
+  assert.equal(d.profiles.find((p: any) => p.profile === 'basic').connector.uuid, B);
+  const tie: Server = { ...small, toolCount: 1 };
+  const { deps: deps2 } = fakeDeps([tie, ...ROSTER]);
+  const d2 = (await handleProfileConnectorsList(deps2)).data as any;
+  assert.equal(d2.profiles.find((p: any) => p.profile === 'basic').connector.uuid, tie.uuid, 'stable on a tie');
+});
+
+test('POST with a dead duplicate listed first returns the CONNECTED one — no "Connect it" step', async () => {
+  const { deps, created } = fakeDeps([DEAD_BASIC, ...ROSTER]);
+  const r = await handleProfileConnectorCreate({ profile: 'basic' }, deps);
+  assert.equal(r.success, true);
+  const d = r.data as any;
+  assert.equal(d.created, false);
+  assert.equal(d.connector.uuid, B);
+  assert.equal(d.nextStep, null, 'a connected connector exists: nothing left to do');
+  assert.equal(created.length, 0);
+});
