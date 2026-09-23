@@ -190,22 +190,22 @@ test('create: options are validated — unknown fields, bad booleans, non-JSON b
 
 // ─── id validation ──────────────────────────────────────────────────────────
 
-test('id validation: every :id route refuses a malformed bundle id with 400 BAD_BUNDLE_ID', async () => {
+test('id validation: every :id route refuses a malformed bundle id with 400 BUNDLE_ID_INVALID', async () => {
   const { routes } = await exported();
   const bad = ['lmb-bad', 'LMB-20260923-120000-abcdef', '..%2F..%2Fetc%2Fpasswd', 'lmb-20260923-120000-abcdeg', 'x.lmbundle.gz'];
   for (const id of bad) {
-    expectErr(await call(routes, 'GET', `/data/bundles/${id}`), 'BAD_BUNDLE_ID', 400);
-    expectErr(await call(routes, 'GET', `/data/bundles/${id}/chunk`), 'BAD_BUNDLE_ID', 400);
-    expectErr(await call(routes, 'GET', `/data/bundles/${id}/download`), 'BAD_BUNDLE_ID', 400);
-    expectErr(await call(routes, 'DELETE', `/data/bundles/${id}`), 'BAD_BUNDLE_ID', 400);
-    expectErr(await call(routes, 'POST', `/data/bundles/${id}/plan`), 'BAD_BUNDLE_ID', 400);
-    expectErr(await call(routes, 'POST', `/data/bundles/${id}/apply`, { body: { confirm: true } }), 'BAD_BUNDLE_ID', 400);
+    expectErr(await call(routes, 'GET', `/data/bundles/${id}`), 'BUNDLE_ID_INVALID', 400);
+    expectErr(await call(routes, 'GET', `/data/bundles/${id}/chunk`), 'BUNDLE_ID_INVALID', 400);
+    expectErr(await call(routes, 'GET', `/data/bundles/${id}/download`), 'BUNDLE_ID_INVALID', 400);
+    expectErr(await call(routes, 'DELETE', `/data/bundles/${id}`), 'BUNDLE_ID_INVALID', 400);
+    expectErr(await call(routes, 'POST', `/data/bundles/${id}/plan`), 'BUNDLE_ID_INVALID', 400);
+    expectErr(await call(routes, 'POST', `/data/bundles/${id}/apply`, { body: { confirm: true } }), 'BUNDLE_ID_INVALID', 400);
   }
   // A well-formed id that is not stored is a 404, not a 400.
   expectErr(await call(routes, 'GET', `/data/bundles/${WELL_FORMED}`), 'BUNDLE_NOT_FOUND', 404);
   expectErr(await call(routes, 'POST', `/data/bundles/${WELL_FORMED}/plan`), 'BUNDLE_NOT_FOUND', 404);
   // received:<name> is not a bundle id on this surface; the refusal says how to import it.
-  const recv = expectErr(await call(routes, 'POST', '/data/bundles/received:x.gz/plan'), 'BAD_BUNDLE_ID', 400);
+  const recv = expectErr(await call(routes, 'POST', '/data/bundles/received:x.gz/plan'), 'BUNDLE_ID_INVALID', 400);
   assert.match(recv.error!.message, /POST \/data\/bundles\/received\/x\.gz/);
 });
 
@@ -437,7 +437,7 @@ test('fetch: pulls through the PEER\'s chunk route, verifies, stores under a new
 
   expectErr(await call(routes, 'POST', '/data/bundles/fetch', { body: { fromNode: 'gw-a', bundleId: WELL_FORMED } }), 'BUNDLE_NOT_FOUND', 404);
   expectErr(await call(routes, 'POST', '/data/bundles/fetch', { body: { bundleId: a.id } }), 'BAD_REQUEST', 400);
-  expectErr(await call(routes, 'POST', '/data/bundles/fetch', { body: { fromNode: 'gw-a', bundleId: 'lmb-nope' } }), 'BAD_BUNDLE_ID', 400);
+  expectErr(await call(routes, 'POST', '/data/bundles/fetch', { body: { fromNode: 'gw-a', bundleId: 'lmb-nope' } }), 'BUNDLE_ID_INVALID', 400);
   expectErr(await call(routes, 'POST', '/data/bundles/fetch', { body: { fromNode: 'gw-a', bundleId: a.id, offset: 0 } }), 'UNSUPPORTED_FIELD', 400);
   // A fabric peer reaches this path only because it has the sync-read `/data/:ds/fetch` shape.
   expectErr(await call(routes, 'POST', '/data/bundles/fetch', { body: { fromNode: 'gw-a', bundleId: a.id }, headers: { 'x-relay-source': 'peer' } }), 'FORBIDDEN', 403);

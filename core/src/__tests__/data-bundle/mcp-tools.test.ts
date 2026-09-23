@@ -46,7 +46,8 @@ test('both tools are advertised, handled, scoped and categorised', () => {
     assert.equal(categoryOf(n), 'data', `${n} must be in the data category`);
     assert.equal(playbookTopicForTool(n), 'data', `${n} must resolve to the data playbook`);
   }
-  assert.equal(TOOL_SCOPES.data_export, 'read');
+  // Worst action wins: create prunes and delete removes restore points — never an auto-approved read.
+  assert.equal(TOOL_SCOPES.data_export, 'write');
   assert.equal(TOOL_SCOPES.data_import, 'admin');
   assert.doesNotThrow(() => assertScopesCoverTools());
 });
@@ -193,7 +194,8 @@ test('data_export with no args is the inventory (GET /data/bundles/inventory)', 
   assert.match(t, /backlog/);
   assert.match(t, /239/);
   // an offline origin's replica gets the actionable takeover call
-  assert.match(t, /data_import\(\{action:"takeover", dataset:"mission-workflows"\}\)/);
+  // …pinned to the node that answered, so a copied call never runs on the connector's default node
+  assert.match(t, /data_import\(\{action:"takeover", dataset:"mission-workflows", node:"gw-self"\}\)/);
   assert.match(t, /old-thing/);
   assert.match(t, /pull x: timeout/);
 });
@@ -229,7 +231,11 @@ test('list / inspect / delete hit the store routes; inspect and delete need a bu
   });
   assert.match(text(await run('data_export', { action: 'list' })), new RegExp(ID));
   assert.match(text(await run('data_export', { action: 'inspect', bundle: ID })), /src-host/);
-  assert.match(text(await run('data_export', { action: 'delete', bundle: ID })), /Deleted/);
+  // delete removes a restore point: without confirm:true it never reaches the route.
+  const unconfirmed = await run('data_export', { action: 'delete', bundle: ID });
+  assert.ok(unconfirmed.isError);
+  assert.match(text(unconfirmed), /CONFIRM_REQUIRED: deleting .* removes a restore point/);
+  assert.match(text(await run('data_export', { action: 'delete', bundle: ID, confirm: true })), /Deleted/);
   assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), ['GET /data/bundles', `GET /data/bundles/${ID}`, `DELETE /data/bundles/${ID}`]);
 
   const before = calls.length;
@@ -407,4 +413,14 @@ test('a write that times out says it may still land (never "nothing happened")',
 
 test('transport restored', () => {
   T._setBundleTransportForTests(null);
+});
+
+test('copy-paste hints carry node (and force) so a follow-up runs where the plan ran', async () => {
+  const { renderImport, renderFetch, renderList } = T;
+  const plan = { bundleId: ID, policy: 'replace', dryRun: true, sections: [], totals: {}, refused: 0, warnings: [] } as any;
+  const t = renderImport(plan, { mode: 'plan', node: 'gw-123', force: true });
+  assert.match(t, /data_import\(\{action:"apply", bundle:"[^"]+", node:"gw-123", policy:"replace", force:true, confirm:true\}\)/);
+  const f = renderFetch({ bundleId: ID, sourceBundleId: ID, fromNode: 'gw-a', chunks: 1, sizeBytes: 10, sha256: 'a'.repeat(64), manifest: undefined } as any, { node: 'gw-123' });
+  assert.match(f, /Next: data_import\(\{action:"plan", bundle:"[^"]+", node:"gw-123"\}\)/);
+  assert.match(renderList([], { node: 'gw-123' }), /data_export\(\{action:"create", node:"gw-123"\}\)/);
 });

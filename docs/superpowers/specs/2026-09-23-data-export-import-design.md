@@ -98,6 +98,7 @@ truncated or corrupted bundle is refused with `BUNDLE_CORRUPT`, naming the faile
 
 Limits:
 - Refuse to export when free disk space is below `max(512 MB, 3 × estimated size)`
+  (storing an INCOMING bundle — upload, received, fetch — needs `2 × size + 16 MiB`)
   (`fs.statfsSync`), returning `DISK_LOW` with the numbers.
 - An uncompressed bundle may not exceed 1 GiB (`BUNDLE_TOO_LARGE`).
 - A single line may not exceed 16 MiB.
@@ -325,7 +326,9 @@ trip on in the JSON wrapper.
   - `bundle` is a bundleId, or `received:<name>`.
   - `apply` requires `confirm:true`. Without it the tool returns the plan and says so.
 
-Both tools get `TOOL_SCOPES` entries: `data_export: 'read'`, `data_import: 'admin'`. They
+Both tools get `TOOL_SCOPES` entries: `data_export: 'write'` (worst action wins: `create`
+prunes the oldest bundle and `delete` removes a restore point; `delete` also requires
+`confirm:true`), `data_import: 'admin'`. They
 also need category-map entries, `EXPANDED_HANDLERS`, a `tool-output-budget` entry and guide
 prose. Numeric and boolean args are coerced with `numArg`/`boolArg`. The handlers call Core
 REST through the house loopback hop.

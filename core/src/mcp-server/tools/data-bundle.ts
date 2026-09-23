@@ -27,7 +27,8 @@
  * envelope instead of the message-only unwrap.
  *
  * Registration: DATA_BUNDLE_TOOL_DEFS + DATA_BUNDLE_HANDLERS → expanded.ts; TOOL_SCOPES
- * (data_export read, data_import admin) → configure.ts; category `data` →
+ * (data_export write — its create/delete change the restore points; data_import admin) →
+ * configure.ts; category `data` →
  * registry/categories.ts; playbook `data` → tool-topics.ts; output budget →
  * tool-output-budget.ts.
  */
@@ -53,9 +54,9 @@ export const dataExportToolDef = {
     'Back up THIS node\'s lm-assist data as a portable bundle (gzip JSONL stored on the node; secrets never ' +
     'travel). action: inventory (default: what an export holds — owned vs replica datasets, origin online, ' +
     'record counts, sync errors) · create (owned datasets + sanitized config; opt in includeReplicas / ' +
-    'includeKnowledge / includeClaudeMemory) · list · inspect · delete (bundle). To move a bundle, run ' +
-    'data_import action:fetch on the TARGET node. guide("data").',
-  annotations: { readOnlyHint: false },
+    'includeKnowledge / includeClaudeMemory) · list · inspect · delete (bundle, confirm:true — a bundle is a ' +
+    'restore point). To move a bundle, run data_import action:fetch on the TARGET node. guide("data").',
+  annotations: { readOnlyHint: false, destructiveHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -70,6 +71,7 @@ export const dataExportToolDef = {
       includeKnowledge: { type: 'boolean', description: 'create: add the knowledge base.' },
       includeClaudeMemory: { type: 'boolean', description: 'create: add Claude project memory + own rules.' },
       note: { type: 'string', description: 'create: a label (≤500 chars).' },
+      confirm: { type: 'boolean', description: 'delete: must be true.' },
     },
   },
 };
@@ -364,7 +366,7 @@ const REFUSAL_FIX: Record<string, string> = {
   FORBIDDEN: 'system and read-only datasets are never imported — leave it out with datasets:[…]',
   BAD_DATASET_ID: 'the id is invalid or reserved on this node — leave it out with datasets:[…]',
   BAD_SECTION_DATA: 'the section is malformed in the bundle — re-export it on the source node',
-  NOT_SUPPORTED: 'derived stores rebuild themselves — nothing to import',
+  NOT_SUPPORTED: 'derived stores rebuild themselves, and a partial replica is a read-through cache, not a copy — nothing to import or take over here',
   NO_BACKEND: 'this node has no backend for that dataset — enable it, then plan again',
 };
 
@@ -372,8 +374,8 @@ const REFUSAL_FIX: Record<string, string> = {
 const ERROR_FIX: Record<string, string> = {
   BAD_REQUEST: 'check the arguments against the tool schema',
   BUNDLE_NOT_FOUND: 'bundles are per node — list them with data_export({action:"list"}) on the node that holds it',
-  BUNDLE_ID_INVALID: 'a bundle id is lmb-<yyyymmdd>-<hhmmss>-<6 hex>, or received:<name> for a file in the transfer inbox',
-  BAD_BUNDLE_ID: 'a bundle id is lmb-<yyyymmdd>-<hhmmss>-<6 hex>, or received:<name> for a file in the transfer inbox',
+  BUNDLE_ID_INVALID: 'a bundle id is lmb-<yyyymmdd>-<hhmmss>-<6 hex> (from data_export({action:"list"})); received:<name> is accepted only by data_import plan/apply',
+  BAD_BUNDLE_ID: 'a bundle id is lmb-<yyyymmdd>-<hhmmss>-<6 hex> (from data_export({action:"list"})); received:<name> is accepted only by data_import plan/apply',
   BAD_DATASET_ID: 'check the id: data_export({action:"inventory"}) lists this node\'s datasets',
   UNSUPPORTED_FIELD: 'this build of Core does not take that field — check the tool schema',
   BUNDLE_CORRUPT: 'the file failed verification — re-fetch it, or re-export on the source node',
@@ -386,10 +388,12 @@ const ERROR_FIX: Record<string, string> = {
   RECEIVED_NOT_FOUND: 'the file must be in this node\'s transfer inbox (transfer_send_file puts it there)',
   RECEIVED_NAME_INVALID: 'a received name is [A-Za-z0-9._-]{1,128}, no path',
   ORIGIN_ONLINE: 'the origin is online — write there instead; a takeover is only for an origin that is gone',
+  OWNER_ONLINE: 'another online node already owns it — write there (pass it as node); a second owner would split the brain',
+  NOT_SUPPORTED: 'a partial replica is a read-through cache, not a copy — restore from a bundle on the origin instead',
   ROSTER_UNAVAILABLE: 'the fleet roster could not be read — retry once the hub is reachable; force:true ONLY if you know the origin is gone',
   NOT_A_REPLICA: 'this node already owns that dataset — nothing to take over',
   NOT_FOUND: 'check the id: data_export({action:"inventory"}) lists this node\'s datasets',
-  CONFIRM_REQUIRED: 'run action:"plan" first, then repeat action:"apply" with confirm:true',
+  CONFIRM_REQUIRED: 'run action:"plan" first, then repeat action:"apply" with confirm:true (a delete: repeat it with confirm:true)',
 };
 
 /** `CODE: message` plus the next step — the text of every failed call. */
@@ -399,8 +403,15 @@ export function renderToolError(code: string, message: string, fix: string | und
 
 // ── data_export ─────────────────────────────────────────────────────────────
 
+/** `, node:"<id>"` for a copy-paste call hint, so a follow-up runs on the node that answered
+ *  — never on the connector's default node. Empty when the node is unknown. */
+function nodeArg(node: string | undefined): string {
+  return node ? `, node:"${clamp(node, HOST_CHARS)}"` : '';
+}
+
 export function renderInventory(inv: InventoryView): string {
   const node = inv.node ?? ({} as InventoryView['node']);
+  const at = nodeArg(node.nodeId);
   const out: string[] = [
     `Data inventory — ${host({ hostname: node.hostname, machineId: node.nodeId })} · ${node.mode ?? '—'}` +
       ` · cluster ${node.cluster ? clamp(node.cluster, HOST_CHARS) : 'none'}`,
@@ -430,7 +441,7 @@ export function renderInventory(inv: InventoryView): string {
   if (orphanedReplicas.length) {
     out.push('', 'Replicas whose origin is not confirmed online (take over ONLY if that origin is gone for good):');
     for (const d of orphanedReplicas.slice(0, MAX_HINT_LINES)) {
-      out.push(`  data_import({action:"takeover", dataset:"${clamp(d.id, ID_CHARS)}"${d.originOnline === null ? ', force:true' : ''}})` +
+      out.push(`  data_import({action:"takeover", dataset:"${clamp(d.id, ID_CHARS)}"${at}${d.originOnline === null ? ', force:true' : ''}})` +
         (d.originOnline === null ? '   (roster unreadable — force only if you KNOW it is gone)' : ''));
     }
     if (orphanedReplicas.length > MAX_HINT_LINES) out.push(`  … +${orphanedReplicas.length - MAX_HINT_LINES} more`);
@@ -478,7 +489,7 @@ export function renderInventory(inv: InventoryView): string {
   }
   const b = inv.bundles;
   out.push('', `Stored bundles: ${num(b?.count)}${b?.newest ? ` (newest ${clamp(b.newest, ID_CHARS)})` : ''}. ` +
-    'Create one: data_export({action:"create"}); list: data_export({action:"list"}).');
+    `Create one: data_export({action:"create"${at}}); list: data_export({action:"list"${at}}).`);
   return out.join('\n');
 }
 
@@ -535,9 +546,10 @@ function sectionMix(sections: readonly { kind?: string }[] | undefined): string 
   return `${n('dataset')} dataset · ${n('config')} config · ${n('files')} files`;
 }
 
-export function renderList(bundles: readonly StoredBundleView[]): string {
+export function renderList(bundles: readonly StoredBundleView[], opts: { node?: string } = {}): string {
+  const at = nodeArg(opts.node);
   const list = Array.isArray(bundles) ? bundles : [];
-  if (!list.length) return 'No stored bundles on this node. Create one: data_export({action:"create"}).';
+  if (!list.length) return `No stored bundles on this node. Create one: data_export({action:"create"${at}}).`;
   const out = [`Stored bundles on this node — ${list.length}, newest first`, '',
     '| Bundle | Created | Size | Source | Sections | Note |', '|---|---|---|---|---|---|'];
   const t = bounded(list, (b) => {
@@ -553,7 +565,7 @@ export function renderList(bundles: readonly StoredBundleView[]): string {
   }, MAX_LIST_ROWS, LIST_TABLE_BYTES);
   out.push(...t.lines);
   if (t.omitted) out.push(`… ${t.omitted} more bundle(s) not shown (oldest).`);
-  out.push('', 'Inspect: data_export({action:"inspect", bundle}) · import: data_import({action:"plan", bundle}).');
+  out.push('', `Inspect: data_export({action:"inspect", bundle${at}}) · import: data_import({action:"plan", bundle${at}}).`);
   return out.join('\n');
 }
 
@@ -631,7 +643,7 @@ function detailRank(s: DatasetSectionPlan): number {
   return 3;
 }
 
-export function renderImport(r: ImportView, opts: { mode: ImportRenderMode }): string {
+export function renderImport(r: ImportView, opts: { mode: ImportRenderMode; node?: string; force?: boolean }): string {
   const mode = opts.mode;
   const out: string[] = [];
   const what = `${clamp(r.bundleId, ID_CHARS)} · policy ${clamp(r.policy, 16)}`;
@@ -682,8 +694,8 @@ export function renderImport(r: ImportView, opts: { mode: ImportRenderMode }): s
   if (mode === 'apply') {
     out.push('Import never deletes. Synced datasets reach peers on change-notify or the next reconcile.');
   } else if (mode === 'plan') {
-    out.push(`To apply: data_import({action:"apply", bundle:"${clamp(r.bundleId, ID_CHARS)}"` +
-      `${r.policy && r.policy !== 'merge' ? `, policy:"${clamp(r.policy, 16)}"` : ''}, confirm:true}) ` +
+    out.push(`To apply: data_import({action:"apply", bundle:"${clamp(r.bundleId, ID_CHARS)}"${nodeArg(opts.node)}` +
+      `${r.policy && r.policy !== 'merge' ? `, policy:"${clamp(r.policy, 16)}"` : ''}${opts.force ? ', force:true' : ''}, confirm:true}) ` +
       'with the same sections / datasets / takeOwnership.');
   } else {
     out.push(UNCONFIRMED_TAIL);
@@ -696,18 +708,21 @@ export function renderReceived(name: string, r: Pick<StoredImportResult, 'bundle
     `Use bundle:"${clamp(r.bundleId, ID_CHARS)}" from now on — repeating received:<name> stores another copy.`;
 }
 
-export function renderFetch(r: FetchView): string {
+export function renderFetch(r: FetchView, opts: { node?: string } = {}): string {
   const m = r.manifest;
   const src = m?.source;
   const out = [
-    `Fetched ${clamp(r.sourceBundleId, ID_CHARS)} from ${clamp(r.fromNode, HOST_CHARS)} — stored here as ${clamp(r.bundleId, ID_CHARS)} ` +
-      `(${num(r.chunks)} chunk(s), ${size(r.sizeBytes)}, sha256 ${shortHash(r.sha256)}, verified).`,
+    r.reused
+      ? `Already fetched: ${clamp(r.sourceBundleId, ID_CHARS)} from ${clamp(r.fromNode, HOST_CHARS)} is stored here as ${clamp(r.bundleId, ID_CHARS)} ` +
+        `(${size(r.sizeBytes)}, sha256 ${shortHash(r.sha256)}) — nothing re-fetched.`
+      : `Fetched ${clamp(r.sourceBundleId, ID_CHARS)} from ${clamp(r.fromNode, HOST_CHARS)} — stored here as ${clamp(r.bundleId, ID_CHARS)} ` +
+        `(${num(r.chunks)} chunk(s), ${size(r.sizeBytes)}, sha256 ${shortHash(r.sha256)}, verified).`,
   ];
   if (src) {
     out.push(`Source: ${host({ hostname: src.hostname, machineId: src.nodeId })} · ${src.mode} · created ${when(m.createdAt)} · ` +
       `${sectionMix(m.sections)}${m.note ? ` · note "${clamp(m.note, 80)}"` : ''}`);
   }
-  out.push(`Next: data_import({action:"plan", bundle:"${clamp(r.bundleId, ID_CHARS)}"})`);
+  out.push(`Next: data_import({action:"plan", bundle:"${clamp(r.bundleId, ID_CHARS)}"${nodeArg(opts.node)}})`);
   return out.join('\n');
 }
 
@@ -771,14 +786,19 @@ async function handleDataExport(args: Record<string, unknown>): Promise<McpToolR
       case 'create':
         return ok(renderCreate(unwrap<ExportView>(await transport.post('/data/bundles', exportBody(args)), 'create')));
       case 'list':
-        return ok(renderList(asBundleList(unwrap(await transport.get('/data/bundles', READ_TIMEOUT_MS), 'list'))));
+        return ok(renderList(asBundleList(unwrap(await transport.get('/data/bundles', READ_TIMEOUT_MS), 'list')), { node: str(args.node) }));
       case 'inspect': {
         const id = requireBundle(args, 'inspect');
         return ok(renderInspect(asInspect(unwrap(await transport.get(`/data/bundles/${seg(id, 'bundle')}`, READ_TIMEOUT_MS), 'inspect'), id)));
       }
       case 'delete': {
         const id = requireBundle(args, 'delete');
-        return ok(renderDelete(unwrap(await transport.del(`/data/bundles/${seg(id, 'bundle')}`), 'delete')));
+        const at = `/data/bundles/${seg(id, 'bundle')}`;
+        // A bundle is a restore point (replication is not backup): a delete is never implicit.
+        if (!boolArg(args.confirm)) {
+          throw new CodedError('CONFIRM_REQUIRED', `deleting ${clamp(id, ID_CHARS)} removes a restore point for good — repeat with confirm:true to delete it`);
+        }
+        return ok(renderDelete(unwrap(await transport.del(at), 'delete')));
       }
       default:
         return ok(renderInventory(unwrap<InventoryView>(await transport.get('/data/bundles/inventory', INVENTORY_TIMEOUT_MS), 'inventory')));
@@ -806,7 +826,7 @@ async function handleDataImport(args: Record<string, unknown>): Promise<McpToolR
       const fromNode = str(args.fromNode);
       if (!fromNode) throw bad('fromNode is required for fetch (the node holding the bundle — list_nodes)');
       const bundleId = requireBundle(args, 'fetch');
-      return ok(renderFetch(unwrap<FetchView>(await transport.post('/data/bundles/fetch', { fromNode, bundleId }), 'fetch')));
+      return ok(renderFetch(unwrap<FetchView>(await transport.post('/data/bundles/fetch', { fromNode, bundleId }), 'fetch'), { node: str(args.node) }));
     }
 
     let bundle = bundleArg(args);
@@ -828,7 +848,7 @@ async function handleDataImport(args: Record<string, unknown>): Promise<McpToolR
     } else {
       // apply WITHOUT confirm:true never reaches the apply route: it plans, and says so.
       const res = unwrap<ImportView>(await transport.post(`/data/bundles/${seg(bundle, 'bundle')}/plan`, body), 'plan');
-      out.push(renderImport(res, { mode: action === 'apply' ? 'unconfirmed' : 'plan' }));
+      out.push(renderImport(res, { mode: action === 'apply' ? 'unconfirmed' : 'plan', node: str(args.node), force: boolArg(args.force) }));
     }
     return ok(out.join('\n'));
   } catch (e) {

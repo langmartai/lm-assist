@@ -318,10 +318,12 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   data_revoke_key: 'write',
   data_sync: 'write',
   data_sync_status: 'read',
-  // data bundles (spec 2026-09-23): export reads the data service and writes or deletes
-  // bundle FILES on the node, never data; import writes data and takeover changes a
-  // dataset's owner, so data_import is admin (approval + audit)
-  data_export: 'read',
+  // data bundles (spec 2026-09-23): worst action wins. data_export's create writes a bundle
+  // (and retention prunes the oldest) and its delete removes a restore point — bundles are
+  // the ONLY restore points — so it is 'write', never an auto-approved read (delete also
+  // needs confirm:true). import writes data and takeover changes a dataset's owner, so
+  // data_import is admin (approval + audit)
+  data_export: 'write',
   data_import: 'admin',
   // worker role
   set_role: 'write',

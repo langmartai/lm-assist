@@ -249,20 +249,24 @@ matched BEFORE the generic `/data/:dataset/*` routes, and `bundles` is a reserve
 | POST | `/data/bundles` | Create an export `{sections?, datasets?, includeReplicas?, includeKnowledge?, includeClaudeMemory?, note?}` (default: owned datasets + config). Synchronous. Returns `{bundleId, path, sizeBytes, sha256, sections, totals, excluded, warnings, pruned, next}` |
 | GET | `/data/bundles/:id` | Inspect: the manifest (fast read, no integrity check) + `imported?` |
 | GET | `/data/bundles/:id/chunk?offset=&length=` | `{offset, length, total, dataB64, done}`; `length` ≤ 512 KiB so relayed callers stay under the relay limits |
-| GET | `/data/bundles/:id/download` | Raw `application/gzip` attachment, for direct (non-relayed) callers |
-| DELETE | `/data/bundles/:id` | Delete a stored bundle (and its import sidecar) |
+| GET | `/data/bundles/:id/download` | Raw `application/gzip` attachment, for direct (non-relayed) callers only — a hub-relayed caller gets `DOWNLOAD_NOT_RELAYABLE` and must use `/chunk` |
+| DELETE | `/data/bundles/:id` | Delete a stored bundle (and its import sidecar). The MCP `data_export` delete requires `confirm: true` |
 | POST | `/data/bundles/upload` | Chunked upload `{uploadId?, index, total, name?, dataB64, sha256?}` — ≤ 700 KB base64 per chunk, idempotent per `(uploadId, index)`; chunk 0 without `uploadId` mints one; the last chunk verifies and stores the file under a NEW bundleId. Partial uploads are swept after 1 h |
-| POST | `/data/bundles/fetch` | `{fromNode, bundleId}` — pull a peer's stored bundle over the hub proxy chunk by chunk, verify it, store it locally |
+| POST | `/data/bundles/fetch` | `{fromNode, bundleId}` — pull a peer's stored bundle over the hub proxy chunk by chunk, verify it, store it locally. Idempotent: a bundle already fetched from that node is returned with `reused: true` |
 | POST | `/data/bundles/received/:name` | Import one file from the `transfer_send_file` inbox (`~/.lm-assist/received/`); `name` matches `^[A-Za-z0-9._-]{1,128}$` |
 | POST | `/data/bundles/:id/plan` | Dry run `{policy?: merge\|add-missing\|replace, sections?, datasets?, takeOwnership?, force?}` → per section: `action`, counts (`add, update, skipOlder, skipIdentical, skipExists, tooLarge, neutralized, …`), ≤ 10 sample ids per bucket, `refused{code, reason}`, warnings |
 | POST | `/data/bundles/:id/apply` | Same body **plus `confirm: true`** (else `CONFIRM_REQUIRED`); returns the plan shape with `applied` counts |
-| POST | `/data/datasets/:id/takeover` | `{force?}` — promote a local replica to owner. Refused `NOT_A_REPLICA`, `ORIGIN_ONLINE` (force never overrides), `ROSTER_UNAVAILABLE` (unless `force`) |
+| POST | `/data/datasets/:id/takeover` | `{force?}` — promote a local replica to owner. Refused `NOT_A_REPLICA`, `NOT_SUPPORTED` (a partial replica), `ORIGIN_ONLINE` and `OWNER_ONLINE` (another online node already owns it; force never overrides either), `ROSTER_UNAVAILABLE` (unless `force`) |
 
-Errors carry `error.code`: `BUNDLE_NOT_FOUND`, `BUNDLE_ID_INVALID`, `BUNDLE_CORRUPT` (names the failed
-check), `BUNDLE_FORMAT`, `BUNDLE_TOO_LARGE`, `DISK_LOW` (with `freeBytes`/`requiredBytes`),
-`EXPORT_INCOMPLETE`, `INVALID_RANGE`, `UPLOAD_*`, `RECEIVED_*`, `FETCH_FAILED`, `CONFIRM_REQUIRED`,
-`BAD_REQUEST`. Per-dataset refusals inside a plan: `REPLICA_READ_ONLY`, `OWNER_ONLINE`,
-`ORIGIN_ONLINE`, `ROSTER_UNAVAILABLE`. MCP: `data_export` / `data_import` (see the topic file). The
+Errors carry `error.code`: `BUNDLE_NOT_FOUND`, `BUNDLE_ID_INVALID` (a malformed `:id` or fetch
+`bundleId`), `BUNDLE_CORRUPT` (names the failed check), `BUNDLE_FORMAT`, `BUNDLE_TOO_LARGE`,
+`CHUNK_TOO_LARGE`, `DISK_LOW` (with `freeBytes`/`requiredBytes`), `EXPORT_INCOMPLETE`,
+`EXPORT_FAILED`, `INVALID_RANGE`, `UPLOAD_*`, `RECEIVED_*`, `FETCH_FAILED`, `CONFIRM_REQUIRED`,
+`DOWNLOAD_NOT_RELAYABLE`, `UNSUPPORTED_FIELD`, `FORBIDDEN` (e.g. a fabric peer calling fetch),
+`BAD_DATASET_ID`, `NOT_A_REPLICA`, `NOT_SUPPORTED`, `ORIGIN_ONLINE`, `OWNER_ONLINE`,
+`ROSTER_UNAVAILABLE`, `TAKEOVER_FAILED`, `BAD_REQUEST`. Per-dataset refusals inside a plan:
+`REPLICA_READ_ONLY`, `OWNER_ONLINE`, `ORIGIN_ONLINE`, `ROSTER_UNAVAILABLE`, `NOT_SUPPORTED`,
+`IMPORT_FAILED` (stopped part-way; `applied` counts what was written). MCP: `data_export` / `data_import` (see the topic file). The
 built-in scheduled job `data-snapshot` (disabled by default) runs the default export daily:
 `PUT /scheduler/jobs/data-snapshot {"enabled": true}`.
 

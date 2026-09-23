@@ -129,7 +129,7 @@ test('data_export: every action is accepted by the real routes with the options 
     includeKnowledge: true, includeClaudeMemory: '1', note: 'before the move',
   });
   assert.match(await expectOk('data_export', { action: 'inspect', bundle: ID }), /src-host/);
-  assert.match(await expectOk('data_export', { action: 'delete', bundle: ID }), /Deleted/);
+  assert.match(await expectOk('data_export', { action: 'delete', bundle: ID, confirm: true }), /Deleted/);
   assert.deepEqual(calls, [
     ['inventory'],
     ['listBundles'],
@@ -188,7 +188,7 @@ test('a malformed id is refused by the route with a code the tool explains', asy
   use();
   const r = await run('data_export', { action: 'inspect', bundle: 'not-a-bundle' });
   assert.ok(r.isError);
-  assert.match(text(r), /BAD_BUNDLE_ID/);
+  assert.match(text(r), /BUNDLE_ID_INVALID/);
   assert.match(text(r), /→ a bundle id is lmb-/);
 });
 

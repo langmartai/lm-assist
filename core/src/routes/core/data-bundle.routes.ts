@@ -140,7 +140,7 @@ function bundleIdParam(req: ParsedRequest): string {
   const hint = id.startsWith('received:')
     ? ` — to import a file from the inbox, POST /data/bundles/received/${id.slice('received:'.length)} first and use the bundleId it returns`
     : '';
-  throw new RouteRefusal('BAD_BUNDLE_ID', `invalid bundle id ${JSON.stringify(id)} — expected lmb-<yyyymmdd>-<hhmmss>-<6 hex>${hint}`);
+  throw new RouteRefusal('BUNDLE_ID_INVALID', `invalid bundle id ${JSON.stringify(id)} — expected lmb-<yyyymmdd>-<hhmmss>-<6 hex>${hint}`);
 }
 
 /**
@@ -289,7 +289,7 @@ export function createDataBundleRoutes(_ctx: RouteContext, deps: DataBundleRoute
       if (!fromNode) throw new RouteRefusal('BAD_REQUEST', 'fromNode (the node holding the bundle) is required');
       const bundleId = typeof b.bundleId === 'string' ? b.bundleId : '';
       if (!isBundleId(bundleId)) {
-        throw new RouteRefusal('BAD_BUNDLE_ID', `invalid bundleId ${JSON.stringify(b.bundleId ?? null)} — expected lmb-<yyyymmdd>-<hhmmss>-<6 hex>`);
+        throw new RouteRefusal('BUNDLE_ID_INVALID', `invalid bundleId ${JSON.stringify(b.bundleId ?? null)} — expected lmb-<yyyymmdd>-<hhmmss>-<6 hex>`);
       }
       return wrapResponse(await svc().fetchFromPeer(fromNode, bundleId), start);
     }),

@@ -81,8 +81,16 @@ from a caller). No tar, so no member paths to traverse. Inspect one with
 - Plan, apply, upload, fetch and received-import verify the end line and every section hash; a
   damaged file is refused `BUNDLE_CORRUPT` naming the failed check (`end-hash`,
   `section-hash:dataset:backlog`, …). List and inspect read the manifest only (fast, unverified).
-- Limits: 16 MiB per line, 1 GiB uncompressed (`BUNDLE_TOO_LARGE`); export refuses `DISK_LOW`
-  below `max(512 MB, 3 × estimated size)` free.
+- Limits: 16 MiB per line, 1 GiB uncompressed (`BUNDLE_TOO_LARGE`, manifest and end line
+  included — the writer refuses what the reader could not read back). Plan/apply also refuse
+  `BUNDLE_TOO_LARGE` (check `heap`) when the declared size × 3 would not fit in the heap left.
+  Export refuses `DISK_LOW` below `max(512 MB, 3 × estimated size)` free; storing an incoming
+  bundle (upload / received / fetch) needs `2 × size + 16 MiB`. An upload counts its stored
+  bytes toward the 1 GiB cap and checks free space on every new part.
+- Retention never deletes the bundle it was pruning FOR (the one just written or stored), even
+  when ids collide in one second or the clock stepped back. A fetch of a bundle already fetched
+  from the same node returns that copy (`reused`) — a retry after a relay timeout stores no
+  duplicate.
 - Written `0600` in a `0700` dir. **No encryption at rest** — a bundle holds private user data
   unredacted. Treat it like the data dir itself.
 - Retention: exports and imports share the dir; the newest 20 are kept (`bundleRetention` in
@@ -124,7 +132,8 @@ from the bundle are untouched.
 | `replace` | write verbatim | write as a **new version** | new version unless identical content |
 
 *Verbatim* keeps `version`, timestamps and `deleted`, and clears `origin` (the record becomes
-locally owned). *New version* = `max(local, bundle) + 1` with `updatedAt = now`, so the restored
+locally owned); into a SYNCED dataset the write is stamped `updatedAt = now` so replicas'
+watermark pulls see it (version/createdAt/deleted stay verbatim). *New version* = `max(local, bundle) + 1` with `updatedAt = now`, so the restored
 state out-LWWs every replica — that is what makes `replace` a rollback.
 
 Ownership, per dataset (`bundleOwner` = the bundle descriptor's `origin.machineId ?? ownerNode`):
@@ -134,19 +143,33 @@ Ownership, per dataset (`bundleOwner` = the bundle descriptor's `origin.machineI
 | owned here | import per policy; warning `foreign-owner` when `bundleOwner` is another node |
 | a replica here | refused `REPLICA_READ_ONLY` — import on the origin, or `takeOwnership: true` (runs the guarded takeover first) |
 | absent, `syncMode: none` | created from the bundle descriptor, then imported |
-| absent, synced, `bundleOwner` is this node or NOT online | created OWNED (`owner-offline` warning) — the rebuilt-origin / new-fleet path |
+| absent, synced, `bundleOwner` is this node or NOT online | created OWNED (`owner-offline` / `rebuilt-origin` warning) — the rebuilt-origin / new-fleet path. When `bundleOwner` is another node, the new descriptor carries `supersedes: <bundleOwner>` so that node demotes itself if it returns |
 | absent, synced, `bundleOwner` online elsewhere | refused `OWNER_ONLINE` — it would mint a second owner |
-| roster unreadable (hub down) | refused `ROSTER_UNAVAILABLE` unless `force: true` |
+| any ONLINE peer's manifest already advertises it as its own | refused `OWNER_ONLINE` (takeover, takeOwnership and both create rows) — a node took it over while this replica still points at the old origin. A cluster-scoped dataset owned in another cluster does not count |
+| roster (or a peer manifest) unreadable | refused `ROSTER_UNAVAILABLE` unless `force: true` |
 
 - Missions whose status is `active|waiting|blocked` land `paused` with `binding`,
   `control.spawnInFlight` and `lastSpawnRequest` cleared (counted `neutralized`), so the
-  supervisor spawns nothing. A different source cluster adds a `cross-cluster` warning.
+  supervisor spawns nothing — but only when the record is actually WRITTEN: an identical copy
+  of a running mission is left alone, and a re-apply is a no-op. A write never lowers a
+  mission's `rev` (the durable history keys on it): it is rebased on the local rev with one
+  `bundle import` history entry. A different source cluster adds a `cross-cluster` warning.
 - Config: imported custom scheduled jobs land **disabled** (`importedDisabled` — a shell job
-  is code execution); builtin overrides, differing project-settings keys and `mcp-profile`
-  apply only under `replace`; `dataServiceEnabled`, `busEnabled` and `dataSyncViaFabric` are
-  never flipped. Machine-access profiles whose key path is absent get `key-missing`.
+  is code execution). Builtin overrides apply only under `replace`, only for config keys the
+  builtin already has (never `runIf`/`cwd`/`command`/`env`/`ids`/`roots` …), and NEVER arm a
+  job (enabled on / dryRun off stay a human's call). Secret-named keys are compared masked on
+  both sides and this node's values are kept on replace. Project settings compare against the
+  EFFECTIVE value (a missing key is its default); differing keys and `mcp-profile` apply only
+  under `replace`; the data-service / bus / fabric toggles and `missionRelayedSpawnEnabled` are
+  never flipped, `bundleRetention` is never lowered, and the write runs the same live side
+  effects as `PUT /project-settings`. `mcp-access` never removes a gate. Machine-access
+  profiles whose key path is absent get `key-missing`.
 - Files: `merge` behaves as `add-missing`; `replace` writes `<file>.bak-import-<ts>` first;
-  Claude memory lands only where `~/.claude/projects/<slug>` exists (`unknown-project`).
+  Claude memory lands only where `~/.claude/projects/<slug>` exists (`unknown-project`), never
+  into a dot-dir (the autosync `.sync-base/`), never a managed file (`MEMORY.md`, `_hosts.md`,
+  `_cross-project.md`), never a credential-shaped name (same list as memory/rule sync). A rule
+  this node already mirrors as `synced.<host>.<name>` is not re-imported as its own. A knowledge
+  import onto a node with an index MERGES `index.json` (imported docs indexed, `nextId` past them).
 - After an apply: one batched change-notify per dataset (peers pull promptly) and the tool /
   content overlay caches are invalidated.
 
@@ -167,6 +190,13 @@ counts local records that are strictly newer or missing there, and:
   `takeover <id> by <peer>: N local records not yet on <peer> — staying dual-owner until <peer> pulls them`
   in `status.errors`; the new owner pulls them next reconcile, then demotion completes.
 
+The new owner's pull from the node its `supersedes` names is a FULL pull (its own newer writes
+would otherwise hide the returning origin's partition-time writes below the watermark), and
+every record it adopts is re-stamped (`version+1`, `updatedAt = now`) so its own replicas get it.
+Two takeovers in opposite directions are ordered by the manifest's `supersedesAt`: the newer
+takeover keeps ownership, so both nodes never demote at once. A partial replica cannot be taken
+over (`NOT_SUPPORTED`). Reconcile is single-flight per process.
+
 Only an explicit `supersedes` marker naming THIS node demotes — timing never infers a takeover.
 
 ## Surfaces
@@ -178,7 +208,8 @@ Only an explicit `supersedes` marker naming THIS node demotes — timing never i
   relay); the work runs as the local principal. Full table:
   [api-endpoints](api-endpoints.md#data-bundles-export--import-backup).
 - **MCP** (category `data` → extended + admin profiles):
-  `data_export{action: inventory (default) | create | list | inspect | delete}` (scope `read`)
+  `data_export{action: inventory (default) | create | list | inspect | delete}` (scope `write` —
+  create prunes and delete removes restore points; `delete` needs `confirm: true`)
   and `data_import{action: plan | apply | fetch | takeover}` (scope `admin`). `bundle` is a
   bundleId or `received:<name>`; `apply` without `confirm: true` returns the plan and says so.
   Results are summaries and counts, never records.
@@ -230,8 +261,9 @@ arrive disabled; credentials are re-established the normal way.
 ## Traps
 
 - **Import each dataset on ONE node** — its intended origin — and let replication carry it.
-  The `OWNER_ONLINE` guard only knows the bundle's recorded owner: a second node importing the
-  same bundle before the first node's copy has replicated to it creates a second owner.
+  The `OWNER_ONLINE` guard asks the roster and every online peer's manifest, but a second node
+  importing the same bundle while the first node is offline (or before it advertises the
+  dataset) still creates a second owner.
 - Importing onto a node that holds a **replica** is refused; importing onto a node with no
   descriptor **creates an owner**. Neither is a bug: that is the single-writer rule.
 - `originOnline: null` in inventory means the roster is unavailable (hub down), NOT offline.
