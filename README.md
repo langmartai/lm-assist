@@ -43,7 +43,7 @@ Every door lands on the same Core service — the web dashboard, the MCP connect
 
 ### The MCP interface — the key entry
 
-Enrolling a node (`lm-assist login`) registers the hub's MCP server for Claude Code on that machine. For claude.ai you add the connector to your account once, either the plain `https://mcp.<domain>/mcp` URL by hand or a per-profile one from the node's MCP Tools page, and then click *Connect*. It then shows as *lm-assist langmart* under Connectors in the Claude app and at claude.ai. Claude runs in the cloud and your machines have no inbound ports, so the **hub relays** every MCP call over the node's own outbound WebSocket — that relay is what makes a claude.ai chat reach a session on any of your machines.
+Enrolling a node (`lm-assist login`) registers the hub's MCP server for Claude Code on that machine. For claude.ai you add the connector to your account once, either the plain `https://mcp.<domain>/mcp` URL by hand or a per-profile one from the node's MCP Tools page, and then click *Connect*. It then shows as *lm-assist langmart* (a per-profile one as *lm-assist langmart basic*) under Connectors in the Claude app and at claude.ai. Claude runs in the cloud and your machines have no inbound ports, so the **hub relays** every MCP call over the node's own outbound WebSocket — that relay is what makes a claude.ai chat reach a session on any of your machines.
 
 **One connector per profile:** the same hub also serves `https://mcp.<domain>/mcp/<profile>` for `basic`, `platform`, `extended` and `admin`. A conversation can therefore carry about 40 tools instead of 280+. Enable one per conversation ([how](./docs/mcp-connector.md#one-connector-per-profile)).
 

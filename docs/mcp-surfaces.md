@@ -124,10 +124,14 @@ accepted `constructor`, and a single POST took the node's whole MCP surface down
   - `logToolCall` records nothing about profiles, so this line is the only record of what a
     connector was actually served.
 
-🔴 **The byte-identity contract.** With no pin and node default `admin` (the shipped default),
-tools/list, the instructions, the result footer and bootstrap must be byte-identical to the
-build before pins existed. `getLmAssistInstructions()` called with no argument, or with a
-node-default `admin` resolution, must return exactly the old text.
+🔴 **The byte-identity contract.** With no pin and node default `admin` (the shipped default), a
+request is served exactly what the SAME build serves with the pin plumbing taken out: tools/list,
+the instructions, the result footer and bootstrap/guide are byte-identical to that. The pins must
+not change anything an unpinned `admin` client sees. It is a contract about the pin plumbing, not
+a freeze of the catalogue: a change that adds a tool changes tools/list for everyone, as it always
+has. One accepted exception, listed under every profile: the `mcp_profile` tool description (the
+`langmart` → `platform` rename and the node-default wording). `getLmAssistInstructions()` called
+with no argument, or with a node-default `admin` resolution, must return exactly the old text.
 - `result-origin.test.ts`, `fleet-identity.test.ts` and `session-start-routing.test.ts` pin this
   and must pass UNMODIFIED. If you had to edit one of them to get green, the contract broke.
 - A node whose operator narrowed the default (no pin, default `basic`) does get the
@@ -170,6 +174,15 @@ Nothing may treat a pinned connector as restricted.
 - The FLEET / CONNECTOR IDENTITY block that `bootstrap` returns stays profile-unaware. It is
   the same under every profile. The banner, `session_status`, the footer and bootstrap's
   closing line carry the profile.
+- `guide("connectors")` is the multi-connector playbook, so its identity block DOES name the
+  profile (`fleetIdentity(ep)`, with PROFILE ≠ FLEET). Whenever the profile is named — a pin
+  (an `admin` pin included), an unknown pin, or a narrowed node default — the `connectors` and
+  `cross-node` playbooks say that connectors on a DIFFERENT hub are other fleets and a same-hub
+  profile connector is the same fleet and not a failover (`PROFILE_AXIS_SWAPS`). This is keyed on
+  `shouldNameProfile`, not on the bootstrap view: an `admin` pin has no view.
+- Under a narrowed view, page 1's header and the guide index no longer claim ALL / the COMPLETE
+  set / EVERY use case (`NARROWED_SCOPE_SWAPS`). The static `bootstrap` tool description is left
+  alone, because tools/list must stay byte-identical.
 
 **The bootstrap gate key.** `gateKeyFor(conversationId, profile)` returns the bare conversation
 id, unless `isNarrowedProfile(profile.name)` is true, in which case it returns
@@ -184,7 +197,13 @@ the fleet-shared `mcp-bootstrap` dataset with no schema change.
   - It makes NO claude.ai call. It is a protected tool, listed under every profile, and reading
     claude.ai's connector list is a ~30 s stream.
   - Its `connectorsHint` says where that status lives. For claude.ai connector status per
-    profile, call `mcp_connectors {action:"list"}`.
+    profile, call `mcp_connectors {action:"list"}`. That tool is in category `claudeai`, which
+    only `admin` lists, and claude.ai and Claude Code only let the model call listed tools. So
+    under a profile that hides it (`connectorsHintFor`), the hint says so and names where it IS
+    listed: the unpinned or `admin` connector, or only an `admin`-pinned one (…/mcp/admin) when
+    the node default is narrowed too, or `GET /mcp/profile-connectors`. The `set` note on a
+    pinned connector follows the same rule. `mcp_connectors` itself stays unprotected: it is an
+    admin-scoped write.
 - `set` changes the node default ONLY. When called through a pinned connector, the reply says
   that this connector did not change and names the connector that has the requested profile.
 - A node-default change, from `mcp_profile set` or `POST /mcp-tools/profile`, calls

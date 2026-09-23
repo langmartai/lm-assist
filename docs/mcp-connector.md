@@ -85,19 +85,23 @@ Once a connector is connected, lm-assist keeps it up to date when the node holds
 browser session:
 
 1. **Status.** The MCP Tools page's *Profile → Connectors* table lists every claude.ai
-   connector whose URL points at this node's hub: one row per profile, plus the unpinned one.
-   Each row shows the connection state and tool count, read from
-   `/mcp/profile-connectors`, and has a *Delete* action.
+   connector whose URL points at this node's hub: one row per profile, plus the unpinned one,
+   plus any connector pinned to a profile this node does not know (it is served the node
+   default, and the row says so). Each row shows the connection state and tool count, read from
+   `/mcp/profile-connectors`, and how many duplicates share its URL. Each profile row has a
+   *Delete* action, which removes every connector on that URL; the unpinned row has none.
 2. **Upkeep as tools change.** When a plugin adds or removes tools, the node:
-   - clears claude.ai's cached tool list on **every** lm-assist connector for this hub;
+   - clears claude.ai's cached tool list on every lm-assist connector for this hub whose
+     profile lists a changed tool (a `basic` connector is left alone when a plugin changes);
    - forces the bootstrap refetch;
    - turns on account-level tool access and auto-approval for the new tools, on each connector
      only for the tools that connector's profile advertises.
 
    These used to be four manual steps. Every write to the account's tool-access map goes
-   through one queue, because claude.ai replaces the whole map on each write and two writers at
-   once would drop each other's changes. The upkeep is idempotent. On a node without a claude.ai
-   cookie it is deferred, not failed.
+   through one queue on this node, because claude.ai replaces the whole map on each write and
+   two writers at once would drop each other's changes. The queue does not reach across nodes:
+   two nodes that both hold a claude.ai cookie can still race each other. The upkeep is
+   idempotent. On a node without a claude.ai cookie it is deferred, not failed.
 
 ## One connector per profile
 
@@ -148,7 +152,8 @@ for.
 
 1. Create the connector, using any one of these:
    - *Create* on the profile's row under *MCP Tools → Profile → Connectors*, on any node of the
-     fleet;
+     fleet that holds a claude.ai session (the URL is the same on every node; a node without one
+     answers `CLAUDEAI_UNAVAILABLE`);
    - `mcp_connectors` with action `create` and the profile (it is a claude.ai tool, so only
      `admin` lists it);
    - `POST /mcp/profile-connectors {"profile": "basic"}`.
