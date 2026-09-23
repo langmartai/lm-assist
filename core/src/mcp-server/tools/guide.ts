@@ -8,7 +8,7 @@
 import type { McpToolResult } from '../configure';
 import { maxResultBytes } from '../result-cap';
 import { ok } from './_passthrough';
-import { fleetIdentity } from '../fleet-identity';
+import { fleetIdentity, shouldNameProfile } from '../fleet-identity';
 import type { AuthSnapshot } from '../../monitor/auth-monitor';
 import { describeCookieTtl } from '../../utils/claudeai-session';
 import type { ContentState } from '../registry/content-model';
@@ -918,7 +918,7 @@ export const INDEX_PREAMBLE_DEFAULT = [
 ].join('\n');
 
 function buildIndex(lookup?: ContentLookup | null, view?: BootstrapProfileView | null): string {
-  const preamble = mandateSwap(view)(lookup?.('guide.index')?.contentOverride ?? INDEX_PREAMBLE_DEFAULT);
+  const preamble = scopeSwap(view)(mandateSwap(view)(lookup?.('guide.index')?.contentOverride ?? INDEX_PREAMBLE_DEFAULT));
   const lines = [preamble, '## Topics'];
   for (const topic of Object.keys(GUIDES)) {
     const blurb = lookup?.(`guide.${topic}`)?.blurbOverride ?? BLURB[topic] ?? '';
@@ -1064,12 +1064,21 @@ export function bootstrapProfileView(profileName: string, source: ProfileSource 
 /** The profile this bootstrap/guide call is served under. That is the pin carried by the
  *  MCP call context (the HTTP `?profile=`, the stdio header lifted into the context by
  *  /mcp-call, or a pinned stdio process's own context), else the node default (the same
- *  cached read tools/list pays). The view carries the profile's SOURCE, because an unknown
- *  pin or no pin (both 'node-default') narrows the unpinned connector too. Never throws.
- *  On failure it returns null, which serves the full pre-profile text. */
-function viewForThisCall(): BootstrapProfileView | null {
+ *  cached read tools/list pays). Never throws: on failure it returns null, which serves the
+ *  full pre-profile text. */
+function profileForThisCall(): EffectiveProfile | null {
   try {
-    const ep = currentEffectiveProfile() ?? resolveEffectiveProfile(undefined);
+    return currentEffectiveProfile() ?? resolveEffectiveProfile(undefined);
+  } catch {
+    return null;
+  }
+}
+
+/** The view for a call's profile. It carries the profile's SOURCE, because an unknown pin or
+ *  no pin (both 'node-default') narrows the unpinned connector too. Never throws. */
+function viewFor(ep: EffectiveProfile | null): BootstrapProfileView | null {
+  if (!ep) return null;
+  try {
     return bootstrapProfileView(ep.name, ep.source);
   } catch {
     return null;
@@ -1122,6 +1131,74 @@ export const CLAUDEAI_MANDATE_SWAPS: ReadonlyArray<{ where: string; from: string
   },
 ];
 
+/** "Every other lm-assist connector is another fleet" — true across HUBS, false across
+ *  PROFILES: `lm-assist langmart basic` and `lm-assist langmart admin` reach the same nodes and
+ *  state, so falling back from one to the other on an error just repeats the error. Swapped in
+ *  whenever the call's profile is NAMED (shouldNameProfile: a pin — `admin` included — an
+ *  unknown pin, or a narrowed node default), which is exactly when the banner and
+ *  session_status add PROFILE ≠ FLEET. Keyed on the profile, NOT on the bootstrap view: an
+ *  `admin`-pinned connector hides nothing (no view) yet is one of several on its hub. With no
+ *  pin and node default `admin` nothing is swapped, so the unpinned text stays byte-identical.
+ *  Exact match, so an operator's content override is served untouched. A test checks that
+ *  every `from` is still in its default, so edit both together. */
+export const PROFILE_AXIS_SWAPS: ReadonlyArray<{ where: string; from: string; to: string }> = [
+  {
+    where: 'guide.connectors',
+    from: 'Other lm-assist connectors you may have are OTHER fleets —\nyou cannot reach their nodes from here, and a hostname may exist in more than one fleet.',
+    to: 'lm-assist connectors on a DIFFERENT hub are OTHER fleets —\nyou cannot reach their nodes from here, and a hostname may exist in more than one fleet. A connector on THIS\nhub with another profile (URL …/mcp/<profile>, or the unpinned …/mcp) reaches the SAME nodes and state with a\ndifferent tool list: it is NOT a failover (an error here recurs there); switch to it only for a tool this\nprofile does not list.',
+  },
+  {
+    where: 'guide.cross-node',
+    from: 'MULTIPLE lm-assist connectors? Each connector = a SEPARATE FLEET (a different hub); its `list_nodes` is its membership and nodes do NOT cross. See guide("connectors").',
+    to: 'MULTIPLE lm-assist connectors? Each HUB = a SEPARATE FLEET: a connector\'s `list_nodes` is its membership and nodes do NOT cross hubs. Connectors on the SAME hub with different profiles (…/mcp/<profile>) are ONE fleet with different tool lists — not a failover. See guide("connectors").',
+  },
+];
+
+/** The text transform for a call's profile: the PROFILE_AXIS_SWAPS when the profile is named,
+ *  else the identity (no pin + node default `admin` ⇒ the pre-profile text, byte for byte). */
+function profileAxisSwap(profile?: EffectiveProfile | null): (text: string) => string {
+  if (!shouldNameProfile(profile)) return (text) => text;
+  return (text) => {
+    let out = text;
+    for (const s of PROFILE_AXIS_SWAPS) out = out.split(s.from).join(s.to);
+    return out;
+  };
+}
+
+/** "ALL / the COMPLETE set / EVERY use case" is false once a profile leaves playbooks out, and
+ *  page 1 would contradict its own manifest, whose closing line lists them. Applied only under a
+ *  NARROWED view (no view ⇒ the pre-profile text, byte for byte). The static `bootstrap` tool
+ *  description is deliberately left alone: tools/list must stay byte-identical, and the
+ *  description is served before any profile is known. Exact match (an override is untouched);
+ *  a test checks every `from` against its default. */
+export const NARROWED_SCOPE_SWAPS: ReadonlyArray<{ where: string; from: string; to: string }> = [
+  {
+    where: 'bootstrap.header',
+    from: '# lm-assist — capability bootstrap (loading ALL use cases for this session)',
+    to: '# lm-assist — capability bootstrap (loading the use cases THIS connector\'s profile lists)',
+  },
+  {
+    where: 'bootstrap.header',
+    from: 'You called `bootstrap`. The COMPLETE set of lm-assist use-case playbooks is delivered here, but it is larger than one MCP result may be, so it is PAGED: this is page 1, it carries the MANIFEST (every topic + which page it is on) plus the first run of full playbooks,',
+    to: 'You called `bootstrap`. The playbooks for the tools THIS connector\'s profile lists are delivered here — NOT the complete set: the manifest\'s closing 🔒 line names what the profile left out and which connector carries it. It is larger than one MCP result may be, so it is PAGED: this is page 1, it carries the MANIFEST (every delivered topic + which page it is on) plus the first run of full playbooks,',
+  },
+  {
+    where: 'guide.index',
+    from: 'Call `bootstrap` (no args) ONCE to load EVERY use case into this session;',
+    to: 'Call `bootstrap` (no args) ONCE to load every use case THIS connector\'s profile lists (the closing 🔒 line below names what it leaves out);',
+  },
+];
+
+/** The NARROWED_SCOPE_SWAPS under a view, else the identity. */
+function scopeSwap(view?: BootstrapProfileView | null): (text: string) => string {
+  if (!view) return (text) => text;
+  return (text) => {
+    let out = text;
+    for (const s of NARROWED_SCOPE_SWAPS) out = out.split(s.from).join(s.to);
+    return out;
+  };
+}
+
 function withoutClaudeAiMandate(text: string, source: ProfileSource): string {
   let out = text;
   for (const s of CLAUDEAI_MANDATE_SWAPS) out = out.split(s.from).join(s.to[source]);
@@ -1152,13 +1229,20 @@ export function profileHiddenLine(view: BootstrapProfileView): string {
 
 /** Every DELIVERED section in order, with content-override applied. With a profile view,
  *  sections whose governed tools are all hidden are left out and the claude.ai-first
- *  mandate is swapped; with no view (admin / unpinned) this is the pre-profile list. */
-export function bootstrapEntries(lookup?: ContentLookup | null, view?: BootstrapProfileView | null): BootstrapEntry[] {
+ *  mandate is swapped; with no view (admin / unpinned) this is the pre-profile list.
+ *  `profile` (the call's effective profile) adds the profile-axis swap when the profile is
+ *  named — it is separate from `view` because an `admin` pin has no view. */
+export function bootstrapEntries(
+  lookup?: ContentLookup | null,
+  view?: BootstrapProfileView | null,
+  profile?: EffectiveProfile | null,
+): BootstrapEntry[] {
   const omit = new Set(view?.omitted ?? []);
-  const swap = mandateSwap(view);
+  const mandate = mandateSwap(view);
+  const axis = profileAxisSwap(profile);
   return BOOTSTRAP_SECTION_ORDER
     .filter((k) => GUIDES[k] && !omit.has(k))
-    .map((k) => ({ key: k, body: swap(lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k]) }));
+    .map((k) => ({ key: k, body: axis(mandate(lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k])) }));
 }
 
 /**
@@ -1247,7 +1331,7 @@ export function buildBootstrapPage(
   const footer = pageFooter(idx + 1, pages);
 
   if (idx === 0) {
-    const header = mandateSwap(parts.view)(lookup?.('bootstrap.header')?.contentOverride ?? BOOTSTRAP_HEADER_DEFAULT);
+    const header = scopeSwap(parts.view)(mandateSwap(parts.view)(lookup?.('bootstrap.header')?.contentOverride ?? BOOTSTRAP_HEADER_DEFAULT));
     const manifest = buildManifest(pages, lookup, parts.view);
     const head = [parts.identity, header, manifest].filter(Boolean).join('\n\n');
     const status = [parts.auth, parts.cluster].filter(Boolean).join('');
@@ -1327,9 +1411,10 @@ async function clusterBlock(): Promise<string> {
 }
 
 async function handleBootstrap(args: Record<string, unknown>): Promise<McpToolResult> {
-  const view = viewForThisCall();
+  const ep = profileForThisCall();
+  const view = viewFor(ep);
   const [lookup, auth, cluster] = await Promise.all([contentLookup(), authBlock(), clusterBlock()]);
-  const entries = bootstrapEntries(lookup, view);
+  const entries = bootstrapEntries(lookup, view, ep);
   const contentBudget = maxResultBytes() - BOOTSTRAP_WRAP_RESERVE;
   const pages = paginateEntries(entries, contentBudget);
   // page defaults to 1 and clamps into range — a session-start auto-call must never fail,
@@ -1342,16 +1427,22 @@ async function handleBootstrap(args: Record<string, unknown>): Promise<McpToolRe
 async function handleGuide(args: Record<string, unknown>): Promise<McpToolResult> {
   const raw = String((args.topic ?? args.use_case ?? args.tool ?? '') as string).trim().toLowerCase();
   const lookup = await contentLookup();
-  const view = viewForThisCall();
+  const ep = profileForThisCall();
+  const view = viewFor(ep);
   if (!raw || raw === 'index' || raw === 'help' || raw === 'list' || raw === 'topics') return ok(buildIndex(lookup, view));
   const key = (GUIDES[raw] ? raw : undefined) ?? ALIASES[raw];
   // Registry override ?? code default, resolved per call (live, no restart). Under a
   // profile that hides `list_claudeai_conversations`, the claude.ai-first mandate in the
-  // body is swapped for a pointer to the connector that lists it.
-  const swap = mandateSwap(view);
-  const topicBody = (k: string): string => swap(lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k]);
+  // body is swapped for a pointer to the connector that lists it; under a NAMED profile the
+  // "every other connector is another fleet" sentences get the profile axis.
+  const mandate = mandateSwap(view);
+  const axis = profileAxisSwap(ep);
+  const topicBody = (k: string): string => axis(mandate(lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k]));
   // `connectors` is dynamic: prepend the live fleet identity so the body names THIS hub/node/cluster.
-  const body = (k: string): string => (k === 'connectors' ? fleetIdentity() + '\n\n' + topicBody(k) : topicBody(k));
+  // Unlike bootstrap page 1's identity block (profile-unaware by ruling), this topic IS the
+  // multi-connector playbook, so its identity names the profile and adds PROFILE ≠ FLEET
+  // (fleetIdentity(ep) — byte-identical to fleetIdentity() for no pin + node default admin).
+  const body = (k: string): string => (k === 'connectors' ? fleetIdentity(ep) + '\n\n' + topicBody(k) : topicBody(k));
   if (key && GUIDES[key]) return ok(body(key));
   const sub = Object.keys(GUIDES).find((k) => k.includes(raw) || raw.includes(k));
   if (sub) return ok(body(sub));

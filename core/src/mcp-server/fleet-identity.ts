@@ -114,6 +114,8 @@ export function formatFleetIdentity(p: FleetIdentityParts, profile?: EffectivePr
  *   - session_status passes its effective profile;
  *   - bootstrap's identity block (guide.ts) deliberately passes none — it stays profile-unaware
  *     (spec §6; the closing "hidden by this profile" line carries the profile there);
+ *   - guide("connectors") passes the call's profile: that topic IS the multi-connector playbook,
+ *     so it must say PROFILE ≠ FLEET whenever the profile is named;
  *   - the mission controller's system prompt (mission-controller.ts) is not MCP text at all, and
  *     a caller's pin must not leak into it. */
 export function fleetIdentity(profile?: EffectiveProfile | null): string {

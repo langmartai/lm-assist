@@ -22,7 +22,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   GUIDE_HANDLERS, GUIDES_TEST_EXPORT, BOOTSTRAP_SECTION_ORDER, BOOTSTRAP_HEADER_DEFAULT,
-  INDEX_PREAMBLE_DEFAULT, BOOTSTRAP_WRAP_RESERVE, CLAUDEAI_MANDATE_SWAPS,
+  INDEX_PREAMBLE_DEFAULT, BOOTSTRAP_WRAP_RESERVE, CLAUDEAI_MANDATE_SWAPS, PROFILE_AXIS_SWAPS, NARROWED_SCOPE_SWAPS,
   bootstrapEntries, paginateEntries, buildBootstrapPage, bootstrapProfileView, sectionGovernedTools,
   profileHiddenLine, type BootstrapProfileView,
 } from '../mcp-server/tools/guide';
@@ -105,15 +105,121 @@ test('no pin + node default admin: the builder is byte-identical to the pre-prof
   }
 });
 
-test('the handlers serve identical bytes with no context, the node default, and an admin pin', async () => {
+/** Undo the profile-axis swaps, so a named-profile page can be compared with the unpinned one. */
+const withoutAxis = (s: string): string => {
+  let out = s;
+  for (const sw of PROFILE_AXIS_SWAPS) out = out.split(sw.to).join(sw.from);
+  return out;
+};
+
+test('the handlers serve identical bytes with no context and the node default; an admin pin differs ONLY by the profile axis', async () => {
   const plain = await bootstrapPages();
   assert.deepEqual(await under(resolveEffectiveProfile(undefined), bootstrapPages), plain);
-  assert.deepEqual(await under(ADMIN_PIN, bootstrapPages), plain);
+  // An admin PIN hides nothing (no view: every section, no 🔒 line) — but it is one of several
+  // connectors on its hub, so "every other connector is another fleet" must not be said.
+  const adminPinned = await under(ADMIN_PIN, bootstrapPages);
+  assert.notDeepEqual(adminPinned, plain, 'an admin pin gets the profile-axis text');
+  assert.deepEqual(adminPinned.map(withoutAxis), plain, 'and nothing else changes');
   assert.equal(manifestOf(plain[0]).entries.length, BOOTSTRAP_SECTION_ORDER.length, 'admin delivers every section');
+  assert.equal(manifestOf(adminPinned[0]).entries.length, BOOTSTRAP_SECTION_ORDER.length, 'an admin pin delivers every section');
   assert.doesNotMatch(plain.join('\n'), /hides these tool categories/);
   const index = await guideText({});
   assert.equal(await under(ADMIN_PIN, () => guideText({})), index);
   assert.doesNotMatch(index, /hides these tool categories/);
+});
+
+test('no pin + node default admin: passing the resolved profile explicitly is still byte-identical', () => {
+  const prev = process.env.MCP_RESULT_MAX_BYTES;
+  delete process.env.MCP_RESULT_MAX_BYTES;
+  try {
+    const nd = resolveEffectiveProfile(undefined);
+    assert.equal(nd.name, 'admin');
+    const entries = bootstrapEntries(null, bootstrapProfileView(nd.name, nd.source), nd);
+    const pages = paginateEntries(entries, maxResultBytes() - BOOTSTRAP_WRAP_RESERVE);
+    const text = pages
+      .map((_, i) => buildBootstrapPage(i + 1, { entries, pages, lookup: null, identity: 'ID', auth: '\nAUTH', cluster: '\nCL', view: null }))
+      .join('\n=====\n');
+    assert.equal(sha(text), PRE_PROFILE_SHA256);
+  } finally {
+    if (prev === undefined) delete process.env.MCP_RESULT_MAX_BYTES; else process.env.MCP_RESULT_MAX_BYTES = prev;
+  }
+});
+
+test('every profile-axis swap targets a sentence its default still contains (edit both together)', () => {
+  const sources: Record<string, string> = {
+    'guide.connectors': GUIDES_TEST_EXPORT.connectors,
+    'guide.cross-node': GUIDES_TEST_EXPORT['cross-node'],
+  };
+  for (const s of PROFILE_AXIS_SWAPS) {
+    assert.ok(sources[s.where]?.includes(s.from), `${s.where} no longer contains its one-fleet-per-connector sentence`);
+    assert.match(s.to, /not a failover/i, `${s.where}: the replacement says a same-hub profile connector is not a failover`);
+    assert.match(s.to, /mcp\/<profile>/, `${s.where}: and names the profile URL form`);
+  }
+  assert.deepEqual(PROFILE_AXIS_SWAPS.map((s) => s.where).sort(), Object.keys(sources).sort());
+});
+
+test('pinned basic, pinned admin and a narrowed default get the two-axis connectors text; no pin + admin keeps the old text', async () => {
+  const ONE_FLEET_PER_CONNECTOR = /Other lm-assist connectors you may have are OTHER fleets|Each connector = a SEPARATE FLEET/;
+  const TWO_AXES = /on a DIFFERENT hub are OTHER fleets[\s\S]*NOT a failover/;
+  // Unpinned + node default admin: the pre-profile sentences, and guide("connectors") leads with
+  // the profile-unaware identity.
+  const plainBoot = (await bootstrapPages()).join('\n');
+  assert.match(plainBoot, ONE_FLEET_PER_CONNECTOR);
+  assert.doesNotMatch(plainBoot, TWO_AXES);
+  const plainConn = await guideText({ topic: 'connectors' });
+  assert.ok(plainConn.startsWith(fleetIdentity() + '\n\n'), 'unpinned: the profile-unaware identity');
+  assert.doesNotMatch(plainConn, /PROFILE ≠ FLEET/);
+
+  const check = async (label: string, run: <T>(fn: () => Promise<T>) => Promise<T>, ep: EffectiveProfile) => {
+    const boot = (await run(bootstrapPages)).join('\n');
+    assert.doesNotMatch(boot, ONE_FLEET_PER_CONNECTOR, `${label}: bootstrap must not call every other connector another fleet`);
+    if (boot.includes(heading('connectors'))) assert.match(boot, TWO_AXES, `${label}: bootstrap connectors section`);
+    const conn = await run(() => guideText({ topic: 'connectors' }));
+    assert.ok(conn.startsWith(fleetIdentity(ep) + '\n\n'), `${label}: guide("connectors") leads with the profile-aware identity`);
+    assert.match(conn, /PROFILE ≠ FLEET/, `${label}: the identity says a same-hub profile connector is not a failover`);
+    assert.match(conn, TWO_AXES, `${label}: guide("connectors") body`);
+    assert.doesNotMatch(conn, ONE_FLEET_PER_CONNECTOR, label);
+    const cross = await run(() => guideText({ topic: 'cross-node' }));
+    assert.doesNotMatch(cross, ONE_FLEET_PER_CONNECTOR, `${label}: guide("cross-node")`);
+    assert.match(cross, /Each HUB = a SEPARATE FLEET/, `${label}: guide("cross-node")`);
+  };
+  await check('basic pin', (fn) => under(BASIC, fn), BASIC);
+  await check('admin pin', (fn) => under(ADMIN_PIN, fn), ADMIN_PIN);
+  setActiveProfile('basic', 'test');
+  try {
+    const nd = resolveEffectiveProfile(undefined);
+    assert.equal(nd.source, 'node-default');
+    await check('narrowed node default', (fn) => fn(), nd);
+  } finally {
+    setActiveProfile('admin', 'test');
+    _resetProfileCacheForTests();
+  }
+});
+
+test('every narrowed-scope swap targets a sentence its default still contains (edit both together)', () => {
+  const sources: Record<string, string> = {
+    'bootstrap.header': BOOTSTRAP_HEADER_DEFAULT,
+    'guide.index': INDEX_PREAMBLE_DEFAULT,
+  };
+  for (const s of NARROWED_SCOPE_SWAPS) {
+    assert.ok(sources[s.where]?.includes(s.from), `${s.where} no longer contains: ${s.from.slice(0, 60)}…`);
+    assert.doesNotMatch(s.to, /\bALL use cases|COMPLETE set of|EVERY use case/, `${s.where}: the replacement must not claim everything`);
+  }
+});
+
+test('a narrowed bootstrap never claims ALL / the COMPLETE set / EVERY use case; admin (and an admin pin) still does', async () => {
+  const CLAIMS_ALL = /loading ALL use cases|The COMPLETE set of lm-assist use-case playbooks|to load EVERY use case/;
+  assert.match((await bootstrapPages())[0], CLAIMS_ALL, 'unpinned admin keeps the pre-profile header');
+  assert.match(await guideText({}), CLAIMS_ALL, 'unpinned admin keeps the pre-profile index');
+  assert.match((await under(ADMIN_PIN, bootstrapPages))[0], CLAIMS_ALL, 'an admin pin delivers everything, so the claim holds');
+  const asNodeDefault = (p: EffectiveProfile): EffectiveProfile => ({ name: p.name, source: 'node-default' });
+  for (const p of [BASIC, EXTENDED, asNodeDefault(BASIC)]) {
+    const p1 = (await under(p, bootstrapPages))[0];
+    assert.doesNotMatch(p1, CLAIMS_ALL, `${p.name} (${p.source}): page 1 must not claim everything`);
+    assert.match(p1, /loading the use cases THIS connector's profile lists/, `${p.name} (${p.source}) header`);
+    assert.match(p1, /NOT the complete set/, `${p.name} (${p.source}) preamble`);
+    assert.doesNotMatch(await under(p, () => guideText({})), CLAIMS_ALL, `${p.name} (${p.source}): guide index`);
+  }
 });
 
 test('basic leaves out exactly the sections whose governed tools it hides ALL of', () => {
