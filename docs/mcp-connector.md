@@ -113,7 +113,7 @@ dozen. A narrower profile therefore saves context and improves tool choice.
 | Profile | Lists |
 |---|---|
 | `basic` | search, sessions, memory, backlog and `list_nodes`. The smallest surface that can still find things (about 40 tools) |
-| `platform` | `basic` + the LangMart platform plugin (`ext__langmart__*`). This profile was called `langmart`; it was renamed so that a connector would not be called "lm-assist langmart langmart". `langmart` is still accepted |
+| `platform` | `basic` + the LangMart platform plugin (`ext__langmart__*`, and `ext__langmart-design__*` from a node or peer still carrying the plugin's old name). This profile was called `langmart`; it was renamed so that a connector would not be called "lm-assist langmart langmart". `langmart` is still accepted |
 | `extended` | `basic` + missions, agents, workers, terminals, CCR, data, fleet, clusters, machine access, transfer, auth and GitHub. It leaves out claude.ai management, the service connectors, desktop, VM, container, backup, elevated, UI panes and plugins |
 | `admin` | everything, including every connector and plugin. The default |
 
