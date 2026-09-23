@@ -223,8 +223,12 @@ test('upload: input validation, unknown continuation, and the 1 h sweep', async 
   assert.ok(fs.existsSync(partial));
   const old = new Date(now - 2 * 60 * 60 * 1000);
   fs.utimesSync(partial, old, old);
-  assert.deepEqual(s.sweepUploads(), [r0.uploadId]);
+  const staleTmp = path.join(s.dir(), 'lmb-20260923-000000-abcdef.lmbundle.gz.tmp-1-deadbeef');
+  fs.writeFileSync(staleTmp, 'x');
+  fs.utimesSync(staleTmp, old, old);
+  assert.deepEqual(s.sweepUploads().sort(), [r0.uploadId, path.basename(staleTmp)].sort());
   assert.equal(fs.existsSync(partial), false);
+  assert.equal(fs.existsSync(staleTmp), false);
   await rejectsCode(s.uploadChunk({ uploadId: r0.uploadId, index: 1, total: 2, dataB64: 'AAAA' }), 'UPLOAD_NOT_FOUND');
 });
 

@@ -462,13 +462,26 @@ export class BundleStore {
     return next;
   }
 
-  /** Remove partial uploads and finished-upload receipts idle for longer than `maxAgeMs`. */
+  /**
+   * Remove partial uploads and finished-upload receipts idle for longer than `maxAgeMs`, plus
+   * tmp files a crashed write/assembly left in the store dir.
+   */
   sweepUploads(maxAgeMs: number = UPLOAD_STALE_MS): string[] {
-    const d = path.join(this.baseDir, '.uploads');
-    let names: string[];
-    try { names = fs.readdirSync(d); } catch { return []; }
     const cutoff = this.now() - maxAgeMs;
     const swept: string[] = [];
+    let top: string[] = [];
+    try { top = fs.readdirSync(this.baseDir); } catch { /* no store yet */ }
+    for (const n of top.filter((x) => /\.tmp(-|$)/.test(x))) {
+      const p = path.join(this.baseDir, n);
+      try {
+        if (fs.statSync(p).mtimeMs >= cutoff) continue;
+        fs.rmSync(p, { force: true });
+        swept.push(n);
+      } catch { /* raced */ }
+    }
+    const d = path.join(this.baseDir, '.uploads');
+    let names: string[];
+    try { names = fs.readdirSync(d); } catch { return swept; }
     for (const n of names) {
       const p = path.join(d, n);
       try {
