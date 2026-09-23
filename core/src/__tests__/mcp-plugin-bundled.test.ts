@@ -421,6 +421,77 @@ test('superseding is idempotent and does not fight a re-enable', () => {
     'an already-retired predecessor is not re-reported every boot');
 });
 
+/** Ship `langmart` (declaring the two hub-derived env names) as the successor of `langmart-design`. */
+function shipRenamed(e: Env): void {
+  const checksum = bundlePlugin(e, 'langmart', { env: ['LANGMART_API_BASE', 'LANGMART_API_KEY'] });
+  writeIndex(e, [{
+    name: 'langmart', version: '0.2.0', checksum,
+    manifestDigest: manifestDigest(JSON.parse(fs.readFileSync(path.join(e.src, 'langmart', 'mcp-plugin.json'), 'utf-8'))),
+    supersedes: ['langmart-design'],
+  } as any]);
+}
+const NO_HUB = { hubUrl: 'wss://hub.example.invalid', apiKey: '' }; // nothing derivable — never read the real hub.json
+
+test('an owner opt-out of the OLD name survives the rename: successor stays off and is never handed the hub key', () => {
+  const e = env();
+  bundlePlugin(e, 'langmart-design');
+  seed(e);
+  // What POST /mcp-plugins/<name>/disable records.
+  writeState('langmart-design', { enabled: false, revertedReason: 'disabled by the owner', bundledOptOut: true }, e.stateFile);
+
+  shipRenamed(e);
+  const results = seed(e);
+
+  const succ = readState('langmart', e.stateFile);
+  assert.equal(succ.enabled, false, 'the rename must not re-enable what the owner turned off');
+  assert.equal(succ.bundledOptOut, true);
+  assert.equal(succ.grants?.LANGMART_API_KEY, undefined, 'an opted-out plugin must not receive the hub key');
+  assert.equal(results.find((r) => r.name === 'langmart')!.enabled, false, 'no enable => no connector sync / auto-approve');
+  const pred = readState('langmart-design', e.stateFile);
+  assert.equal(pred.enabled, false);
+  assert.equal(pred.revertedReason, 'disabled by the owner', "the owner's own reason is kept");
+
+  // The owner later turns the successor on: that decision stands, and only then is the
+  // predecessor retired — still keeping the owner's reason.
+  writeState('langmart', { enabled: true, bundledOptOut: false, revertedReason: undefined }, e.stateFile);
+  seed(e);
+  assert.equal(readState('langmart', e.stateFile).enabled, true, 'the carry-over applies once, never over a later owner decision');
+  assert.equal(readState('langmart-design', e.stateFile).supersededBy, 'langmart');
+  assert.equal(readState('langmart-design', e.stateFile).revertedReason, 'disabled by the owner');
+});
+
+test('a successor that cannot be enabled does NOT retire its predecessor — never a node with neither', () => {
+  const e = env();
+  bundlePlugin(e, 'langmart-design');
+  seed(e);
+  assert.equal(readState('langmart-design', e.stateFile).enabled, true, 'precondition');
+
+  shipRenamed(e);
+  const results = seed(e, { hubConfig: NO_HUB });
+  assert.equal(readState('langmart', e.stateFile).enabled, false, 'grants not derivable => successor off');
+  assert.equal(readState('langmart-design', e.stateFile).enabled, true, 'so the predecessor must stay ON');
+  assert.equal(readState('langmart-design', e.stateFile).supersededBy, undefined);
+  assert.equal(results.find((r) => r.outcome === 'superseded'), undefined);
+
+  // Once the operator grants + enables the successor, the next boot retires the predecessor.
+  writeState('langmart', { enabled: true, grants: { LANGMART_API_BASE: 'https://api.example.invalid', LANGMART_API_KEY: 'k' } }, e.stateFile);
+  const later = seed(e, { hubConfig: NO_HUB });
+  assert.equal(readState('langmart-design', e.stateFile).enabled, false);
+  assert.equal(later.find((r) => r.name === 'langmart-design')!.outcome, 'superseded');
+});
+
+test('a dry run retires nothing and writes no successor state', () => {
+  const e = env();
+  bundlePlugin(e, 'langmart-design');
+  seed(e);
+  writeState('langmart-design', { enabled: false, revertedReason: 'disabled by the owner', bundledOptOut: true }, e.stateFile);
+  const before = fs.readFileSync(e.stateFile, 'utf8');
+
+  shipRenamed(e);
+  seed(e, { dryRun: true });
+  assert.equal(fs.readFileSync(e.stateFile, 'utf8'), before, '`plugins check` promises to write nothing');
+});
+
 test('superseding a plugin that was never installed is a no-op', () => {
   const e = env();
   const checksum = bundlePlugin(e, 'new-name');

@@ -28,6 +28,7 @@ import * as path from 'path';
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import { timingSafeEqual } from 'crypto';
 import { apiTokenFilePath } from '../auth/api-token';
+import { coreRuntimeFiles } from '../utils/core-runtime-files';
 import {
   ELEVATED_HOST,
   elevatedPort,
@@ -37,7 +38,19 @@ import {
   pidFilePath,
   DEFAULT_EXEC_TIMEOUT_MS,
   MAX_EXEC_TIMEOUT_MS,
+  buildShellCommandLine,
+  shellSpawn,
 } from './common';
+import {
+  CORE_LAUNCH_TASK,
+  coreRestartCommand,
+  decideWatchdog,
+  pidFileFacts,
+  probePort,
+  watchdogDisabled,
+  type WatchdogAction,
+  type WatchdogState,
+} from './watchdog';
 
 const SINCE = new Date().toISOString();
 
@@ -196,18 +209,17 @@ function runExec(body: ExecReq): Promise<ExecResult> {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) timeoutMs = DEFAULT_EXEC_TIMEOUT_MS;
     timeoutMs = Math.min(timeoutMs, MAX_EXEC_TIMEOUT_MS);
 
-    // Build the full command line for the chosen shell. args are appended to cmd.
-    const fullCmd = args.length ? `${cmd} ${args.join(' ')}` : cmd;
+    // cmd verbatim (it IS the shell line: pipes/redirects/pre-quoted `bash -c`
+    // work), args quoted PER-ARG for the shell (spaces and | > & inside an arg
+    // are data). See buildShellCommandLine.
+    const fullCmd = buildShellCommandLine(cmd, args, shell);
 
-    let child: ChildProcess;
-    if (shell === 'powershell') {
-      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', fullCmd], {
-        cwd,
-        windowsHide: true,
-      });
-    } else {
-      child = spawn('cmd.exe', ['/c', fullCmd], { cwd, windowsHide: true });
-    }
+    const how = shellSpawn(fullCmd, shell);
+    const child: ChildProcess = spawn(how.file, how.args, {
+      cwd,
+      windowsHide: true,
+      windowsVerbatimArguments: how.windowsVerbatimArguments,
+    });
 
     const start = Date.now();
     let stdout = '';
@@ -252,6 +264,89 @@ function runExec(body: ExecReq): Promise<ExecResult> {
   });
 }
 
+// ─── Core watchdog ─────────────────────────────────────────────────────────
+// Restarts the PROD Core when it dies with its pidfile still in place (see ./watchdog.ts for why
+// the pidfile, not a health check, is the signal). Windows-only by construction: this process
+// only exists on Windows.
+const WATCHDOG_PORT = ((): number => {
+  const v = Number(process.env.LM_CORE_WATCHDOG_PORT);
+  return Number.isInteger(v) && v > 0 && v < 65536 ? v : 3100;
+})();
+const WATCHDOG_INTERVAL_MS = Math.max(5_000, Number(process.env.LM_CORE_WATCHDOG_INTERVAL_MS) || 30_000);
+const WATCHDOG_PIDFILE = coreRuntimeFiles('prod').pid;
+const WATCHDOG_OFF_FLAG = path.join(elevatedDir(), 'watchdog.off');
+
+let wdState: WatchdogState = { failures: 0, lastStartAt: null };
+let wdLast: { action: WatchdogAction; at: string } | null = null;
+let wdLastStart: { at: string; exitCode: number | null; elapsedMs: number; timedOut: boolean; tail: string } | null = null;
+let wdBusy = false;
+
+/** Is the interactive-launch task registered? Asked only when a restart is due (rare). */
+function launchTaskRegistered(): boolean {
+  try {
+    execSync(`schtasks /query /tn ${CORE_LAUNCH_TASK}`, { stdio: 'ignore', windowsHide: true, timeout: 15_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function watchdogTick(): Promise<void> {
+  if (wdBusy) return; // a restart is still in flight
+  wdBusy = true;
+  try {
+    const disabled = watchdogDisabled(WATCHDOG_OFF_FLAG);
+    const portOpen = disabled ? false : await probePort(WATCHDOG_PORT);
+    const pf = pidFileFacts(WATCHDOG_PIDFILE);
+    const { action, next } = decideWatchdog(wdState, {
+      disabled, portOpen, pidFilePresent: pf.present, pidAlive: pf.alive, now: Date.now(),
+    });
+    wdState = next;
+    if (action !== wdLast?.action) {
+      log(`watchdog: ${action} (core :${WATCHDOG_PORT}, pidfile ${pf.present ? `pid ${pf.pid ?? '?'}` : 'absent'})`);
+    }
+    wdLast = { action, at: new Date().toISOString() };
+    if (action !== 'start') return;
+
+    const plan = coreRestartCommand(launchTaskRegistered());
+    if (!plan) {
+      const why = `no "${CORE_LAUNCH_TASK}" scheduled task is registered, and a start from this ELEVATED worker `
+        + 'would run Core elevated — register that task to let the watchdog restart Core';
+      wdLastStart = { at: new Date().toISOString(), exitCode: null, elapsedMs: 0, timedOut: false, tail: `not restarted: ${why}` };
+      audit({ kind: 'watchdog', skipped: 'no-launch-task', caller: 'watchdog', deadPid: pf.pid });
+      log(`watchdog: Core :${WATCHDOG_PORT} is gone (pid ${pf.pid ?? '?'} dead) but NOT restarting: ${why}`);
+      return;
+    }
+    const line = `${plan.cmd} ${plan.args.join(' ')}`;
+    log(`watchdog: Core :${WATCHDOG_PORT} is gone but its pidfile survived (pid ${pf.pid ?? '?'} dead) — running \`${line}\``);
+    const r = await runExec({ cmd: plan.cmd, args: plan.args, timeoutMs: 60_000 });
+    const tail = `${r.stdout}\n${r.stderr}`.trim().split(/\r?\n/).slice(-6).join(' | ').slice(-1500);
+    wdLastStart = { at: new Date().toISOString(), exitCode: r.exitCode, elapsedMs: r.elapsedMs, timedOut: !!r.timedOut, tail };
+    audit({
+      kind: 'watchdog', cmd: plan.cmd, args: plan.args, cwd: null, shell: 'cmd',
+      exitCode: r.exitCode, elapsedMs: r.elapsedMs, timedOut: !!r.timedOut, caller: 'watchdog', deadPid: pf.pid,
+    });
+    log(`watchdog: ${line} → exit ${r.exitCode} in ${r.elapsedMs}ms: ${tail}`);
+  } catch (e) {
+    log(`watchdog: tick failed: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    wdBusy = false;
+  }
+}
+
+function watchdogReport(): Record<string, unknown> {
+  return {
+    enabled: !watchdogDisabled(WATCHDOG_OFF_FLAG),
+    port: WATCHDOG_PORT,
+    intervalMs: WATCHDOG_INTERVAL_MS,
+    pidFile: WATCHDOG_PIDFILE,
+    offFlag: WATCHDOG_OFF_FLAG,
+    last: wdLast,
+    failures: wdState.failures,
+    lastStart: wdLastStart,
+  };
+}
+
 // ─── HTTP server ───────────────────────────────────────────────────────────
 /** Port resolution: env LM_ELEVATED_PORT wins, else a `--port N` argv, else default. */
 function resolvePort(): number {
@@ -280,6 +375,7 @@ const server = http.createServer(async (req, res) => {
       pid: process.pid,
       since: SINCE,
       port: PORT,
+      watchdog: watchdogReport(),
     });
     return;
   }
@@ -365,4 +461,9 @@ ensureDir();
 server.listen(PORT, ELEVATED_HOST, () => {
   writePidFile();
   log(`elevated worker listening on ${ELEVATED_HOST}:${PORT} pid=${process.pid} integrity=${detectIntegrity()}`);
+  // Started only once the port is ours: the worker is single-instance by that bind, so exactly
+  // one watchdog runs per machine.
+  setInterval(() => { void watchdogTick(); }, WATCHDOG_INTERVAL_MS);
+  log(`watchdog: watching Core :${WATCHDOG_PORT} every ${WATCHDOG_INTERVAL_MS / 1000}s via ${WATCHDOG_PIDFILE} `
+    + `(off: LM_CORE_WATCHDOG=0 or create ${WATCHDOG_OFF_FLAG})`);
 });

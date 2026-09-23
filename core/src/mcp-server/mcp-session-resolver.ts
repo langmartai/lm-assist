@@ -35,6 +35,7 @@ import type { WorkerRecord } from '../worker-role/types';
 import { liveness } from '../worker-role/model';
 import { getRecord } from '../worker-role/worker-store';
 import { loadPersistedMarkers, schedulePersistMarkers, type PersistedMarker } from './bootstrap-persist';
+import { fleetBootstrappedAt, publishBootstrapToFleet } from './bootstrap-registry';
 
 export interface Candidate { id: string; label?: string; updatedAt?: string }
 export interface CallerCandidates {
@@ -561,6 +562,12 @@ export function recordBootstrapped(c: CallerCandidates): { id?: string } {
   // Write-behind: debounced + async, never sync IO on the call path. Only the
   // bootstrapped markers change here — gate-refusal stamps schedule nothing.
   if (changed) schedulePersistMarkers(persistSnapshot);
+  // Fleet half: publish so a call routed to ANOTHER node is not re-refused
+  // (fire-and-forget; see bootstrap-registry.ts).
+  for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {
+    const at = reg.get(cand.id)?.bootstrappedAt;
+    if (at) publishBootstrapToFleet(cand.id, at);
+  }
   return { id: (c.precise ? c.claudeCode?.id : undefined) ?? c.claudeAi?.id ?? c.claudeCode?.id };
 }
 
@@ -666,6 +673,19 @@ export async function bootstrapGateCheck(name: string): Promise<McpToolResult | 
     const reg = registry();
     const v = evaluateBootstrapGate(name, topic, c, (id) => reg.get(id));
     if (!v.block) return null;
+    // Would-be first offence: ask the FLEET copy first — the conversation may have
+    // bootstrapped through another node. A local read of a synced dataset (no
+    // network on the call path), paid only here; a hit is merged into the local
+    // registry (+ persisted) so the next call is a Map lookup again.
+    for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {
+      const row = await fleetBootstrappedAt(cand.id);
+      if (row) {
+        const st = reg.get(cand.id) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
+        st.lastSeen = Date.now(); st.bootstrappedAt = st.bootstrappedAt ?? row.bootstrappedAt; reg.set(cand.id, st);
+        schedulePersistMarkers(persistSnapshot);
+        return null;
+      }
+    }
     // Stamp EVERY candidate so the retry finds the refusal even if heuristic
     // resolution flips to the other candidate between the two calls.
     for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {

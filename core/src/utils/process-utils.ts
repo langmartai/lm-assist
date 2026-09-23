@@ -249,16 +249,63 @@ export function getProcessCwd(pid: number): string | null {
 // ============================================================================
 
 /**
- * Check if a process is alive (cross-platform).
- * Uses process.kill(pid, 0) which works on all platforms.
+ * Pure: the process STATE letter from a `/proc/<pid>/stat` line (field 3, the
+ * first field after the parenthesised comm — which may itself contain spaces
+ * and parens, so split after the LAST ')'). null when unparseable.
  */
-export function isProcessAlive(pid: number): boolean {
+export function procStateFromStat(stat: string): string | null {
+  const rp = stat.lastIndexOf(')');
+  if (rp < 0) return null;
+  const st = stat.slice(rp + 1).trim().split(/\s+/)[0];
+  return st && /^[A-Za-z]$/.test(st) ? st : null;
+}
+
+/** Linux `/proc` states that mean the process is GONE as far as any caller of
+ *  isProcessAlive cares: Z = zombie (exited, awaiting reap — it will never run
+ *  again, never release the session it owned, and never answer a signal), X = dead. */
+const DEAD_PROC_STATES = new Set(['Z', 'X', 'x']);
+
+export interface ProcessAliveDeps {
+  /** signal-0 probe; throws when the pid does not exist / is not ours */
+  kill: (pid: number, sig: 0) => unknown;
+  /** `/proc/<pid>/stat` text, or null when unreadable (non-Linux, vanished pid) */
+  readStat: (pid: number) => string | null;
+}
+
+function readProcStat(pid: number): string | null {
+  if (process.platform !== 'linux') return null;
+  try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); } catch { return null; }
+}
+
+const DEFAULT_ALIVE_DEPS: ProcessAliveDeps = {
+  kill: (pid, sig) => process.kill(pid, sig),
+  readStat: readProcStat,
+};
+
+/**
+ * Check if a process is alive (cross-platform).
+ *
+ * Uses process.kill(pid, 0), which works on all platforms — but on Linux a
+ * signal-0 probe SUCCEEDS against a ZOMBIE: the pid entry survives until the
+ * parent reaps it, so a defunct `claude` read as "still running" forever.
+ * Measured 2026-09 (ccr_restart on node 117): the owner was `<defunct>`, the
+ * SIGTERM→SIGKILL ladder "never terminated" it, and the restart aborted with
+ * "NOT resuming over a live process" — against a process that could not
+ * possibly write another byte. So on Linux the probe is followed by a
+ * `/proc/<pid>/stat` state read, and Z/X count as DEAD. A pid that exists but
+ * whose stat cannot be read (EACCES, race) stays "alive" — the conservative
+ * side for every caller that gates a resume on it.
+ */
+export function isProcessAlive(pid: number, deps: ProcessAliveDeps = DEFAULT_ALIVE_DEPS): boolean {
   try {
-    process.kill(pid, 0);
-    return true;
+    deps.kill(pid, 0);
   } catch {
     return false;
   }
+  const stat = deps.readStat(pid);
+  if (stat === null) return true;
+  const state = procStateFromStat(stat);
+  return state === null ? true : !DEAD_PROC_STATES.has(state);
 }
 
 // ============================================================================

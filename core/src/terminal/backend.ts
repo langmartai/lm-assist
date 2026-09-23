@@ -142,7 +142,11 @@ export interface CcLaunchOpts {
   waitMs?: number;
   autoTrust?: boolean;
   skipPermissions?: boolean;
+  /** Optional: bypassPermissions | acceptEdits | plan | dontAsk | default (bypassPermissions ≡ skipPermissions). */
+  permissionMode?: string;
   remoteControl?: boolean | string;
+  /** Optional: --model. */
+  model?: string;
   /** Optional: reasoning effort passed as --effort (low|medium|high|xhigh|max). Invalid ⇒ dropped. */
   effort?: string;
   /** Optional: path to a file passed as --append-system-prompt-file (controller bootstrap). */

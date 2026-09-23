@@ -33,7 +33,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { payloadChecksum, manifestDigest } from './checksum';
 import { pluginsDir, pluginStateFile } from './paths';
-import { readState, writeState } from './state-store';
+import { readAllState, readState, writeState } from './state-store';
 import { validateManifest } from './manifest';
 import {
   bundledPluginsEnabled, MANIFEST_FILENAME, MAX_PLUGIN_NAME, SEGMENT_RE, type PluginManifest,
@@ -286,28 +286,51 @@ export function seedBundledPlugins(opts: SeedOptions = {}): SeedResult[] {
   const out: SeedResult[] = [];
 
   for (const entry of index.plugins) {
-    let seeded: SeedResult;
+    if (!opts.dryRun) carryOptOutAcrossRename(entry, stateFile);
     try {
-      seeded = seedOne(entry, sourceRoot, targetRoot, stateFile, opts);
+      out.push(seedOne(entry, sourceRoot, targetRoot, stateFile, opts));
     } catch (e) {
-      seeded = {
+      out.push({
         name: entry.name, version: entry.version, outcome: 'skipped',
         enabled: false, grantedEnv: [], detail: (e as Error).message,
-      };
+      });
     }
-    out.push(seeded);
-    // Retire anything this entry replaced — but ONLY when the successor is actually
-    // in place and on. Review caught the first version running this loop
-    // unconditionally, so a seed that threw (or was skipped, or kept a local edit)
-    // would still have switched the predecessor off and left the node with NEITHER.
-    const successorLive = seeded.outcome !== 'skipped' && seeded.outcome !== 'kept-local' && seeded.enabled;
-    if (!successorLive) continue;
-    for (const dead of entry.supersedes ?? []) {
-      const r = retireSuperseded(dead, entry.name, targetRoot, stateFile);
-      if (r) out.push(r);
+    // Retire what this entry replaced ONLY once the successor is actually on — its persisted
+    // state, not the SeedResult (an already-live plugin reports enabled:false). Retiring
+    // unconditionally left a node with NEITHER plugin whenever the successor could not be
+    // enabled (grants not derivable, a hand-installed tree, a failed seed, an owner opt-out),
+    // and made the "writes nothing" dry run write. A successor enabled later by hand retires
+    // its predecessor on the next boot.
+    if (!opts.dryRun && !opts.seedOnly && readState(entry.name, stateFile).enabled === true) {
+      for (const dead of entry.supersedes ?? []) {
+        const r = retireSuperseded(dead, entry.name, targetRoot, stateFile);
+        if (r) out.push(r);
+      }
     }
   }
   return out;
+}
+
+/**
+ * An owner who opted out of a plugin under its OLD name opted out of the renamed one too.
+ * Plugin state is keyed by name, so without this a rename silently undid the opt-out: the
+ * successor seeded, was handed the hub key, auto-enabled, and had its tools auto-approved on
+ * claude.ai. Applied once — only while the successor has no record at all — so an owner who
+ * later enables the successor stays in charge.
+ */
+function carryOptOutAcrossRename(entry: BundledEntry, stateFile: string): void {
+  if (!entry.supersedes?.length || readAllState(stateFile)[entry.name] !== undefined) return;
+  for (const dead of entry.supersedes) {
+    const p = readState(dead, stateFile);
+    if (p.bundledOptOut && !p.supersededBy) {
+      writeState(entry.name, {
+        enabled: false,
+        bundledOptOut: true,
+        revertedReason: `the owner had disabled "${dead}" before it was renamed to "${entry.name}"`,
+      }, stateFile);
+      return;
+    }
+  }
 }
 
 /**
@@ -329,13 +352,16 @@ function retireSuperseded(
   const onDisk = fs.existsSync(path.join(targetRoot, dead));
   if (!onDisk && !cur.enabled) return null;                // nothing here to retire
 
-  writeState(dead, {
-    enabled: false,
-    supersededBy: successor,
-    revertedReason: `replaced by "${successor}" — this plugin was renamed`,
-    // Sticky, so a later package that still lists the old name cannot re-enable it.
-    bundledOptOut: true,
-  }, stateFile);
+  writeState(dead, cur.bundledOptOut
+    // The owner had already turned it off: keep THEIR reason, only record the rename.
+    ? { enabled: false, supersededBy: successor }
+    : {
+      enabled: false,
+      supersededBy: successor,
+      revertedReason: `replaced by "${successor}" — this plugin was renamed`,
+      // Sticky, so a later package that still lists the old name cannot re-enable it.
+      bundledOptOut: true,
+    }, stateFile);
 
   return {
     name: dead,
@@ -418,6 +444,12 @@ function seedOne(
 
   if (opts.seedOnly) return { ...base, outcome, enabled: false };
 
+  // An owner opt-out is honoured BEFORE any grant is derived: a plugin the owner turned off
+  // must not be handed the hub key it will never be allowed to use.
+  if (readState(entry.name, stateFile).bundledOptOut) {
+    return { ...base, outcome, enabled: false, detail: 'owner disabled this plugin; leaving it off' };
+  }
+
   // --- grants: fill declared names from local config, never overwrite a human's ---
   const manifest = readManifest(dst);
   const granted: string[] = [];
@@ -438,9 +470,6 @@ function seedOne(
 
   // --- trust: auto-enable only while the tree IS the package's payload ---
   const cur = readState(entry.name, stateFile);
-  if (cur.bundledOptOut) {
-    return { ...base, outcome, enabled: false, grantedEnv: granted, detail: 'owner disabled this plugin; leaving it off' };
-  }
   const alreadyLive = cur.enabled
     && cur.approvedPayloadChecksum === srcChecksum
     && cur.approvedManifestDigest === srcId.manifest;

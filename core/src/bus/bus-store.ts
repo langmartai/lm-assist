@@ -161,10 +161,26 @@ export class BusStore {
     // (the same key can transiently appear in both between a commit landing and the overlay's
     // own cleanup callback running — either copy is identical content, so either may win).
     const merged = new Map<string, BusEvent>();
-    for (const { key, value } of this.events.getRange({ start: [topic] })) {
-      const k = key as EventKey;
-      if (!Array.isArray(k) || k[0] !== topic) break; // left the topic prefix
-      if (k[2] > (cursor[k[1]] ?? 0)) merged.set(`${k[1]}\x00${k[2]}`, value);
+    // SEEK each origin's run at its cursor — never walk the topic from its first event. The walk
+    // decoded every event the topic ever held just to drop the ones at/below the cursor, so a
+    // caught-up peer's no-op catch-up cost O(topic size): ~200 ms per call for data:missions
+    // (55k events) on 107, per topic, per peer. The heads index names every origin that has
+    // events (append/ingest always bump it; sweep never removes one); the caller's own cursor
+    // origins are added too.
+    const origins = new Set([...Object.keys(this.maxCursor(topic)), ...Object.keys(cursor)]);
+    for (const origin of origins) {
+      // Coerce exactly as the old `seq > cursor` comparison did: numeric strings compare as
+      // numbers, and anything NaN (or +Infinity) matched nothing.
+      const c = Number(cursor[origin] ?? 0);
+      if (Number.isNaN(c) || c === Infinity) continue;
+      const start: EventKey | [string, string] = c === -Infinity ? [topic, origin] : [topic, origin, Math.floor(c) + 1];
+      let taken = 0;
+      for (const { key, value } of this.events.getRange({ start })) {
+        const k = key as EventKey;
+        if (!Array.isArray(k) || k[0] !== topic || k[1] !== origin) break; // left this origin's run
+        merged.set(`${k[1]}\x00${k[2]}`, value);
+        if (++taken >= limit) break; // the result is capped at `limit`, so no origin needs more
+      }
     }
     // Merge the not-yet-committed overlay — getRange (above) cannot see an async put() still in
     // flight, so a topic with a pending write would otherwise look stale here.
