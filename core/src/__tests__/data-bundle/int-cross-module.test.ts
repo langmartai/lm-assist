@@ -42,12 +42,14 @@ test('KnowledgeStore.reloadIndex drops the cached index so the next read sees th
 test('knowledge import through the default reload refreshes the live store (no restart note)', async () => {
   const store = getKnowledgeStore();
   const before = store.getIndex().nextId;
-  const index = JSON.stringify({ knowledges: {}, nextId: before + 40, lastUpdated: 3 });
+  const id = `K${String(before + 39).padStart(3, '0')}`;
+  const index = JSON.stringify({ knowledges: { [id]: { title: 'imported' } }, nextId: before + 40, lastUpdated: 3 });
   const p = createKnowledgeProvider();
-  const res = await p.apply([file('index.json', index)], 'replace');
-  assert.equal(res.applied.add + res.applied.update, 1, JSON.stringify(res));
+  const res = await p.apply([file('index.json', index), file(`${id}.md`, '# imported')], 'replace');
+  assert.ok(res.applied.add + res.applied.update >= 1, JSON.stringify(res));
   assert.ok(!res.warnings.some((w) => /restart Core/.test(w)), JSON.stringify(res.warnings));
   assert.equal(store.getIndex().nextId, before + 40);
+  assert.ok(store.getIndex().knowledges[id], 'the imported doc is in the live index');
 });
 
 test('project-settings: bundleRetention is typed, defaults to 20, and survives an unrelated save', () => {

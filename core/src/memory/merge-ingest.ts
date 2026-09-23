@@ -15,7 +15,7 @@ import * as path from 'path';
 import { merge3 } from './merge3';
 import { llmMerge, MergeRunner } from './llm-merge';
 
-const CREDENTIAL_PATTERNS: RegExp[] = [/token/i, /\bkey\b/i, /cookie/i, /password/i, /secret/i, /credential/i];
+import { CREDENTIAL_PATTERNS } from '../utils/credential-names';
 const MANAGED = new Set(['MEMORY.md', '_hosts.md', '_cross-project.md']);
 const BASE_DIR = '.sync-base';
 

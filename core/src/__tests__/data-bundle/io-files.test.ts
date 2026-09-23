@@ -102,11 +102,12 @@ test('claude-memory: only into existing project dirs (unknown-project otherwise)
   fs.mkdirSync(path.join(dst, 'proj-a')); // proj-a known here, proj-b not
   const p = createClaudeMemoryProvider({ projectsDir: dst });
   const plan = await p.plan(c.files, 'add-missing');
-  assert.equal(plan.counts.add, 2);
-  assert.equal(plan.counts.skipped, 1);
+  assert.equal(plan.counts.add, 1);
+  assert.equal(plan.counts.skipped, 2, 'MEMORY.md (managed per node) + proj-b (unknown project)');
   assert.ok(plan.warnings.some((w) => w.startsWith('unknown-project: proj-b')));
+  assert.ok(plan.warnings.some((w) => w.startsWith('managed-file: proj-a/memory/MEMORY.md')));
   const res = await p.apply(c.files, 'add-missing');
-  assert.equal(res.applied.add, 2);
+  assert.equal(res.applied.add, 1);
   assert.equal(fs.readFileSync(path.join(dst, 'proj-a/memory/topic/deep.md'), 'utf8'), 'deep');
   assert.equal(fs.existsSync(path.join(dst, 'proj-b')), false, 'never creates a project dir');
 
@@ -173,4 +174,100 @@ test('knowledge: collects the allow-listed files (never remote/), reload hook fi
     await createKnowledgeProvider({ dir: dst2 }).apply(c.files, 'add-missing');
   } finally { setKnowledgeReloadHook(null); }
   assert.equal(hooked, 1);
+});
+
+test('claude-memory: the autosync .sync-base/ ancestors and credential-named files never travel', async () => {
+  const src = tmp();
+  put(src, '-slug/memory/a.md', 'L1\nL2\n');
+  put(src, '-slug/memory/.sync-base/a.md', 'L1\n');
+  put(src, '-slug/memory/live-oanda-token.md', 'secret');
+  put(src, '-slug/memory/feedback-api-key.md', 'secret');
+  const c = await createClaudeMemoryProvider({ projectsDir: src }).collect();
+  assert.deepEqual(c.files.map((f) => f.path), ['-slug/memory/a.md']);
+  assert.ok(c.warnings.some((w) => w === 'credential-named: -slug/memory/live-oanda-token.md not exported'));
+
+  // A crafted bundle cannot plant either: the base keeps its content, nothing lands in a dot-dir.
+  const dst = tmp();
+  put(dst, '-slug/memory/.sync-base/a.md', 'L1\n');
+  const p = createClaudeMemoryProvider({ projectsDir: dst });
+  const res = await p.apply([file('-slug/memory/.sync-base/a.md', 'L1\nL2\n'), file('-slug/memory/my-token.md', 't'), file('-slug/memory/a.md', 'L1\nL2\n')], 'replace');
+  assert.equal(res.applied.add, 1);
+  assert.ok(res.warnings.some((w) => w.startsWith('path-not-allowed: -slug/memory/.sync-base/a.md')));
+  assert.ok(res.warnings.some((w) => w.startsWith('credential-named: -slug/memory/my-token.md')));
+  assert.equal(fs.readFileSync(path.join(dst, '-slug/memory/.sync-base/a.md'), 'utf8'), 'L1\n');
+  assert.deepEqual(fs.readdirSync(path.join(dst, '-slug/memory/.sync-base')), ['a.md'], 'no .bak-import in the base dir');
+});
+
+test('claude-rules: credential names + oversize not exported, nested rules reported, synced mirrors never re-owned', async () => {
+  const src = tmp();
+  put(src, 'normal.md', 'n');
+  put(src, 'oanda-token.md', 'secret');
+  put(src, 'big.md', 'x'.repeat(64 * 1024 + 1));
+  put(src, 'team/nested.md', 'nested');
+  const c = await createClaudeRulesProvider({ rulesDir: src }).collect();
+  assert.deepEqual(c.files.map((f) => f.path), ['normal.md']);
+  assert.ok(c.warnings.some((w) => w.startsWith('credential-named: oanda-token.md')));
+  assert.ok(c.warnings.some((w) => w.startsWith('too-large: big.md')));
+  assert.ok(c.warnings.some((w) => w.startsWith('nested-rule-not-exported: team/nested.md')));
+
+  const dst = tmp();
+  put(dst, 'synced.hostA.foo.md', 'foo rule');
+  const p = createClaudeRulesProvider({ rulesDir: dst });
+  const plan = await p.plan([file('foo.md', 'foo rule'), file('bar.md', 'bar')], 'merge');
+  assert.equal(plan.counts.add, 1, 'bar only');
+  assert.equal(plan.counts.skipIdentical, 1);
+  assert.ok(plan.warnings.some((w) => w.startsWith('already-mirrored: foo.md') && /hostA/.test(w)));
+  const differs = await p.plan([file('foo.md', 'edited')], 'replace');
+  assert.equal(differs.counts.skipped, 1);
+});
+
+test('knowledge: onto a node WITH an index, imported docs are indexed and nextId advances (no orphan, no clobber)', async () => {
+  const dst = tmp();
+  put(dst, 'index.json', JSON.stringify({ knowledges: { K001: { title: 'local one' } }, nextId: 2, lastUpdated: 1 }));
+  put(dst, 'K001.md', 'local K001');
+  const bundle = [
+    file('index.json', JSON.stringify({ knowledges: { K001: { title: 'theirs' }, K002: { title: 'imported two' } }, nextId: 3, lastUpdated: 2 })),
+    file('K001.md', 'their K001'),
+    file('K002.md', 'their K002'),
+  ];
+  let reloads = 0;
+  const p = createKnowledgeProvider({ dir: dst, reload: () => { reloads++; } });
+  const plan = await p.plan(bundle, 'merge');
+  assert.equal(plan.counts.add, 1, 'K002');
+  assert.equal(plan.counts.skipExists, 1, 'K001 collides');
+  assert.ok(plan.warnings.some((w) => /index-merged: 1 imported document\(s\) would be added/.test(w)));
+  const res = await p.apply(bundle, 'merge');
+  assert.equal(res.applied.add, 1);
+  assert.equal(res.applied.update, 1, 'index.json merged');
+  const idx = JSON.parse(fs.readFileSync(path.join(dst, 'index.json'), 'utf8'));
+  assert.deepEqual(Object.keys(idx.knowledges).sort(), ['K001', 'K002']);
+  assert.equal(idx.knowledges.K001.title, 'local one', 'the local entry is untouched');
+  assert.equal(idx.knowledges.K002.title, 'imported two');
+  assert.equal(idx.nextId, 3, 'the next generated doc is K003 — never over the imported K002');
+  assert.equal(fs.readFileSync(path.join(dst, 'K001.md'), 'utf8'), 'local K001');
+  assert.equal(reloads, 1);
+  // A doc the bundle index does not describe still gets an entry, and nextId passes it.
+  const res2 = await p.apply([file('K007.md', 'x')], 'merge');
+  assert.equal(res2.applied.add, 1);
+  const idx2 = JSON.parse(fs.readFileSync(path.join(dst, 'index.json'), 'utf8'));
+  assert.equal(idx2.nextId, 8);
+});
+
+test('files: a symlinked comments/ dir is not read through; import never mkdirs through a symlink', async () => {
+  const src = tmp();
+  const secret = tmp('lmb-secret-');
+  fs.writeFileSync(path.join(secret, 'id_rsa'), 'PRIVATE KEY');
+  put(src, 'K001.md', 'k');
+  fs.symlinkSync(secret, path.join(src, 'comments'));
+  const c = await createKnowledgeProvider({ dir: src }).collect();
+  assert.ok(!c.files.some((f) => f.path.startsWith('comments/')));
+  assert.ok(c.warnings.some((w) => w.startsWith('symlinked-dir: comments')));
+
+  const dst = tmp();
+  fs.mkdirSync(path.join(dst, 'proj'));
+  const outside = tmp('lmb-out2-');
+  fs.symlinkSync(outside, path.join(dst, 'proj', 'memory'));
+  const res = await createClaudeMemoryProvider({ projectsDir: dst }).apply([file('proj/memory/a/b/c.md', 'x')], 'replace');
+  assert.equal(res.applied.add, 0);
+  assert.deepEqual(fs.readdirSync(outside), [], 'no directory was created outside the root');
 });
