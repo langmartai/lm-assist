@@ -3257,8 +3257,10 @@ export interface ApprovalKeyCacheEntry {
 }
 
 const APPROVAL_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-// Tool names may carry '-' and '.' (plugin tools: `ext__langmart-design__alerts_list`); the old
+// Tool names may carry '-' and '.' (plugin tools: `ext__demo-plugin__alerts_list`); the old
 // `[a-zA-Z0-9_]+` silently skipped them, so their driven approvals answered 204 "not exposed".
+// The in-page mirror for the Chrome transport (claudeai-via-chrome.ts APPROVAL_SELECT_JS) uses
+// the same two patterns; approval-select-parity.test.ts runs both over the same inputs.
 const APPROVAL_HASH_KEY_RE = new RegExp(`^(${APPROVAL_UUID}):([A-Za-z0-9_.-]+)-([0-9a-f]{32})$`);
 const APPROVAL_BARE_KEY_RE = new RegExp(`^(${APPROVAL_UUID}):([A-Za-z0-9_.-]+)$`);
 
@@ -3302,10 +3304,13 @@ export function indexApprovalKeys(
 
 /**
  * Pure: the approval key for a claude.ai tool_use name (`<integration>:<tool>`, or a bare `<tool>`).
- * When the integration prefix names a known connector, the key comes from THAT connector only.
+ * When the integration prefix names a known connector, the key comes from THAT connector only —
+ * and if that connector holds no key for the tool, there is NO key (approveToolUse answers 204).
  * Several lm-assist connectors expose the same tool names, and the flat maps answer with whichever
- * connector was written last. Otherwise the flat maps are used, keeping the hash key and its bare
- * fallback from ONE connector.
+ * connector was written last: borrowing from them here would send connector A's key for B's
+ * tool_use (a 4xx, and a bare fallback from A that fails too). Only when the prefix is absent or
+ * names no known connector are the flat maps used, keeping the hash key and its bare fallback from
+ * ONE connector. Mirrored in-page for the Chrome transport (claudeai-via-chrome.ts).
  */
 export function selectApprovalKey(
   entry: Pick<ApprovalKeyCacheEntry, 'hashKeys' | 'bareKeys' | 'byConnector' | 'uuidByName'>,
@@ -3314,11 +3319,11 @@ export function selectApprovalKey(
   const cut = toolName.lastIndexOf(':');
   const tool = cut >= 0 ? toolName.slice(cut + 1) : toolName;
   const integration = cut >= 0 ? toolName.slice(0, cut).trim().toLowerCase() : '';
-  const uuid = integration ? entry.uuidByName[integration] : undefined;
-  const own = uuid ? entry.byConnector[uuid] : undefined;
-  if (own && (own.hashKeys[tool] || own.bareKeys[tool])) {
-    const bare = own.bareKeys[tool];
-    return { key: own.hashKeys[tool] || bare, bare };
+  const uuid = integration && Object.hasOwn(entry.uuidByName, integration) ? entry.uuidByName[integration] : undefined;
+  if (uuid) {
+    const own = Object.hasOwn(entry.byConnector, uuid) ? entry.byConnector[uuid] : undefined;
+    const bare = own?.bareKeys[tool] || undefined;
+    return { key: own?.hashKeys[tool] || bare, bare };
   }
   const hash = entry.hashKeys[toolName] || entry.hashKeys[tool];
   if (hash) {
@@ -3334,6 +3339,22 @@ const approvalKeyCache = new Map<string, ApprovalKeyCacheEntry>();
 export function clearApprovalKeyCache(orgUuid?: string): void {
   if (orgUuid) approvalKeyCache.delete(orgUuid);
   else approvalKeyCache.clear();
+}
+
+/**
+ * The connector roster a driven approval needs: lowercased connector name (the `<integration>:`
+ * prefix claude.ai puts on a tool_use name) → server uuid. Best-effort and bounded by
+ * APPROVAL_ROSTER_WAIT_MS: on a timeout, an error or no claude.ai session it is `{}`, and selection
+ * falls back to the flat maps — the behaviour before per-connector keys. Shared by
+ * discoverApprovalKeys (cookie transport) and the Chrome transport's snippet builder.
+ */
+export async function approvalConnectorRoster(orgUuid?: string): Promise<Record<string, string>> {
+  const roster = await settleWithin(listMcpRemoteServers(orgUuid ? { orgUuid } : {}), APPROVAL_ROSTER_WAIT_MS);
+  const uuidByName: Record<string, string> = {};
+  for (const s of roster?.body?.servers || []) {
+    if (s.uuid && s.name) uuidByName[s.name.trim().toLowerCase()] = s.uuid;
+  }
+  return uuidByName;
 }
 
 /**
@@ -3367,18 +3388,14 @@ export async function discoverApprovalKeys(orgUuidArg?: string): Promise<Approva
   // lingering probe (if that delete fails) self-cleans via the cleanup sweep.
   // The connector roster runs IN PARALLEL: its names map a tool_use's `<integration>:` prefix to a
   // connector uuid. Best-effort and bounded — without it selection falls back to the flat maps, as before.
-  const [probe, roster] = await Promise.all([
+  const [probe, uuidByName] = await Promise.all([
     createConversation({ orgUuid, name: 'lm-assist-approval-probe', autoDeleteHours: 2 }),
-    settleWithin(listMcpRemoteServers({ orgUuid }), APPROVAL_ROSTER_WAIT_MS),
+    approvalConnectorRoster(orgUuid),
   ]);
   if (probe.status >= 400) {
     throw new Error(`probe conversation create failed: ${probe.status} ${probe.statusText}`);
   }
   const settings = (probe.body as any)?.settings?.enabled_mcp_tools || {};
-  const uuidByName: Record<string, string> = {};
-  for (const s of roster?.body?.servers || []) {
-    if (s.uuid && s.name) uuidByName[s.name.trim().toLowerCase()] = s.uuid;
-  }
   // Cleanup probe conv (best-effort — failure here doesn't affect caller)
   if (probe.uuid) {
     deleteConversation(probe.uuid, { orgUuid }).catch(() => { /* ignore */ });
@@ -3433,7 +3450,7 @@ export async function approveToolUse(opts: {
     const bare = picked.bare;
     approvalKey = picked.key;
     if (!approvalKey) {
-      return { status: 204, statusText: 'No Content (tool not exposed by any connector)', body: null };
+      return { status: 204, statusText: 'No Content (tool not exposed by the connector it names, or by any connector)', body: null };
     }
     // Keep the bare `<srv>:<tool>` key as a fallback when we picked a HASH-suffixed key: a STALE hash
     // (tool defs changed, e.g. after a connector refresh) makes /tool_approval 404, but the bare key

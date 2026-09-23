@@ -75,6 +75,7 @@ import {
   setMcpToolsAccess,
   setMcpToolsAutoApprove,
   listMcpRemoteServers,
+  approvalConnectorRoster,
   applyConnectorToolUpdates,
   validateConnectorToolUpdates,
   parseAutoApproveTools,
@@ -2053,7 +2054,10 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
     //   uses: track tool_use blocks during SSE drain, POST /tool_approval
     //   on each content_block_stop, then poll the conv for the
     //   post-approval continuation. The returned envelope includes an
-    //   `approvals: [{toolUseId, toolName, status, ok}, ...]` field.
+    //   `approvals: [{toolUseId, toolName, status, ok}, ...]` field. Keys are
+    //   chosen per CONNECTOR (the tool_use's `<integration>:` prefix → uuid,
+    //   from a bounded roster read here + the `tools` array), never the last
+    //   connector written — several lm-assist connectors share tool names.
     //
     //   `attachments` / `files` / `syncSources` / `tools` are embedded
     //   into the snippet via JSON.stringify. Large payloads make the
@@ -2080,6 +2084,15 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           };
         }
         try {
+          const autoApproveTools = typeof b.autoApproveTools === 'boolean'
+            ? b.autoApproveTools
+            : (typeof b.auto_approve_tools === 'boolean' ? b.auto_approve_tools : undefined);
+          // Driven approvals pick the key of the connector a tool_use NAMES (several lm-assist
+          // connectors share tool names). The snippet cannot list connectors itself, so Core
+          // injects the name → uuid roster — best-effort and bounded (approvalConnectorRoster);
+          // the `tools` array's own integration_name/mcp_server_uuid pairs cover a node without
+          // a claude.ai cookie.
+          const approvalConnectors = autoApproveTools ? await approvalConnectorRoster() : undefined;
           const out = snippetSendMessage(uuid, b.prompt, {
             model: typeof b.model === 'string' ? b.model : undefined,
             timezone: typeof b.timezone === 'string' ? b.timezone : undefined,
@@ -2090,9 +2103,8 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             syncSources: Array.isArray(b.syncSources) ? b.syncSources
               : Array.isArray(b.sync_sources) ? b.sync_sources : undefined,
             tools: Array.isArray(b.tools) ? b.tools : undefined,
-            autoApproveTools: typeof b.autoApproveTools === 'boolean'
-              ? b.autoApproveTools
-              : (typeof b.auto_approve_tools === 'boolean' ? b.auto_approve_tools : undefined),
+            autoApproveTools,
+            approvalConnectors,
             showOverlay: typeof b.showOverlay === 'boolean'
               ? b.showOverlay
               : (typeof b.show_overlay === 'boolean' ? b.show_overlay : undefined),
