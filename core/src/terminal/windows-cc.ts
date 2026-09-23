@@ -29,7 +29,7 @@ import {
 } from './windows-terminal';
 import { describeWindowsLaunch } from './windows-launch-verdict';
 import { classifyScreen, trustPromptKeys, type ScreenState } from './cc-classify';
-import { quoteCmdArg } from '../elevated/common';
+import { quoteArgvArg } from '../elevated/common';
 import { CC_EFFORT_LEVELS } from './types';
 
 /** Permission modes `claude` accepts, and the flag each maps to. `bypassPermissions`
@@ -82,7 +82,7 @@ export function buildWindowsClaudeCommand(o: WindowsClaudeLaunchFlags): string {
   if (mode) parts.push(...WINDOWS_PERMISSION_MODE_FLAGS[mode]);
   if (o.model && /^[A-Za-z0-9._[\]-]+$/.test(o.model)) parts.push('--model', o.model);
   if (o.effort && (CC_EFFORT_LEVELS as readonly string[]).includes(o.effort)) parts.push('--effort', o.effort);
-  if (o.name && o.name.trim()) parts.push('-n', quoteCmdArg(o.name.trim()));
+  if (o.name && o.name.trim()) parts.push('-n', quoteArgvArg(o.name.trim()));
   return parts.join(' ');
 }
 

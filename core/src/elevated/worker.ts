@@ -39,8 +39,11 @@ import {
   DEFAULT_EXEC_TIMEOUT_MS,
   MAX_EXEC_TIMEOUT_MS,
   buildShellCommandLine,
+  shellSpawn,
 } from './common';
 import {
+  CORE_LAUNCH_TASK,
+  coreRestartCommand,
   decideWatchdog,
   pidFileFacts,
   probePort,
@@ -211,15 +214,12 @@ function runExec(body: ExecReq): Promise<ExecResult> {
     // are data). See buildShellCommandLine.
     const fullCmd = buildShellCommandLine(cmd, args, shell);
 
-    let child: ChildProcess;
-    if (shell === 'powershell') {
-      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', fullCmd], {
-        cwd,
-        windowsHide: true,
-      });
-    } else {
-      child = spawn('cmd.exe', ['/c', fullCmd], { cwd, windowsHide: true });
-    }
+    const how = shellSpawn(fullCmd, shell);
+    const child: ChildProcess = spawn(how.file, how.args, {
+      cwd,
+      windowsHide: true,
+      windowsVerbatimArguments: how.windowsVerbatimArguments,
+    });
 
     const start = Date.now();
     let stdout = '';
@@ -281,6 +281,16 @@ let wdLast: { action: WatchdogAction; at: string } | null = null;
 let wdLastStart: { at: string; exitCode: number | null; elapsedMs: number; timedOut: boolean; tail: string } | null = null;
 let wdBusy = false;
 
+/** Is the interactive-launch task registered? Asked only when a restart is due (rare). */
+function launchTaskRegistered(): boolean {
+  try {
+    execSync(`schtasks /query /tn ${CORE_LAUNCH_TASK}`, { stdio: 'ignore', windowsHide: true, timeout: 15_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function watchdogTick(): Promise<void> {
   if (wdBusy) return; // a restart is still in flight
   wdBusy = true;
@@ -298,15 +308,25 @@ async function watchdogTick(): Promise<void> {
     wdLast = { action, at: new Date().toISOString() };
     if (action !== 'start') return;
 
-    log(`watchdog: Core :${WATCHDOG_PORT} is gone but its pidfile survived (pid ${pf.pid ?? '?'} dead) — running \`lm-assist start\``);
-    const r = await runExec({ cmd: 'lm-assist start', timeoutMs: 180_000 });
+    const plan = coreRestartCommand(launchTaskRegistered());
+    if (!plan) {
+      const why = `no "${CORE_LAUNCH_TASK}" scheduled task is registered, and a start from this ELEVATED worker `
+        + 'would run Core elevated — register that task to let the watchdog restart Core';
+      wdLastStart = { at: new Date().toISOString(), exitCode: null, elapsedMs: 0, timedOut: false, tail: `not restarted: ${why}` };
+      audit({ kind: 'watchdog', skipped: 'no-launch-task', caller: 'watchdog', deadPid: pf.pid });
+      log(`watchdog: Core :${WATCHDOG_PORT} is gone (pid ${pf.pid ?? '?'} dead) but NOT restarting: ${why}`);
+      return;
+    }
+    const line = `${plan.cmd} ${plan.args.join(' ')}`;
+    log(`watchdog: Core :${WATCHDOG_PORT} is gone but its pidfile survived (pid ${pf.pid ?? '?'} dead) — running \`${line}\``);
+    const r = await runExec({ cmd: plan.cmd, args: plan.args, timeoutMs: 60_000 });
     const tail = `${r.stdout}\n${r.stderr}`.trim().split(/\r?\n/).slice(-6).join(' | ').slice(-1500);
     wdLastStart = { at: new Date().toISOString(), exitCode: r.exitCode, elapsedMs: r.elapsedMs, timedOut: !!r.timedOut, tail };
     audit({
-      kind: 'watchdog', cmd: 'lm-assist start', args: [], cwd: null, shell: 'cmd',
+      kind: 'watchdog', cmd: plan.cmd, args: plan.args, cwd: null, shell: 'cmd',
       exitCode: r.exitCode, elapsedMs: r.elapsedMs, timedOut: !!r.timedOut, caller: 'watchdog', deadPid: pf.pid,
     });
-    log(`watchdog: lm-assist start → exit ${r.exitCode} in ${r.elapsedMs}ms: ${tail}`);
+    log(`watchdog: ${line} → exit ${r.exitCode} in ${r.elapsedMs}ms: ${tail}`);
   } catch (e) {
     log(`watchdog: tick failed: ${e instanceof Error ? e.message : String(e)}`);
   } finally {

@@ -14,6 +14,12 @@
  * spawns a duplicate. An open port counts as alive even when slow — a Core with a blocked event
  * loop still accepts TCP, and restarting it would be worse than waiting.
  *
+ * HOW it restarts matters as much as when: this worker runs ELEVATED, so a Core it spawned directly
+ * would be elevated too — and so would every session, terminal and helper that Core starts. The
+ * restart therefore goes ONLY through the `LmAssistCoreInteractive` task, whose principal (chosen by
+ * the operator) decides both the integrity level and the Windows session. Without that task the
+ * watchdog reports that it cannot restart instead of silently promoting Core.
+ *
  * Pure decision + tiny fs/net probes only: the worker must never pull in Core services.
  */
 import * as fs from 'fs';
@@ -59,6 +65,16 @@ export function decideWatchdog(
   if (failures < o.threshold) return { action: 'confirming', next: { ...s, failures } };
   if (s.lastStartAt !== null && f.now - s.lastStartAt < o.cooldownMs) return { action: 'cooldown', next: { ...s, failures } };
   return { action: 'start', next: { failures: 0, lastStartAt: f.now } };
+}
+
+/** The interactive-launch task (same name as windows-session-guard's INTERACTIVE_TASK — a test pins
+ *  them together; duplicated so the worker does not load the Core-side module). */
+export const CORE_LAUNCH_TASK = 'LmAssistCoreInteractive';
+
+/** The command the watchdog runs to bring Core back, or null when it must not (see header): only the
+ *  operator's interactive task, never a direct `lm-assist start` from this elevated process. */
+export function coreRestartCommand(taskRegistered: boolean): { cmd: string; args: string[] } | null {
+  return taskRegistered ? { cmd: 'schtasks', args: ['/run', '/tn', CORE_LAUNCH_TASK] } : null;
 }
 
 export function pidAlive(pid: number): boolean {

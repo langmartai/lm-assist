@@ -44,7 +44,7 @@ export const elevatedExecToolDef = {
     'would at that shell\'s prompt. Each `args[i]` is ONE argument, quoted per-arg for the chosen shell, so ' +
     'a space, a quote or a | > & inside an arg is data, not syntax (an arg can never open a pipe). Multi-word ' +
     'remote commands go in `cmd` as one pre-quoted string, e.g. cmd: \'ssh host "bash -c \\"ls -la | head\\""\'. ' +
-    'Under cmd.exe, %VAR% expands even inside quotes — use shell="powershell" for a literal %.',
+    'In `args`, %VAR% stays literal (args are data); put %VAR% in `cmd` to expand it.',
   annotations: { readOnlyHint: false, destructiveHint: true },
   inputSchema: {
     type: 'object' as const,

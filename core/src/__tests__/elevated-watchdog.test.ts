@@ -6,8 +6,16 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   decideWatchdog, pidFileFacts, probePort, watchdogDisabled, WATCHDOG_DEFAULTS,
+  CORE_LAUNCH_TASK, coreRestartCommand,
   type WatchdogFacts, type WatchdogState,
 } from '../elevated/watchdog';
+import { INTERACTIVE_TASK } from '../windows-session-guard';
+
+test('the restart goes ONLY through the interactive task — never a direct start from the elevated worker', () => {
+  assert.deepEqual(coreRestartCommand(true), { cmd: 'schtasks', args: ['/run', '/tn', 'LmAssistCoreInteractive'] });
+  assert.equal(coreRestartCommand(false), null, 'no task: refuse rather than start an ELEVATED Core');
+  assert.equal(CORE_LAUNCH_TASK, INTERACTIVE_TASK, 'must name the same task the start planner redirects through');
+});
 
 const fresh: WatchdogState = { failures: 0, lastStartAt: null };
 const dead: WatchdogFacts = { disabled: false, portOpen: false, pidFilePresent: true, pidAlive: false, now: 1_000_000 };
