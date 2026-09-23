@@ -4,7 +4,9 @@
  * Under the EFFECTIVE profile (the call's pin, else the node default):
  *   - a section is left out when the profile hides ALL of its governed tools;
  *   - the manifest lists what was delivered;
- *   - one closing line names what is hidden and where it lives;
+ *   - one closing line names what is hidden and where it lives. WHERE depends on the
+ *     profile's source: under a pin, the unpinned or `admin` connector; under the node
+ *     default, the unpinned connector is this narrowed one, so an `admin`-pinned connector;
  *   - the claude.ai-first mandate appears only when the profile lists
  *     `list_claudeai_conversations`.
  * The identity block at the top of page 1 stays profile-unaware.
@@ -22,7 +24,7 @@ import {
   GUIDE_HANDLERS, GUIDES_TEST_EXPORT, BOOTSTRAP_SECTION_ORDER, BOOTSTRAP_HEADER_DEFAULT,
   INDEX_PREAMBLE_DEFAULT, BOOTSTRAP_WRAP_RESERVE, CLAUDEAI_MANDATE_SWAPS,
   bootstrapEntries, paginateEntries, buildBootstrapPage, bootstrapProfileView, sectionGovernedTools,
-  type BootstrapProfileView,
+  profileHiddenLine, type BootstrapProfileView,
 } from '../mcp-server/tools/guide';
 import { fleetIdentity } from '../mcp-server/fleet-identity';
 import { runWithMcpContext } from '../mcp-server/principal-context';
@@ -182,6 +184,30 @@ test('one closing line names the hidden categories, the left-out playbooks and t
   assert.equal(index.trimEnd().split('\n').pop(), last);
 });
 
+test('the pointer follows the profile SOURCE: a pin names the unpinned connector, a node default an admin-pinned one', () => {
+  const pin = bootstrapProfileView('basic', 'pin')!;
+  const nd = bootstrapProfileView('basic', 'node-default')!;
+  assert.ok(pin && nd);
+  assert.equal(bootstrapProfileView('basic'), pin, 'no source ⇒ the pin view (memoised: the same object)');
+  assert.equal(bootstrapProfileView('basic', 'node-default'), nd, 'memoised per (name, source)');
+  assert.equal(pin.source, 'pin');
+  assert.equal(nd.source, 'node-default');
+  assert.deepEqual({ ...nd, source: 'pin' }, pin, 'the source changes only the pointer, never what is left out');
+  assert.equal(bootstrapProfileView('admin', 'node-default'), null, 'admin has no view from either source');
+
+  const head = `🔒 Profile \`basic\` hides these tool categories: ${pin.hiddenCategories.join(', ')}. Playbooks left out of bootstrap: ${pin.omitted.join(', ')}.`;
+  const pinLine = profileHiddenLine(pin);
+  const ndLine = profileHiddenLine(nd);
+  assert.ok(pinLine.startsWith(head) && ndLine.startsWith(head), 'the same categories and playbooks either way');
+  assert.match(pinLine, /The unpinned or `admin` lm-assist connector on this hub lists them/);
+  // Under the node default the unpinned connector IS this narrowed one (the banner says
+  // `[node default]`), so the line must not send the model there.
+  assert.doesNotMatch(ndLine, /unpinned or `admin`/);
+  assert.match(ndLine, /`basic` is this node's DEFAULT profile, so the unpinned connector is narrowed the same way/);
+  assert.match(ndLine, /an `admin`-pinned lm-assist connector on this hub \(URL …\/mcp\/admin\) lists them/);
+  assert.match(ndLine, /`mcp_profile set admin` widens the node default/);
+});
+
 test('the claude.ai-first mandate appears only when the profile lists list_claudeai_conversations', async () => {
   assert.match((await bootstrapPages()).join('\n'), MANDATE, 'admin keeps the mandate');
   assert.match(await guideText({}), MANDATE, 'admin guide index keeps the mandate');
@@ -204,26 +230,75 @@ test('every mandate swap targets a sentence its default still contains (edit bot
   };
   for (const s of CLAUDEAI_MANDATE_SWAPS) {
     assert.ok(sources[s.where]?.includes(s.from), `${s.where} no longer contains its mandate sentence`);
-    assert.doesNotMatch(s.to, /list_claudeai_conversations/, `${s.where}: the replacement must not name the hidden tool`);
+    assert.deepEqual(Object.keys(s.to).sort(), ['node-default', 'pin'], `${s.where}: one replacement per profile source`);
+    for (const [src, to] of Object.entries(s.to)) {
+      assert.doesNotMatch(to, /list_claudeai_conversations/, `${s.where} (${src}): the replacement must not name the hidden tool`);
+    }
+    assert.match(s.to.pin, /the unpinned or `admin` lm-assist connector/, `${s.where}: a pin points at the unpinned or admin connector`);
+    // Under the node default the unpinned connector IS this narrowed one: never point at it.
+    assert.doesNotMatch(s.to['node-default'], /unpinned or `admin`/, `${s.where}: the node-default text must not send the model to the unpinned connector`);
+    assert.match(s.to['node-default'], /an `admin`-pinned lm-assist connector/, `${s.where}: the node-default text names an admin-pinned connector`);
+    assert.match(s.to['node-default'], /…\/mcp\/admin/, `${s.where}: and its URL form`);
   }
   assert.deepEqual(CLAUDEAI_MANDATE_SWAPS.map((s) => s.where).sort(), Object.keys(sources).sort());
 });
 
 test('every narrowed bootstrap page stays under the result ceiling', async () => {
-  for (const p of [BASIC, EXTENDED]) {
+  // Both sources: the node-default pointer text is longer than the pin one.
+  const asNodeDefault = (p: EffectiveProfile): EffectiveProfile => ({ name: p.name, source: 'node-default' });
+  for (const p of [BASIC, EXTENDED, asNodeDefault(BASIC), asNodeDefault(EXTENDED)]) {
     for (const [i, page] of (await under(p, bootstrapPages)).entries()) {
       const { size } = capToolResult({ content: [{ type: 'text', text: page }] } as any, 'bootstrap');
-      assert.equal(size.truncated, false, `${p.name} page ${i + 1} must fit under the ceiling`);
+      assert.equal(size.truncated, false, `${p.name} (${p.source}) page ${i + 1} must fit under the ceiling`);
     }
   }
 });
 
-test('no pin + node default narrowed to basic ⇒ the same bootstrap as a basic pin; an admin pin still gets everything', async () => {
+test('no pin + node default narrowed to basic ⇒ the same sections as a basic pin, but the pointer names an admin-pinned connector; an admin pin still gets everything', async () => {
   setActiveProfile('basic', 'test');
   try {
     const plain = await bootstrapPages();
-    assert.deepEqual(plain, await under(BASIC, bootstrapPages));
-    assert.match(plain[0], /^🔒 Profile `basic` hides/m);
+    const pinned = await under(BASIC, bootstrapPages);
+    const pinView = bootstrapProfileView('basic', 'pin')!;
+    const ndView = bootstrapProfileView('basic', 'node-default')!;
+    // Same sections, manifest and pages as a basic pin: ONLY the pointer text differs.
+    const asPinned = (s: string): string => {
+      let out = s.split(profileHiddenLine(ndView)).join(profileHiddenLine(pinView));
+      for (const sw of CLAUDEAI_MANDATE_SWAPS) out = out.split(sw.to['node-default']).join(sw.to.pin);
+      return out;
+    };
+    assert.deepEqual(plain.map(asPinned), pinned, 'the same sections, manifest and pages as a basic pin');
+    assert.notDeepEqual(plain, pinned, 'but a different pointer');
+
+    // The unpinned connector IS this narrowed one here: nothing may send the model to it.
+    const last = manifestOf(plain[0]).block.trimEnd().split('\n').pop()!;
+    assert.equal(last, profileHiddenLine(ndView));
+    assert.match(last, /^🔒 Profile `basic` hides these tool categories: /);
+    assert.match(last, /`basic` is this node's DEFAULT profile/);
+    assert.match(last, /`admin`-pinned lm-assist connector on this hub \(URL …\/mcp\/admin\)/);
+    assert.match(last, /`mcp_profile set admin`/);
+    const all = plain.join('\n');
+    assert.doesNotMatch(all, /unpinned or `admin`/, 'bootstrap must not point at the unpinned connector');
+    assert.doesNotMatch(all, MANDATE);
+    assert.match(all, /read an unqualified "the conversation" \/ "the most recent one" through an `admin`-pinned lm-assist connector/);
+    for (const args of [{}, { topic: 'speaking' }, { topic: 'sessions' }]) {
+      const g = await guideText(args);
+      const label = `guide(${JSON.stringify(args)})`;
+      assert.doesNotMatch(g, /unpinned or `admin`/, `${label} must not point at the unpinned connector`);
+      assert.doesNotMatch(g, MANDATE, label);
+      assert.match(g, /an `admin`-pinned lm-assist connector/, label);
+    }
+    assert.equal((await guideText({})).trimEnd().split('\n').pop(), last, 'the guide index closes with the same line');
+
+    // An unknown pin is served the node default (source 'node-default'): the same pointer.
+    const typo = resolveEffectiveProfile('basci');
+    assert.equal(typo.unknownPin, true);
+    assert.equal(typo.source, 'node-default');
+    assert.equal(typo.name, 'basic');
+    assert.deepEqual(await under(typo, bootstrapPages), plain);
+
+    // A basic PIN on the same node keeps the pin wording.
+    assert.match(pinned.join('\n'), /unpinned or `admin` lm-assist connector/);
     const adminPinned = await under(ADMIN_PIN, bootstrapPages);
     assert.equal(manifestOf(adminPinned[0]).entries.length, BOOTSTRAP_SECTION_ORDER.length, 'the pin wins over the node default');
   } finally {
