@@ -97,6 +97,8 @@ The Claude products don't ship a unified dashboard: Claude Code lives in a termi
 The functional layer, in three groups: **everything Claude** (sessions, conversations, missions, memory), **extended capabilities** (beyond Claude, through the same MCP surface), and the **platform layer** (the plumbing that makes many machines one fleet). Everything in all three groups is reachable through the four doors — the **MCP connector** (the main door: from a claude.ai conversation, a Cowork session, or Claude Code itself), the **web dashboard** (watch and drive), the **Claude Code plugin** (terminal skills and commands), and the **REST API** (systems). One line per feature here; the details live behind the links at the end of each group.
 
 > **Full-coverage registry:** [`docs/components.md`](./docs/components.md) — every component with its path, what it does, how it connects, and honest freshness (first built / last touched, including the aging and dormant ones this tour skips). This section is the guided tour; that file is the map.
+>
+> **Common questions:** [`docs/faq.md`](./docs/faq.md) — why a session says "Another Claude session sent a message" (it's Claude Code's wording, not lm-assist's), dev vs prod ports, `ERR_REQUIRE_ESM` on boot, why a connector only works on one machine, and how to tell an lm-assist bug from a Claude Code one.
 
 ### Everything Claude
 

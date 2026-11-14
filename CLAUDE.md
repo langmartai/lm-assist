@@ -59,6 +59,7 @@ stop. To mention a path without importing it, wrap it in backticks or use a `[li
 [claude-ai-routes](docs/claude-ai-routes.md) · [claude-code-routes](docs/claude-code-routes.md) ·
 [build-pack-install-upgrade](docs/build-pack-install-upgrade.md) · [voice-https-transport](docs/voice-https-transport.md) ·
 [claude-ai-voice-protocol](docs/claude-ai-voice-protocol.md) · [web-deployment-and-hub-auth](docs/web-deployment-and-hub-auth.md) ·
+[faq](docs/faq.md) (user-facing; the one to reach for when a report is really Claude Code's behaviour, not ours) ·
 design specs under `docs/superpowers/specs/`.
 
 **When you add a new subject here:** put the prose in a topic file and add ONE row above. This file is
