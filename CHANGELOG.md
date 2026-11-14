@@ -16,6 +16,15 @@
   and `DELETE /mcp/profile-connectors/:profile`, `lm-assist mcp add|remove --profile <profile>` (Claude Code
   entry `lm-assist-<profile>`), `lm-assist login --mcp-profile <profile>`, and a Connectors table on the
   MCP Tools page and pane.
+- **Data export/import bundles and guarded dataset takeover.** Gzipped JSONL bundles covering datasets,
+  configuration, and selected node files via `data_export` / `data_import` MCP tools, `/data/bundles` REST
+  routes, `POST /data/datasets/:id/takeover`, the `data-snapshot` scheduled job, and the `/data` Backup tab
+  (see `docs/data-export-import.md`).
+- **Browser auth (Stage 1) and CLI token administration.** Runtime `GET /auth/browser-token` exchange
+  replaces HTML-inlined `window.__LM_API_TOKEN__`, backed by loopback peer-trust, origin-policy, ttyd
+  capability tokens, and `lm-assist token rotate|lan-key|status` (see `docs/browser-auth.md`).
+- **`guide(topic="vm")` playbook and `docs/faq.md`.** Adds the connector playbook for `vm_*` tools and a
+  user-facing FAQ covering Claude Code vs lm-assist attribution, ports, and connector scoping.
 
 ### Changed
 - **The `langmart` profile is now `platform`.** `langmart` is still accepted everywhere a profile name is (a
@@ -29,6 +38,10 @@
   on a node where `langmart` could not be enabled, and 0.2.4 peers keep advertising it; `platform` and its
   connector used to show none of the LangMart tools there, and `GET /mcp-tools/profile` reported
   `ext__langmart` as unmatched.
+- **Session messaging `TurnOrigin` attribution, receipt-gated `cloudDrive`, and `confirmRemote`
+  model-fallback verification.** Stamps `{ kind: 'human' | 'peer' }` provenance on injected remote-control
+  turns, gates `cloudDrive` delivery reporting on receipts instead of bare echoes, and verifies remote
+  model-fallback switches via `confirmRemote`.
 
 ## [0.2.5] - 2026-09-23
 

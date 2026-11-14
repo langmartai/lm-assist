@@ -171,7 +171,7 @@ Beyond Claude, through the same MCP surface — every tool routes to the node th
 - **File transfer & remote filesystem** — cross-node push with per-file sha256 verification and resume, a durable job manager, a rate-adaptive UDP fast path, and capped remote FS inspection
 - **MCP plugin system** — third-party plugins expose tools as `ext__<plugin>__<tool>` ([contract](./docs/mcp-plugin-contract.md)); first-party plugins ship bundled in the package, seeded and trusted on boot with checksum-pinned payloads; per-tool governance (enable/disable, description overrides) from the dashboard
 
-**Go deeper:** [service connectors](./docs/README.md#service-connectors) · [MCP & plugins](./docs/README.md#mcp--plugins) · [`docs/gmail-connector.md`](./docs/gmail-connector.md) · [`docs/linkedin-connector.md`](./docs/linkedin-connector.md) · [`docs/whatsapp-connector.md`](./docs/whatsapp-connector.md) · [`docs/vm-management.md`](./docs/vm-management.md) · [`docs/container-management.md`](./docs/container-management.md) · [`docs/github-routes.md`](./docs/github-routes.md) — examples: [Gmail](./examples/gmail-connector/) · [WhatsApp](./examples/whatsapp-connector/) · [LinkedIn](./examples/linkedin-connector/) · [transfer & backup](./examples/transfer-and-backup/)
+**Go deeper:** [service connectors](./docs/README.md#service-connectors) · [MCP & plugins](./docs/README.md#mcp--plugins) · [`docs/gmail-connector.md`](./docs/gmail-connector.md) · [`docs/linkedin-connector.md`](./docs/linkedin-connector.md) · [`docs/whatsapp-connector.md`](./docs/whatsapp-connector.md) · [`docs/vm-management.md`](./docs/vm-management.md) · [`docs/container-management.md`](./docs/container-management.md) · [`docs/github-routes.md`](./docs/github-routes.md) · [`docs/data-export-import.md`](./docs/data-export-import.md) — examples: [Gmail](./examples/gmail-connector/) · [WhatsApp](./examples/whatsapp-connector/) · [LinkedIn](./examples/linkedin-connector/) · [transfer & backup](./examples/transfer-and-backup/)
 
 ### Platform layer
 
@@ -183,7 +183,7 @@ The internal plumbing every feature above rides on — you mostly don't interact
 - Local API auth: a rotating token ring with a grace window plus narrow revocable scoped tokens; web access via platform SSO/OIDC
 - Service lifecycle: the `lm-assist` CLI (serve/start/stop/upgrade), an internal job scheduler replacing OS cron, an LMDB session cache as the zero-warmup read backbone, and an opt-in HTTPS terminator (`LM_HTTPS=1`) so the browser microphone works off-localhost
 
-**Go deeper:** [architecture & internals](./docs/README.md#architecture--internals) · [`docs/architecture.md`](./docs/architecture.md) · [`docs/hub-client.md`](./docs/hub-client.md) · [`docs/cross-node-transport-map.md`](./docs/cross-node-transport-map.md) · [`docs/node-placement.md`](./docs/node-placement.md) · [`docs/web-deployment-and-hub-auth.md`](./docs/web-deployment-and-hub-auth.md) · [`docs/install-and-modes.md`](./docs/install-and-modes.md)
+**Go deeper:** [architecture & internals](./docs/README.md#architecture--internals) · [`docs/architecture.md`](./docs/architecture.md) · [`docs/hub-client.md`](./docs/hub-client.md) · [`docs/cross-node-transport-map.md`](./docs/cross-node-transport-map.md) · [`docs/node-placement.md`](./docs/node-placement.md) · [`docs/web-deployment-and-hub-auth.md`](./docs/web-deployment-and-hub-auth.md) · [`docs/browser-auth.md`](./docs/browser-auth.md) · [`docs/install-and-modes.md`](./docs/install-and-modes.md)
 
 ### Examples
 
