@@ -46,10 +46,10 @@ const ADMIN_PIN = resolveEffectiveProfile('admin');
 /** sha256 of the PRE-profile builder's full output: every page, fixed identity/auth/cluster,
  *  no content overrides, the default 64 KiB ceiling — rendered exactly as renderFixed()
  *  below does with `view` undefined. Measured on the pre-profile guide.ts at 536d6a6 and
- *  re-checked at d78c159. It pins "admin ⇒ byte-identical to today" across all 25
- *  sections, the header, the manifest and the footers. Re-pin it only when guide prose is
+ *  re-checked at d78c159. It pins "admin ⇒ byte-identical to today" across all 26
+ *  sections (re-pinned after feat/vm-guide added guide.vm), the header, the manifest and the footers. Re-pin it only when guide prose is
  *  changed on purpose, from that change's parent. */
-const PRE_PROFILE_SHA256 = 'edb76bb1151169d972025e6ebf6dc35cdf68f64dbd601b2140887d6e5e7aa4e6';
+const PRE_PROFILE_SHA256 = 'a2cf3f820ffe03d12d63852d6050b41f6eed714999b9e3a904651ac7e6801c6a';
 
 /** A claude.ai-first mandate, in any of the four wordings the defaults use. */
 const MANDATE = /FIRST[^\n]*`list_claudeai_conversations`|`list_claudeai_conversations` FIRST|start with `list_claudeai_conversations`/;
