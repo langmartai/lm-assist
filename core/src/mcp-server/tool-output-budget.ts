@@ -108,13 +108,15 @@ export interface ToolBudget {
  */
 export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   mcp_profile: {
-    measuredBytes: 766, budgetBytes: 4000, bound: 'HARD_LIMIT', verdict: 'SAFE',
+    measuredBytes: 1249, budgetBytes: 4000, bound: 'HARD_LIMIT', verdict: 'SAFE',
     write: true,
-    note: 'Fixed shape: the active profile plus one line per SHIPPED profile (4 today). ' +
-      'Cannot grow with fleet, session or plugin count — only if someone adds a profile ' +
-      'or writes a longer description, which is what the 4 KB ceiling is here to catch. ' +
-      'Marked write because `set` mutates the advertised surface; called with no ' +
-      'arguments it is a pure read.',
+    note: 'Fixed shape: this connector\'s effective profile/source/pin, the node default, one entry ' +
+      'per SHIPPED profile (4 today: description + connector URL), the unpinned URL and a one-line ' +
+      'connectorsHint. 1249 B = an unpinned read on a langmart-hub node (2026-09-23); a `set` adds ' +
+      'a ~500 B note (~1.8 KB worst). Cannot grow with fleet, session or plugin count — only if ' +
+      'someone adds a profile or writes a longer description, which is what the 4 KB ceiling is ' +
+      'here to catch (mcp-profile-tool.test.ts checks it). Makes no claude.ai call. Marked write ' +
+      'because `set` mutates the node default; called with no arguments it is a pure read.',
   },
   // ── the unbounded registry dumps (tracked debt) ─────────────────────────
   claudeai_list_plugins: {
@@ -375,6 +377,9 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
     'windows_terminal_launch', 'windows_terminal_create', 'windows_terminal_send',
     'windows_terminal_auto_handle', 'windows_terminal_close', 'github_mutate',
     'refresh_connector_tools', 'set_connector_tool_access', 'set_connector_auto_approve',
+    // create/delete write the claude.ai account; `list` is bounded by construction (one line per
+    // profile, never tool names), but the guard must not auto-invoke a tool that can create.
+    'mcp_connectors',
     'claudeai_add_marketplace', 'claudeai_remove_marketplace', 'claudeai_set_plugin_enabled',
     'claudeai_login', 'browser_task',
   ].map((n) => [n, 'destructive/lifecycle: starts, stops or reconfigures real resources']),

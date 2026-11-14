@@ -12,6 +12,8 @@
     { "service": "node", "pathPrefix": "/mcp/pending", "verbs": ["GET"] },
     { "service": "node", "pathPrefix": "/mcp/pending/*/confirm", "verbs": ["POST"], "exact": true },
     { "service": "node", "pathPrefix": "/mcp/pending/*/deny", "verbs": ["POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mcp/profile-connectors", "verbs": ["GET", "POST"], "exact": true },
+    { "service": "node", "pathPrefix": "/mcp/profile-connectors/*", "verbs": ["DELETE"], "exact": true },
     { "service": "node", "pathPrefix": "/health", "verbs": ["GET"] },
     { "service": "node", "pathPrefix": "/hub/status", "verbs": ["GET"] },
     { "service": "node", "pathPrefix": "/claude-ai/mcp/servers", "verbs": ["GET"] }

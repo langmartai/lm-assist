@@ -40,8 +40,11 @@ const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /** Literal segments under /mcp-tools/ — a doc with one of these names would be
  *  unreachable (its GET is shadowed by the literal route) and mintable by a
- *  mistaken POST against the read endpoint. */
-const RESERVED_NAMES: ReadonlySet<string> = new Set(['overlay']);
+ *  mistaken POST against the read endpoint. Keep in step with createMcpToolsRoutes.
+ *  NOT 'profile-connectors': that REST surface moved to /mcp/profile-connectors (spec
+ *  §7.3, amended d7a4d0c) precisely so it is NOT a segment under /mcp-tools/ any more —
+ *  a tool doc named "profile-connectors" is an ordinary, reachable name again. */
+const RESERVED_NAMES: ReadonlySet<string> = new Set(['overlay', 'rev', 'profile']);
 
 export type Validation = GenericValidation;
 

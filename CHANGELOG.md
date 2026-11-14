@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+### Upgrade notes
+- **A pinned connector needs an updated hub.** An older hub drops `?profile=` without a word and answers
+  `/mcp/<profile>` with an HTTP 500, and an older node ignores the pin and serves its default. The banner of
+  a pinned connector names its profile; when it names none, the hub or node that answered predates pins.
+
+### Added
+- **One claude.ai connector per tool loading profile, at `https://mcp.<domain>/mcp/<profile>`.** The hub
+  relays it to the node as `/mcp?profile=<profile>`, a pin that holds for that connector alone, so several
+  connectors can each carry their own profile against one node. A stdio server is pinned with
+  `LM_MCP_PROFILE`, which it forwards to Core in the `x-lm-mcp-profile` header. An unknown pin falls back to
+  the node default and says so. Managing them: the `mcp_connectors` tool, `GET`/`POST /mcp/profile-connectors`
+  and `DELETE /mcp/profile-connectors/:profile`, `lm-assist mcp add|remove --profile <profile>` (Claude Code
+  entry `lm-assist-<profile>`), `lm-assist login --mcp-profile <profile>`, and a Connectors table on the
+  MCP Tools page and pane.
+
+### Changed
+- **The `langmart` profile is now `platform`.** `langmart` is still accepted everywhere a profile name is (a
+  pin, the node-default file, `mcp_profile set`, `POST /mcp-tools/profile`) and is reported back as
+  `platform`.
+- **`POST /mcp-tools/profile` (and `mcp_profile set`) now changes only the node default**, which is what
+  unpinned clients get. A pinned connector keeps its own profile.
+
+### Fixed
+- **`platform` also lists the LangMart plugin under its old name, `ext__langmart-design__*`.** That name stays
+  on a node where `langmart` could not be enabled, and 0.2.4 peers keep advertising it; `platform` and its
+  connector used to show none of the LangMart tools there, and `GET /mcp-tools/profile` reported
+  `ext__langmart` as unmatched.
+
 ## [0.2.5] - 2026-09-23
 
 Pluggable agent harnesses, MCP tool loading profiles, the September round of fleet operations fixes, and

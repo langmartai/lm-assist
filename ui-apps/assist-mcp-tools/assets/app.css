@@ -171,7 +171,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .sdot.ok{background:var(--green)}
 .sdot.bad{background:var(--red)}
 .sdot.unk{background:var(--dim)}
-.slbl{color:var(--txt);width:7rem;flex:none}
+.slbl{color:var(--txt);width:9.5rem;flex:none}
 .sdet{color:var(--dim);word-break:break-word}
 
 /* ── full-screen fatal error (a hard call failure, surfaced verbatim) ───── */

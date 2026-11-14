@@ -52,6 +52,7 @@ import { CLAUDE_CODE_USAGE_TOOL_DEFS, CLAUDE_CODE_USAGE_HANDLERS } from './claud
 import { CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS, CLAUDEAI_ACTIVE_SESSIONS_HANDLERS } from './claudeai-active-sessions';
 import { BROWSER_TASK_TOOL_DEFS, BROWSER_TASK_HANDLERS } from './browser-task';
 import { REFRESH_CONNECTOR_TOOL_DEFS, REFRESH_CONNECTOR_HANDLERS } from './refresh-connector';
+import { MCP_CONNECTORS_TOOL_DEFS, MCP_CONNECTORS_HANDLERS } from './mcp-connectors';
 import { SCHEDULER_TOOL_DEFS, SCHEDULER_HANDLERS } from './scheduler';
 import { GUIDE_TOOL_DEFS, GUIDE_HANDLERS } from './guide';
 import { SESSION_STATUS_TOOL_DEFS, SESSION_STATUS_HANDLERS } from '../mcp-session-resolver';
@@ -1160,19 +1161,25 @@ export const memoryWriteToolDef = {
 };
 
 
-/** Read or set which tools this node advertises. Deliberately terse: every byte here is
- *  paid by every conversation, and this tool exists to REDUCE that bill. */
+/** Read or set the MCP tool profile. Deliberately terse: every byte here is paid by every
+ *  conversation, and this tool exists to REDUCE that bill. A pin belongs to the CONNECTOR (its
+ *  URL …/mcp/<profile>, or LM_MCP_PROFILE for stdio); `set` writes only the node default. */
 export const mcpProfileToolDef = {
   name: 'mcp_profile',
   description:
-    'Read or set which MCP tools this node advertises. A narrower profile cuts the ' +
-    'per-conversation tools/list cost (basic ~12K tokens vs admin ~75K). Advertise-only: ' +
-    'hidden tools stay callable, so no access changes. Node-global. Omit `set` to read.',
+    'Read or set the MCP tool profile — which tools are advertised. A narrower profile cuts the ' +
+    'per-conversation tools/list cost (basic ~12K tokens vs admin ~75K). Advertise-only: hidden ' +
+    'tools stay callable, so no access changes. Read shows THIS connector\'s profile (its URL pin, ' +
+    'else the node default) and each profile\'s connector URL. `set` changes the node default, ' +
+    'which only unpinned clients use. Omit `set` to read.',
   annotations: { readOnlyHint: false, destructiveHint: false },
   inputSchema: {
     type: 'object' as const,
     properties: {
-      set: { type: 'string', description: 'basic | langmart | extended | admin. Omit to read.' },
+      set: {
+        type: 'string',
+        description: 'basic | platform | extended | admin ("langmart" = platform). Sets the node default. Omit to read.',
+      },
     },
     required: [] as string[],
   },
@@ -1286,6 +1293,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS,
   ...BROWSER_TASK_TOOL_DEFS,
   ...REFRESH_CONNECTOR_TOOL_DEFS,
+  // one claude.ai connector per tool-loading profile (list/create/delete)
+  ...MCP_CONNECTORS_TOOL_DEFS,
   ...SCHEDULER_TOOL_DEFS,
   ...GUIDE_TOOL_DEFS,
   ...SESSION_STATUS_TOOL_DEFS,
@@ -2443,33 +2452,48 @@ async function handleRuleProjects(): Promise<McpToolResult> {
  */
 
 async function handleMcpProfile(args: Record<string, unknown>): Promise<McpToolResult> {
-  const { PROFILE_DEFINITIONS, activeProfileName, setActiveProfile, readProfileState } =
-    require('../registry/profiles') as typeof import('../registry/profiles');
-  const { bumpToolsRev } = require('../registry/tools-rev') as typeof import('../registry/tools-rev');
+  // Lazy requires: this module is also loaded by the stdio process, which never runs this
+  // handler (its dispatcher forwards every EXPANDED_HANDLERS tool to Core over /mcp-call).
+  const { PROFILE_DEFINITIONS } = require('../registry/profiles') as typeof import('../registry/profiles');
+  const { profileReport, setNodeDefaultProfile, connectorsHintFor } =
+    require('../registry/profile-report') as typeof import('../registry/profile-report');
+  const { currentEffectiveProfile } = require('../principal-context') as typeof import('../principal-context');
 
+  // THIS connector's profile: set by the HTTP handler from ?profile=, or by /mcp-call from the
+  // stdio pin header. Absent ⇒ the node default.
+  const caller = currentEffectiveProfile();
   const want = typeof args.set === 'string' ? args.set.trim() : '';
+  let change: import('../registry/profile-report').NodeDefaultChange | null = null;
   if (want) {
     try {
-      setActiveProfile(want, 'mcp_profile');
+      // Writes the node default, bumps the tools rev, and fires the unpinned-connector refresh.
+      change = setNodeDefaultProfile(want, 'mcp_profile', caller);
     } catch (e) {
       return err(e instanceof Error ? e.message : String(e));
     }
-    // Tell connected clients their tool list is stale. Over stdio this reaches Claude
-    // Code within the watcher's poll; a claude.ai connector caches tools/list and needs
-    // `refresh_connector_tools` — say so rather than let it look instant.
-    bumpToolsRev();
   }
-
-  const active = activeProfileName();
+  // A read makes NO claude.ai call — this tool is protected and always listed. Per-profile
+  // claude.ai status is mcp_connectors {action:"list"} — connectorsHintFor says so, and says where
+  // that tool is listed when THIS connector's profile hides it.
+  const r = change ? change.report : profileReport(caller);
+  const conns = r.connectors;
   return ok(pretty({
-    active,
-    setAt: readProfileState().setAt ?? null,
+    effective: r.effective,
+    source: r.source,
+    pin: r.pin,
+    ...(r.unknownPin ? { unknownPin: true } : {}),
+    nodeDefault: r.nodeDefault,
+    setAt: r.setAt,
     profiles: Object.fromEntries(
-      Object.entries(PROFILE_DEFINITIONS).map(([n, d]) => [n, d.description])
+      Object.entries(PROFILE_DEFINITIONS).map(([n, d]) => [
+        n,
+        conns ? { description: d.description, connector: conns.byProfile[n] } : { description: d.description },
+      ]),
     ),
-    ...(want
-      ? { note: 'Advertised set changed. Claude Code picks this up within ~30s; a claude.ai connector caches tools/list — call refresh_connector_tools there.' }
-      : {}),
+    unpinnedConnector: conns?.unpinned ?? null,
+    // For the profile this caller is served NOW (after a `set`, an unpinned caller moved with it).
+    connectorsHint: connectorsHintFor({ name: r.effective, source: r.source }),
+    ...(change ? { note: change.note } : {}),
   }));
 }
 
@@ -2590,6 +2614,7 @@ export const EXPANDED_HANDLERS: Record<
   ...CLAUDEAI_ACTIVE_SESSIONS_HANDLERS,
   ...BROWSER_TASK_HANDLERS,
   ...REFRESH_CONNECTOR_HANDLERS,
+  ...MCP_CONNECTORS_HANDLERS,
   ...SCHEDULER_HANDLERS,
   ...GUIDE_HANDLERS,
   ...SESSION_STATUS_HANDLERS,

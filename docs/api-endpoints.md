@@ -181,6 +181,25 @@ The ttyd proxy authenticates itself (it runs before the api-token gate because a
 | POST | `/hub/disconnect` | Disconnect from Hub |
 | PUT | `/hub/config` | Update Hub config (persists to .env) |
 
+### MCP endpoint + tool loading profiles
+
+**Guides:** [`docs/mcp-surfaces.md`](./mcp-surfaces.md#tool-loading-profiles-and-the-per-request-pin) (the pin: resolution, threading, rules) · [`docs/mcp-connector.md`](./mcp-connector.md#one-connector-per-profile) (connector URLs, create, Connect).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST, GET, DELETE | `/mcp` | MCP Streamable HTTP endpoint, stateless (a fresh server per request). The hub relays the public connector here |
+| POST, GET, DELETE | `/mcp?profile=<name>` | Same endpoint, pinned to one tool loading profile for this request: `tools/list`, instructions, result footer, `bootstrap`, `session_status` and `mcp_profile` follow it. An unknown name falls back to the node default, which the banner and footer state. The hub relays a public `/mcp/<name>` as this query |
+| POST | `/mcp-call` | stdio shim `{tool, args}`. The header `x-lm-mcp-profile` carries the stdio process's `LM_MCP_PROFILE` pin |
+| GET | `/mcp-tools/profile` | The node default (`nodeDefault`, also `active`: what unpinned clients get), every profile with its tool count on this node and any unmatched selectors, the known selectors, and this hub's connector URL for each profile |
+| POST | `/mcp-tools/profile` | Set the node default `{profile}`. Applies to unpinned clients only; pinned connectors are unaffected. Also clears the unpinned claude.ai connectors' cached tool list (fire-and-forget) |
+| GET | `/mcp/profile-connectors` | `{base, hub, nodeDefault, claudeai: {ok, error?}, unpinned, profiles[], unknownPins[]}`. Each row has the URL on this node's hub, the suggested connector name, the claude.ai connector for that URL (`{uuid, name, connected, authStatus, toolCount}`, or `null`) and a count of duplicates. `unknownPins` are connectors on this hub whose profile this node does not define. When claude.ai cannot be read, the URLs still come back with `claudeai.ok: false`. Never lists tool names. `HUB_NOT_CONFIGURED` on a node without a hub |
+| POST | `/mcp/profile-connectors` | Create the claude.ai connector for `{profile}` (an alias is canonicalised), named `lm-assist <hub> <profile>`. Idempotent by URL and serialised: an existing connector is returned. Replies `{created, profile, url, connector, nextStep}`, where `nextStep` is *Connect* in claude.ai. Needs a claude.ai session on the node (`CLAUDEAI_UNAVAILABLE` otherwise) |
+| DELETE | `/mcp/profile-connectors/:profile` | Remove every claude.ai connector whose URL is this node's hub `/mcp/<profile>`. Replies `{profile, url, removed, failed}`. The unpinned connector cannot be removed through this route |
+
+These two routes sit under `/mcp/` rather than `/mcp-tools/` on purpose: an older Core reads any
+one-segment path under `/mcp-tools` as a tool name (a stray `POST` there would write a junk
+registry doc), while `/mcp/<x>` has no catch-all and answers a clean 404.
+
 ### Claude Code OAuth (14 endpoints)
 
 **Full guide:** [`docs/claude-code-routes.md`](./claude-code-routes.md).

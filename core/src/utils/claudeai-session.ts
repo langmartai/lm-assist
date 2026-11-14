@@ -1227,6 +1227,24 @@ export async function clearMcpServerCache(serverUuid: string, opts: { orgUuid?: 
   }
 }
 
+// ─── enabled_mcp_tools: one writer at a time, many connectors per write ───────
+//
+// claude.ai's PATCH /api/account/settings REPLACES the whole enabled_mcp_tools map (see
+// patchAccountSettings), so every writer is a read-modify-write of the ENTIRE map. Two writers in
+// flight — tool access and auto-approve, or two connectors synced at once — read the same map and
+// the second PATCH silently drops the first one's keys. Every RMW of the map in this process runs
+// through this promise-chain queue, and applyConnectorToolUpdates folds N connectors into ONE RMW.
+// (Another process, or the browser, can still interleave; this closes the in-process race, which
+// is the one connector upkeep creates.)
+let enabledMcpToolsQueue: Promise<unknown> = Promise.resolve();
+
+/** Run `fn` once every previously queued map writer has settled (resolved OR rejected). */
+export function withEnabledMcpToolsLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = enabledMcpToolsQueue.then(() => fn());
+  enabledMcpToolsQueue = run.catch(() => undefined);
+  return run;
+}
+
 /** GET /api/account → settings.enabled_mcp_tools — the current full tool map. */
 export async function getEnabledMcpTools(): Promise<Record<string, boolean>> {
   const r = await claudeaiGet('/api/account', { referer: 'https://claude.ai/customize/connectors' });
@@ -1284,31 +1302,38 @@ export async function setMcpToolsAccess(
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(connectorUuid)) {
     throw new Error(`Invalid MCP server UUID: ${connectorUuid}`);
   }
-  // READ the full current map (PATCH replaces wholesale, so we must round-trip it).
-  const map: Record<string, boolean> = { ...(await getEnabledMcpTools()) };
-  if (Object.keys(map).length === 0) {
-    throw new Error('refusing to write an empty enabled_mcp_tools map (read returned nothing) — would wipe all tool settings');
-  }
-  const changed: Record<string, boolean> = {};
-  for (const [tool, enabled] of Object.entries(changes)) {
-    const key = `${connectorUuid}:${tool}`;
-    map[key] = enabled;
-    changed[key] = enabled;
-  }
-  const res = await patchAccountSettings({ enabled_mcp_tools: map });
-  return { status: res.status, statusText: res.statusText, headers: res.headers, body: { changed, totalKeys: Object.keys(map).length } };
+  return withEnabledMcpToolsLock(async () => {
+    // READ the full current map (PATCH replaces wholesale, so we must round-trip it).
+    const map: Record<string, boolean> = { ...(await getEnabledMcpTools()) };
+    if (Object.keys(map).length === 0) {
+      throw new Error('refusing to write an empty enabled_mcp_tools map (read returned nothing) — would wipe all tool settings');
+    }
+    const changed: Record<string, boolean> = {};
+    for (const [tool, enabled] of Object.entries(changes)) {
+      const key = `${connectorUuid}:${tool}`;
+      map[key] = enabled;
+      changed[key] = enabled;
+    }
+    const res = await patchAccountSettings({ enabled_mcp_tools: map });
+    return { status: res.status, statusText: res.statusText, headers: res.headers, body: { changed, totalKeys: Object.keys(map).length } };
+  });
 }
+
+/** One MCP tool as the org bootstrap's `tools` event lists it. */
+export type McpToolObj = { name: string; enabled_key?: string; always_approved_key?: string };
 
 /** Pure: merge the connector tools' always_approved_key (+ enabled_key) into the current
  *  enabled_mcp_tools map. `enable` true = auto-approve; false = clear it. Tools without an
- *  always_approved_key are skipped. Never mutates the input map. Exported for tests. */
+ *  always_approved_key are skipped. Never mutates the input map. Exported for tests.
+ *  `toolNames` OMITTED = every tool the connector lists; an EMPTY list = no tool. Always-approve
+ *  removes the human approval gate, so an empty scope must never widen to "all". */
 export function buildAutoApproveMap(
   toolObjs: Array<{ name: string; enabled_key?: string; always_approved_key?: string }>,
   currentMap: Record<string, boolean>,
   enable: boolean,
   toolNames?: string[],
 ): { map: Record<string, boolean>; changed: string[]; skipped: string[] } {
-  const want = toolNames && toolNames.length ? new Set(toolNames) : null;
+  const want = toolNames ? new Set(toolNames) : null;
   const map: Record<string, boolean> = { ...currentMap };
   const changed: string[] = [];
   const skipped: string[] = [];
@@ -1338,23 +1363,216 @@ export async function setMcpToolsAutoApprove(
     throw new Error(`Invalid MCP server UUID: ${connectorUuid}`);
   }
   // Bootstrap → this connector's tool objects (each carries enabled_key + always_approved_key).
+  // Read OUTSIDE the map lock: it can take up to 30 s and does not touch the account map.
   const boot = await getOrgMcpBootstrap();
   const events: Array<{ type: string; data: any }> = boot.body?.events || [];
-  let toolObjs: Array<{ name: string; enabled_key?: string; always_approved_key?: string }> = [];
+  let toolObjs: McpToolObj[] = [];
   for (const e of events) {
     if (e.type === 'tools' && e.data?.server_uuid === connectorUuid) toolObjs = e.data.tools || [];
   }
   if (toolObjs.length === 0) {
     throw new Error(`No tools found for connector ${connectorUuid} (is it connected? check list_claudeai_connectors).`);
   }
-  // READ the full current map (PATCH replaces wholesale, so we must round-trip it).
-  const current: Record<string, boolean> = await getEnabledMcpTools();
-  if (Object.keys(current).length === 0) {
-    throw new Error('refusing to write an empty enabled_mcp_tools map (read returned nothing) — would wipe all tool settings');
+  return withEnabledMcpToolsLock(async () => {
+    // READ the full current map (PATCH replaces wholesale, so we must round-trip it).
+    const current: Record<string, boolean> = await getEnabledMcpTools();
+    if (Object.keys(current).length === 0) {
+      throw new Error('refusing to write an empty enabled_mcp_tools map (read returned nothing) — would wipe all tool settings');
+    }
+    const { map, changed, skipped } = buildAutoApproveMap(toolObjs, current, enable, toolNames);
+    const res = await patchAccountSettings({ enabled_mcp_tools: map });
+    return { status: res.status, statusText: res.statusText, headers: res.headers, body: { changed, skipped, totalKeys: Object.keys(map).length } };
+  });
+}
+
+// ─── batched connector tool settings (N connectors, ONE read-modify-write) ────
+
+/** One connector's changes in a batch. */
+export interface ConnectorToolUpdate {
+  connectorUuid: string;
+  /** tool name → true (enabled) / false (blocked); written as `<uuid>:<tool>`. */
+  access?: Record<string, boolean>;
+  /** Always-approve. `tools` omitted = every tool the connector lists; an empty list = no tool
+   *  (the validator refuses one). `carryForward` = only the tools that already hold an
+   *  always-approved key under an OLDER version hash — it re-keys prior approvals after a refetch
+   *  and never approves anything new. */
+  autoApprove?: { enable: boolean; tools?: string[]; carryForward?: boolean };
+}
+
+export interface ConnectorToolUpdateResult {
+  connectorUuid: string;
+  accessChanged: string[];
+  approved: string[];
+  skipped: string[];
+  /** Set when autoApprove was asked for a connector the live bootstrap lists no tools for. */
+  error?: string;
+}
+
+const MCP_SERVER_UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+const MAX_BATCH_CONNECTORS = 50;
+/** A refused value, as sent, bounded so a huge body cannot bloat the error. */
+const echo = (v: unknown): string => {
+  const j = JSON.stringify(v);
+  return j === undefined ? String(v) : j.length > 200 ? `${j.slice(0, 200)}…` : j;
+};
+
+/**
+ * Pure: parse a caller's always-approve `tools` scope. OMITTED (undefined) = every tool the
+ * connector lists. Anything else must be an array that still names a tool once non-strings are
+ * dropped. Always-approve removes the human approval gate, so an empty or malformed scope (`[]`,
+ * `[7]`, `"x"`, `null`) is refused, echoing what was sent — never read as "every tool".
+ * `error` completes a sentence that starts with the field's name.
+ */
+export function parseAutoApproveTools(raw: unknown): { tools?: string[] } | { error: string } {
+  if (raw === undefined) return {};
+  if (!Array.isArray(raw)) return { error: `must be an array of tool names, got ${echo(raw)}` };
+  const tools = raw.filter((t): t is string => typeof t === 'string');
+  if (tools.length === 0) {
+    return { error: `names no tool (got ${echo(raw)}); omit it to mean every tool the connector lists` };
   }
-  const { map, changed, skipped } = buildAutoApproveMap(toolObjs, current, enable, toolNames);
-  const res = await patchAccountSettings({ enabled_mcp_tools: map });
-  return { status: res.status, statusText: res.statusText, headers: res.headers, body: { changed, skipped, totalKeys: Object.keys(map).length } };
+  return { tools };
+}
+
+/** Pure: validate a raw batch body. Refuses loudly (naming the bad field) and keeps only known fields. */
+export function validateConnectorToolUpdates(
+  raw: unknown,
+): { updates: ConnectorToolUpdate[] } | { error: { code: string; message: string } } {
+  const invalid = (message: string) => ({ error: { code: 'INVALID_INPUT', message } });
+  const list = raw && typeof raw === 'object' ? (raw as { updates?: unknown }).updates : undefined;
+  if (!Array.isArray(list) || list.length === 0) {
+    return { error: { code: 'NO_UPDATES', message: 'body.updates must be a non-empty array' } };
+  }
+  if (list.length > MAX_BATCH_CONNECTORS) {
+    return { error: { code: 'TOO_MANY_UPDATES', message: `at most ${MAX_BATCH_CONNECTORS} connectors per batch` } };
+  }
+  const updates: ConnectorToolUpdate[] = [];
+  for (const [i, u] of list.entries()) {
+    if (!u || typeof u !== 'object' || Array.isArray(u)) return invalid(`updates[${i}] must be an object`);
+    const o = u as Record<string, unknown>;
+    if (typeof o.connectorUuid !== 'string' || !MCP_SERVER_UUID_RE.test(o.connectorUuid)) {
+      return { error: { code: 'INVALID_UUID', message: `updates[${i}].connectorUuid must be a UUID: got ${JSON.stringify(o.connectorUuid)}` } };
+    }
+    const out: ConnectorToolUpdate = { connectorUuid: o.connectorUuid };
+    if (o.access !== undefined) {
+      if (!o.access || typeof o.access !== 'object' || Array.isArray(o.access)) {
+        return invalid(`updates[${i}].access must be an object of tool name → boolean`);
+      }
+      const access: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(o.access as Record<string, unknown>)) {
+        if (typeof v !== 'boolean') return invalid(`updates[${i}].access.${k} must be a boolean, got ${JSON.stringify(v)}`);
+        access[k] = v;
+      }
+      out.access = access;
+    }
+    if (o.autoApprove !== undefined) {
+      const a = o.autoApprove as Record<string, unknown> | null;
+      if (!a || typeof a !== 'object' || typeof a.enable !== 'boolean') {
+        return invalid(`updates[${i}].autoApprove.enable must be a boolean`);
+      }
+      const scope = parseAutoApproveTools(a.tools);
+      if ('error' in scope) return invalid(`updates[${i}].autoApprove.tools ${scope.error}`);
+      out.autoApprove = {
+        enable: a.enable,
+        ...(scope.tools ? { tools: scope.tools } : {}),
+        ...(a.carryForward === true ? { carryForward: true } : {}),
+      };
+    }
+    if (!out.access && !out.autoApprove) {
+      return { error: { code: 'NO_CHANGES', message: `updates[${i}] has neither access nor autoApprove` } };
+    }
+    updates.push(out);
+  }
+  return { updates };
+}
+
+/** Tools of `uuid` that hold an always-approved key (`<uuid>:<tool>-<32 hex>` = true). */
+function priorApprovedTools(map: Record<string, boolean>, uuid: string): Set<string> {
+  const out = new Set<string>();
+  const head = `${uuid}:`;
+  for (const [k, v] of Object.entries(map)) {
+    if (v !== true || !k.startsWith(head)) continue;
+    const m = /^(.+)-[0-9a-f]{32}$/.exec(k.slice(head.length));
+    if (m) out.add(m[1]);
+  }
+  return out;
+}
+
+/** Pure: apply every update to one copy of the map. Never mutates `currentMap`. Exported for tests. */
+export function applyConnectorToolUpdatesToMap(
+  updates: ConnectorToolUpdate[],
+  toolObjsByUuid: Record<string, McpToolObj[]>,
+  currentMap: Record<string, boolean>,
+): { map: Record<string, boolean>; results: ConnectorToolUpdateResult[] } {
+  let map: Record<string, boolean> = { ...currentMap };
+  const results: ConnectorToolUpdateResult[] = [];
+  for (const u of updates) {
+    const r: ConnectorToolUpdateResult = { connectorUuid: u.connectorUuid, accessChanged: [], approved: [], skipped: [] };
+    for (const [tool, enabled] of Object.entries(u.access || {})) {
+      map[`${u.connectorUuid}:${tool}`] = enabled;
+      r.accessChanged.push(tool);
+    }
+    if (u.autoApprove) {
+      const objs = toolObjsByUuid[u.connectorUuid] || [];
+      if (objs.length === 0) {
+        r.error = `connector ${u.connectorUuid} lists no tools in the live bootstrap (not connected?)`;
+      } else if (u.autoApprove.carryForward) {
+        const prior = priorApprovedTools(map, u.connectorUuid);
+        // `tools` omitted = no extra filter; an empty list = no tool (it never means "all").
+        const want = u.autoApprove.tools ? new Set(u.autoApprove.tools) : null;
+        const names = objs.map((t) => t.name).filter((n) => prior.has(n) && (!want || want.has(n)));
+        // Empty = nothing in scope was approved before, so there is nothing to re-key.
+        if (names.length) {
+          const built = buildAutoApproveMap(objs, map, u.autoApprove.enable, names);
+          map = built.map;
+          r.approved = built.changed;
+          r.skipped = built.skipped;
+        }
+      } else {
+        // `tools: []` approves nothing: buildAutoApproveMap reads only an OMITTED list as every tool.
+        const built = buildAutoApproveMap(objs, map, u.autoApprove.enable, u.autoApprove.tools);
+        map = built.map;
+        r.approved = built.changed;
+        r.skipped = built.skipped;
+      }
+    }
+    results.push(r);
+  }
+  return { map, results };
+}
+
+/**
+ * Apply tool access and/or auto-approve for SEVERAL connectors in ONE serialized read-modify-write
+ * of enabled_mcp_tools. The bootstrap is read once, outside the lock, and only when an update asks
+ * for auto-approval. Reading it is also what makes claude.ai re-fetch a connector whose cache was
+ * just cleared. No PATCH is sent when nothing changed.
+ */
+export async function applyConnectorToolUpdates(
+  updates: ConnectorToolUpdate[],
+): Promise<ClaudeAIResponse<{ results: ConnectorToolUpdateResult[]; totalKeys: number; patched: boolean }>> {
+  for (const u of updates) {
+    if (!MCP_SERVER_UUID_RE.test(u.connectorUuid)) throw new Error(`Invalid MCP server UUID: ${u.connectorUuid}`);
+  }
+  const toolObjsByUuid: Record<string, McpToolObj[]> = {};
+  if (updates.some((u) => u.autoApprove)) {
+    const boot = await getOrgMcpBootstrap();
+    for (const e of (boot.body?.events || []) as Array<{ type: string; data: any }>) {
+      if (e.type === 'tools' && e.data?.server_uuid) toolObjsByUuid[e.data.server_uuid] = e.data.tools || [];
+    }
+  }
+  return withEnabledMcpToolsLock(async () => {
+    const current = await getEnabledMcpTools();
+    if (Object.keys(current).length === 0) {
+      throw new Error('refusing to write an empty enabled_mcp_tools map (read returned nothing) — would wipe all tool settings');
+    }
+    const { map, results } = applyConnectorToolUpdatesToMap(updates, toolObjsByUuid, current);
+    const totalKeys = Object.keys(map).length;
+    const dirty = Object.keys(map).some((k) => map[k] !== current[k]);
+    if (!dirty) {
+      return { status: 200, statusText: 'OK (no change)', headers: {}, body: { results, totalKeys, patched: false } };
+    }
+    const res = await patchAccountSettings({ enabled_mcp_tools: map });
+    return { status: res.status, statusText: res.statusText, headers: res.headers, body: { results, totalKeys, patched: true } };
+  });
 }
 
 /**
@@ -3026,18 +3244,117 @@ function debugAA(msg: string): void {
   if (DEBUG_AUTOAPPROVE) console.error(`[autoApprove] ${msg}`);
 }
 
-interface ApprovalKeyCacheEntry {
-  /** tool_name -> hash-suffixed approval_key (only for tools with alwaysApprovedKey set on account). */
+export interface ApprovalKeyCacheEntry {
+  /** tool_name -> hash-suffixed approval_key (only for tools with alwaysApprovedKey set on account). LAST connector wins. */
   hashKeys: Record<string, string>;
-  /** tool_name -> bare `<srv>:<tool>` key (present for every MCP tool the connector exposes). */
+  /** tool_name -> bare `<srv>:<tool>` key (present for every MCP tool the connector exposes). LAST connector wins. */
   bareKeys: Record<string, string>;
+  /** server uuid -> that connector's OWN tool -> key maps (exact; the flat maps above are not). */
+  byConnector: Record<string, { hashKeys: Record<string, string>; bareKeys: Record<string, string> }>;
+  /** lowercased connector name (the `<integration>:` prefix on a tool_use name) -> server uuid. */
+  uuidByName: Record<string, string>;
   expiresAt: number;
+}
+
+const APPROVAL_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+// Tool names may carry '-' and '.' (plugin tools: `ext__demo-plugin__alerts_list`); the old
+// `[a-zA-Z0-9_]+` silently skipped them, so their driven approvals answered 204 "not exposed".
+// The in-page mirror for the Chrome transport (claudeai-via-chrome.ts APPROVAL_SELECT_JS) uses
+// the same two patterns; approval-select-parity.test.ts runs both over the same inputs.
+const APPROVAL_HASH_KEY_RE = new RegExp(`^(${APPROVAL_UUID}):([A-Za-z0-9_.-]+)-([0-9a-f]{32})$`);
+const APPROVAL_BARE_KEY_RE = new RegExp(`^(${APPROVAL_UUID}):([A-Za-z0-9_.-]+)$`);
+
+/** How long a driven approval waits for the connector roster (names → uuids) on a cache miss.
+ *  The roster is the org bootstrap stream, which may run to its own 30 s abort; the approval it
+ *  serves is holding a live completion. Past this wait the entry is built without names and
+ *  selection falls back to the flat maps — exactly the behaviour before per-connector keys. */
+const APPROVAL_ROSTER_WAIT_MS = 8_000;
+
+/** A best-effort read that never holds its caller longer than `ms`: null on timeout or error.
+ *  The underlying request keeps running to its own timeout; only the wait is bounded. */
+function settleWithin<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); });
+  return Promise.race([p.catch(() => null), timeout]).finally(() => clearTimeout(timer));
+}
+
+/** Pure: index a conversation's enabled_mcp_tools keys, flat and per connector. Exported for tests. */
+export function indexApprovalKeys(
+  settings: Record<string, unknown>,
+): Pick<ApprovalKeyCacheEntry, 'hashKeys' | 'bareKeys' | 'byConnector'> {
+  const hashKeys: Record<string, string> = {};
+  const bareKeys: Record<string, string> = {};
+  const byConnector: ApprovalKeyCacheEntry['byConnector'] = {};
+  const own = (uuid: string) => (byConnector[uuid] ??= { hashKeys: {}, bareKeys: {} });
+  for (const k of Object.keys(settings)) {
+    const mh = APPROVAL_HASH_KEY_RE.exec(k);
+    if (mh) {
+      hashKeys[mh[2]] = k;
+      own(mh[1]).hashKeys[mh[2]] = k;
+      continue;
+    }
+    const mb = APPROVAL_BARE_KEY_RE.exec(k);
+    if (mb) {
+      bareKeys[mb[2]] = k;
+      own(mb[1]).bareKeys[mb[2]] = k;
+    }
+  }
+  return { hashKeys, bareKeys, byConnector };
+}
+
+/**
+ * Pure: the approval key for a claude.ai tool_use name (`<integration>:<tool>`, or a bare `<tool>`).
+ * When the integration prefix names a known connector, the key comes from THAT connector only —
+ * and if that connector holds no key for the tool, there is NO key (approveToolUse answers 204).
+ * Several lm-assist connectors expose the same tool names, and the flat maps answer with whichever
+ * connector was written last: borrowing from them here would send connector A's key for B's
+ * tool_use (a 4xx, and a bare fallback from A that fails too). Only when the prefix is absent or
+ * names no known connector are the flat maps used, keeping the hash key and its bare fallback from
+ * ONE connector. Mirrored in-page for the Chrome transport (claudeai-via-chrome.ts).
+ */
+export function selectApprovalKey(
+  entry: Pick<ApprovalKeyCacheEntry, 'hashKeys' | 'bareKeys' | 'byConnector' | 'uuidByName'>,
+  toolName: string,
+): { key?: string; bare?: string } {
+  const cut = toolName.lastIndexOf(':');
+  const tool = cut >= 0 ? toolName.slice(cut + 1) : toolName;
+  const integration = cut >= 0 ? toolName.slice(0, cut).trim().toLowerCase() : '';
+  const uuid = integration && Object.hasOwn(entry.uuidByName, integration) ? entry.uuidByName[integration] : undefined;
+  if (uuid) {
+    const own = Object.hasOwn(entry.byConnector, uuid) ? entry.byConnector[uuid] : undefined;
+    const bare = own?.bareKeys[tool] || undefined;
+    return { key: own?.hashKeys[tool] || bare, bare };
+  }
+  const hash = entry.hashKeys[toolName] || entry.hashKeys[tool];
+  if (hash) {
+    const hashUuid = hash.slice(0, hash.indexOf(':'));
+    const bare = entry.byConnector[hashUuid]?.bareKeys[tool] ?? entry.bareKeys[toolName] ?? entry.bareKeys[tool];
+    return { key: hash, bare };
+  }
+  const bare = entry.bareKeys[toolName] || entry.bareKeys[tool];
+  return { key: bare, bare };
 }
 const approvalKeyCache = new Map<string, ApprovalKeyCacheEntry>();
 
 export function clearApprovalKeyCache(orgUuid?: string): void {
   if (orgUuid) approvalKeyCache.delete(orgUuid);
   else approvalKeyCache.clear();
+}
+
+/**
+ * The connector roster a driven approval needs: lowercased connector name (the `<integration>:`
+ * prefix claude.ai puts on a tool_use name) → server uuid. Best-effort and bounded by
+ * APPROVAL_ROSTER_WAIT_MS: on a timeout, an error or no claude.ai session it is `{}`, and selection
+ * falls back to the flat maps — the behaviour before per-connector keys. Shared by
+ * discoverApprovalKeys (cookie transport) and the Chrome transport's snippet builder.
+ */
+export async function approvalConnectorRoster(orgUuid?: string): Promise<Record<string, string>> {
+  const roster = await settleWithin(listMcpRemoteServers(orgUuid ? { orgUuid } : {}), APPROVAL_ROSTER_WAIT_MS);
+  const uuidByName: Record<string, string> = {};
+  for (const s of roster?.body?.servers || []) {
+    if (s.uuid && s.name) uuidByName[s.name.trim().toLowerCase()] = s.uuid;
+  }
+  return uuidByName;
 }
 
 /**
@@ -3069,29 +3386,25 @@ export async function discoverApprovalKeys(orgUuidArg?: string): Promise<Approva
   // plus hash keys for tools previously always-approved).
   // autoDeleteHours backstop: the probe is best-effort-deleted below, but tag it with a short TTL so a
   // lingering probe (if that delete fails) self-cleans via the cleanup sweep.
-  const probe = await createConversation({ orgUuid, name: 'lm-assist-approval-probe', autoDeleteHours: 2 });
+  // The connector roster runs IN PARALLEL: its names map a tool_use's `<integration>:` prefix to a
+  // connector uuid. Best-effort and bounded — without it selection falls back to the flat maps, as before.
+  const [probe, uuidByName] = await Promise.all([
+    createConversation({ orgUuid, name: 'lm-assist-approval-probe', autoDeleteHours: 2 }),
+    approvalConnectorRoster(orgUuid),
+  ]);
   if (probe.status >= 400) {
     throw new Error(`probe conversation create failed: ${probe.status} ${probe.statusText}`);
   }
   const settings = (probe.body as any)?.settings?.enabled_mcp_tools || {};
-  const hashKeys: Record<string, string> = {};
-  const bareKeys: Record<string, string> = {};
-  const HASH_KEY_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([a-zA-Z0-9_]+)-([0-9a-f]{32})$/;
-  const BARE_KEY_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([a-zA-Z0-9_]+)$/;
-  for (const k of Object.keys(settings)) {
-    const mh = k.match(HASH_KEY_RE);
-    if (mh) {
-      hashKeys[mh[2]] = k;
-      continue;
-    }
-    const mb = k.match(BARE_KEY_RE);
-    if (mb) bareKeys[mb[2]] = k;
-  }
   // Cleanup probe conv (best-effort — failure here doesn't affect caller)
   if (probe.uuid) {
     deleteConversation(probe.uuid, { orgUuid }).catch(() => { /* ignore */ });
   }
-  const entry: ApprovalKeyCacheEntry = { hashKeys, bareKeys, expiresAt: Date.now() + APPROVAL_KEY_TTL_MS };
+  const entry: ApprovalKeyCacheEntry = {
+    ...indexApprovalKeys(settings),
+    uuidByName,
+    expiresAt: Date.now() + APPROVAL_KEY_TTL_MS,
+  };
   approvalKeyCache.set(orgUuid, entry);
   return entry;
 }
@@ -3130,15 +3443,14 @@ export async function approveToolUse(opts: {
   let bareFallback: string | undefined;
   if (!approvalKey) {
     const entry = await discoverApprovalKeys(orgUuid);
-    // claude.ai's SSE delivers MCP tool names as `<integration>:<tool>`
-    // (e.g. `lm-assist:search_memory`). The probe conv's
-    // enabled_mcp_tools indexes by bare `<tool>` only. Try both shapes.
-    const fullName = opts.toolName;
-    const strippedName = fullName.includes(':') ? fullName.split(':').pop() || fullName : fullName;
-    const bare = entry.bareKeys[fullName] || entry.bareKeys[strippedName];
-    approvalKey = entry.hashKeys[fullName] || entry.hashKeys[strippedName] || bare;
+    // claude.ai's SSE names an MCP tool `<integration>:<tool>` (e.g. `lm-assist langmart basic:search`).
+    // With several lm-assist connectors exposing the SAME tool names, the integration prefix is the
+    // only thing that says which connector's key this call needs — selectApprovalKey uses it.
+    const picked = selectApprovalKey(entry, opts.toolName);
+    const bare = picked.bare;
+    approvalKey = picked.key;
     if (!approvalKey) {
-      return { status: 204, statusText: 'No Content (tool not exposed by any connector)', body: null };
+      return { status: 204, statusText: 'No Content (tool not exposed by the connector it names, or by any connector)', body: null };
     }
     // Keep the bare `<srv>:<tool>` key as a fallback when we picked a HASH-suffixed key: a STALE hash
     // (tool defs changed, e.g. after a connector refresh) makes /tool_approval 404, but the bare key

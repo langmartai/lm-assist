@@ -1,5 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the lm-assist imports: bootstrap serves the node-default profile's
+// playbooks (`basic` leaves out machine-access), read from the profile file under
+// getDataDir(). Never the developer's real ~/.lm-assist.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'machine-access-guide-'));
 import { GUIDE_HANDLERS, GUIDES_TEST_EXPORT } from '../mcp-server/tools/guide';
 
 const guide = (args: Record<string, unknown>) => GUIDE_HANDLERS.guide(args);

@@ -38,7 +38,7 @@ import {
   NODE_PARAM,
 } from './tools/definitions';
 import { EXPANDED_TOOL_DEFS } from './tools/expanded';
-import { logToolCall } from './mcp-logger';
+import { logToolCall, logToolsList } from './mcp-logger';
 import { applyOverlayToToolDefs, isToolDisabled, disabledResult, type OverlayProvider, type ToolOverlay } from './registry/overlay';
 
 /** A third-party plugin tool as advertised on our surface: already namespaced
@@ -192,6 +192,9 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   refresh_connector_tools: 'write',
   set_connector_tool_access: 'write',
   set_connector_auto_approve: 'write',
+  // Creates/deletes connectors on the user's claude.ai account — admin, like other account writes
+  // with lasting effect. A missing entry here CRASHES Core on tools/list (assertScopesCoverTools).
+  mcp_connectors: 'admin',
   scheduler_jobs: 'write',
   agent_abort: 'write',
   agent_resume: 'write',
@@ -556,17 +559,73 @@ import { enrichBootstrapWithIdentity, bootstrapGateCheck } from './mcp-session-r
 import { withOriginTag } from './result-origin';
 import { capToolResult, type ResultSize } from './result-cap';
 import { getHubConfig } from '../hub-client/hub-config';
-import { hubHostOf, envLabelOf } from './fleet-identity';
-import { applyProfileToToolDefs, activeProfileName } from './registry/profiles';
+import { hubHostOf, envLabelOf, shouldNameProfile, profilePhrase, type ConnectorEnv } from './fleet-identity';
+import {
+  applyProfileToToolDefs, liveEffectiveProfile, profileNeedsExtTools, type EffectiveProfile,
+} from './registry/profiles';
+import { currentEffectiveProfile, currentMcpContext, runWithMcpContext } from './principal-context';
 
 /**
- * MCP `instructions` for THIS connector — the always-sent body prefixed with a
- * one-line ENVIRONMENT banner (PRODUCTION vs DEVELOPMENT) so an LLM that has
- * BOTH lm-assist connectors attached can tell them apart and pick the right one
- * up-front (not just from the per-result origin footer). Resolved at connect
- * time from the hub this instance serves. NEVER throws.
+ * The pre-profile banner, VERBATIM. No pin + node default `admin` (the shipped default) must
+ * produce exactly this — the byte-identity contract of the per-connector-profile spec
+ * (2026-09-23 §3), snapshotted in mcp-profile-identity-text.test.ts. Do not edit it; a
+ * profile-aware change belongs in profileBanner.
  */
-export function getLmAssistInstructions(): string {
+function legacyBanner(env: ConnectorEnv, hub: string | null): string {
+  return (
+    `⟦THIS CONNECTOR⟧ lm-assist · ${env}${hub ? ` (hub ${hub})` : ' (local)'}. ` +
+    `A PRODUCTION connector (hub *.langmart.ai) and a DEVELOPMENT connector (hub *.xeenhub.com) may BOTH be ` +
+    `attached to this conversation: SAME tool names, INDEPENDENT instances over SEPARATE fleets (no shared ` +
+    `state). Use PRODUCTION for the user's real hosts/data/actions; use DEVELOPMENT only to test lm-assist ` +
+    `itself. They are independent — if one connector is down or a tool ERRORS on it, the OTHER still works, so ` +
+    `fall back to it. Every result is footer-tagged with its hub (⟦lm-assist@<hub>…⟧) so you can confirm which ` +
+    `connector answered.`
+  );
+}
+
+/**
+ * The banner when the profile must be named: a pin (known or unknown) or a narrowed node default.
+ *
+ * 🔴 FIRST SENTENCE + LENGTH. Claude Code cuts instructions at ~2,048 chars (the 3,866-char
+ * production string arrives cut mid-"reverse-engineering"). So the profile sits in the first
+ * sentence, and this banner (647–744 chars measured 2026-09-23, vs the legacy 608) must keep
+ * "FIRST, call the bootstrap tool … ONCE" ending before the cut — worst case today: char 2,039.
+ * The test enumerates every profile × source × hub; grow this text and it fails.
+ *
+ * TWO AXES, because two profile connectors on ONE hub are the same fleet: the legacy "fall back
+ * to the other" advice would send the model to a connector that fails the same way.
+ */
+function profileBanner(env: ConnectorEnv, hub: string | null, p: EffectiveProfile): string {
+  const tagged = p.source === 'pin' || p.unknownPin ? ' with this profile' : '';
+  return (
+    `⟦THIS CONNECTOR⟧ lm-assist · ${env} · ${profilePhrase(p)}${hub ? ` (hub ${hub})` : ' (local)'}. ` +
+    `Other lm-assist connectors differ on two axes. A different HUB is a different FLEET: PRODUCTION ` +
+    `(*.langmart.ai) and DEVELOPMENT (*.xeenhub.com) are INDEPENDENT, no shared state — PRODUCTION for the user's ` +
+    `real hosts/data/actions, DEVELOPMENT only to test lm-assist; if one is down or ERRORS, fall back to the other. ` +
+    `A different PROFILE on the SAME hub (…/mcp/<profile>) is the SAME fleet, nodes and state with another tool ` +
+    `list — NOT a failover (an error here recurs there); use it only for a tool this profile does not list. ` +
+    `Results are footer-tagged ⟦lm-assist@<hub> …⟧${tagged}.`
+  );
+}
+
+/** PURE — the instructions for a given hub / hostname / effective profile. Exported for tests. */
+export function formatLmAssistInstructions(hub: string | null, hostname: string, profile?: EffectiveProfile): string {
+  const env = envLabelOf(hub, hostname);
+  const banner = shouldNameProfile(profile) ? profileBanner(env, hub, profile) : legacyBanner(env, hub);
+  return `${banner}\n\n${LM_ASSIST_INSTRUCTIONS_BODY}`;
+}
+
+/**
+ * MCP `instructions` for THIS connector — the always-sent body prefixed with a banner that
+ * names the ENVIRONMENT (PRODUCTION vs DEVELOPMENT) and, when it matters, the PROFILE, so an
+ * LLM with several lm-assist connectors attached can tell them apart up-front (not just from
+ * the per-result footer). `profile` is the connector's EFFECTIVE profile — HTTP: buildServer's
+ * per-request resolution; stdio: the process pin, else the node default resolved at spawn.
+ * Omitted, or no pin + node default `admin` ⇒ byte-identical to the pre-profile text: the
+ * compatibility contract for every existing client. No I/O beyond the hub-config read it
+ * always did. NEVER throws.
+ */
+export function getLmAssistInstructions(profile?: EffectiveProfile): string {
   let hub: string | null = null;
   let hostname = '';
   try {
@@ -576,20 +635,21 @@ export function getLmAssistInstructions(): string {
   } catch {
     /* config unavailable — fall back to the bare body */
   }
-  const env = envLabelOf(hub, hostname);
-  const banner =
-    `⟦THIS CONNECTOR⟧ lm-assist · ${env}${hub ? ` (hub ${hub})` : ' (local)'}. ` +
-    `A PRODUCTION connector (hub *.langmart.ai) and a DEVELOPMENT connector (hub *.xeenhub.com) may BOTH be ` +
-    `attached to this conversation: SAME tool names, INDEPENDENT instances over SEPARATE fleets (no shared ` +
-    `state). Use PRODUCTION for the user's real hosts/data/actions; use DEVELOPMENT only to test lm-assist ` +
-    `itself. They are independent — if one connector is down or a tool ERRORS on it, the OTHER still works, so ` +
-    `fall back to it. Every result is footer-tagged with its hub (⟦lm-assist@<hub>…⟧) so you can confirm which ` +
-    `connector answered.`;
-  return `${banner}\n\n${LM_ASSIST_INSTRUCTIONS_BODY}`;
+  return formatLmAssistInstructions(hub, hostname, profile);
 }
 
 /** @deprecated Back-compat alias — prefer getLmAssistInstructions() (env-aware). */
 export const LM_ASSIST_INSTRUCTIONS = LM_ASSIST_INSTRUCTIONS_BODY;
+
+/** Per-server options for configureMcpServer. */
+export interface ConfigureMcpOptions {
+  /**
+   * The profile this server serves. HTTP builds one Server per request and passes the
+   * request's resolution; a pinned stdio server passes its process pin. Absent ⇒ the
+   * request context's profile, else the node default — the behaviour before pins.
+   */
+  profile?: EffectiveProfile;
+}
 
 /**
  * @param overlay Optional tool-registry overlay provider (spec §4.4). When present,
@@ -598,12 +658,15 @@ export const LM_ASSIST_INSTRUCTIONS = LM_ASSIST_INSTRUCTIONS_BODY;
  *   apply live with no restart. Absent ⇒ identical behavior to before the registry
  *   existed. Provider errors fail open (defaults served) — the registry is a
  *   management layer, not a security boundary.
+ * @param opts Per-server options (the effective profile). Optional and last, so every
+ *   existing caller is unchanged.
  */
 export function configureMcpServer(
   server: Server,
   dispatch: McpToolDispatcher,
   overlay?: OverlayProvider,
   extTools?: ExtToolDefsProvider,
+  opts?: ConfigureMcpOptions,
 ): void {
   assertScopesCoverTools();
 
@@ -638,22 +701,46 @@ export function configureMcpServer(
   // cost knob behave like a permission, which it is not — TOOL_SCOPES and the admin
   // gate are the security boundary and are untouched here.
   //
-  // This is the seam BOTH transports cross (index.ts:92 stdio, mcp.routes.ts:99 HTTP),
-  // so one filter covers Claude Code and the claude.ai connector alike.
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: applyProfileToToolDefs(
-      applyOverlayToToolDefs(
-        [...LM_ASSIST_TOOL_DEFS, ...(await currentExtDefs())],
-        await currentOverlay(),
-      ),
-      activeProfileName(),
-    ),
-  }));
+  // This is the seam BOTH transports cross (index.ts stdio, mcp.routes.ts HTTP), so one
+  // filter covers Claude Code and the claude.ai connector alike.
+  //
+  // WHICH profile: this server's own (HTTP builds a Server per request and passes the
+  // request's resolution; a pinned stdio server passes its process pin), else the
+  // request context's, else the node default. liveEffectiveProfile keeps a PIN fixed but
+  // re-reads a node-default resolution, so a stdio server resolved at spawn still follows
+  // `mcp_profile set`. No disk beyond activeProfileName()'s 1.5 s cached read.
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const t0 = Date.now();
+    const effective = liveEffectiveProfile(opts?.profile ?? currentEffectiveProfile());
+    // The plugin list can cost a fleet fan-out (fleetExtToolDefs, up to 5 s). A profile
+    // with no ext__ selector would filter every one of those tools out below — skip it.
+    const extDefs = profileNeedsExtTools(effective.name) ? await currentExtDefs() : [];
+    const tools = applyProfileToToolDefs(
+      applyOverlayToToolDefs([...LM_ASSIST_TOOL_DEFS, ...extDefs], await currentOverlay()),
+      effective.name,
+    );
+    // One line to the Core log — never to mcp-calls.jsonl (see logToolsList).
+    logToolsList(effective, tools.length, Date.now() - t0);
+    return { tools };
+  });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  // The CallTool body, as a function so a pinned stdio server can run it inside its
+  // pin's MCP context (registration at the end of this function). Unchanged otherwise.
+  const callTool = async (
+    request: { params: { name: string; arguments?: Record<string, unknown> } },
+  ): Promise<CallToolResult> => {
     const { name, arguments: rawArgs } = request.params;
     const args = (rawArgs || {}) as Record<string, unknown>;
     const t0 = Date.now();
+    // The profile this call is served under — the same resolution tools/list advertised.
+    // The MCP context carries it on both transports: HTTP sets it in handleMcpRequest, and
+    // a pinned stdio server's wrapper (end of this function) installs
+    // liveEffectiveProfile(opts.profile). The fallback covers a context set without a
+    // profile. It must be the LIVE resolution, never raw opts.profile: for an unknown stdio
+    // pin, opts.profile still names the node default as it was at spawn. Undefined ⇒ the
+    // resolver falls back to the node default. It keys the bootstrap-gate marker
+    // (gateKeyFor): a narrowed bootstrap satisfies only its own profile.
+    const callProfile = currentEffectiveProfile() ?? (opts?.profile ? liveEffectiveProfile(opts.profile) : undefined);
 
     let result: McpToolResult;
     try {
@@ -662,7 +749,7 @@ export function configureMcpServer(
       // dispatch, so a gated write has no side effects. Fails open on any
       // uncertainty; LM_BOOTSTRAP_GATE=off disables. Sits at this seam so both
       // MCP transports are covered and REST/internal callers never see it.
-      const gated = await bootstrapGateCheck(name).catch(() => null);
+      const gated = await bootstrapGateCheck(name, callProfile).catch(() => null);
       result = gated ?? (isToolDisabled(await currentOverlay(), name) ? disabledResult(name) : await dispatch(name, args));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -671,7 +758,7 @@ export function configureMcpServer(
     // On bootstrap, hand the conversation its own id back (resolved from the node APIs) + record it.
     // Only on bootstrap → no per-call latency / claude.ai load, and no risk of a wrong auto-nudge.
     if (name === 'bootstrap' && !result.isError) {
-      try { result = await enrichBootstrapWithIdentity(result); } catch { /* never break bootstrap */ }
+      try { result = await enrichBootstrapWithIdentity(result, callProfile); } catch { /* never break bootstrap */ }
     }
     // HARD per-result byte ceiling — the guardrail that makes it impossible for ONE tool
     // call to exceed the context window and destroy the conversation (see result-cap.ts
@@ -701,5 +788,20 @@ export function configureMcpServer(
     // narrower `McpToolResult` to satisfy the typechecker without a
     // structural change at runtime.
     return result as CallToolResult;
-  });
+  };
+
+  // stdio has no per-request entry point that sets the MCP context (HTTP sets it in
+  // handleMcpRequest), so a PINNED stdio server installs its process pin here. That
+  // makes currentEffectiveProfile() the one read for everything on this seam — the
+  // bootstrap gate, bootstrap enrichment, the result footer — on both transports.
+  // An existing context (HTTP) is never replaced; an unpinned stdio server installs
+  // none, exactly as before. principal 'local' is what stdio IS, and the footer
+  // already reads "no context" as LOCAL, so no footer changes.
+  server.setRequestHandler(CallToolRequestSchema, async (request) =>
+    opts?.profile && !currentMcpContext()
+      ? runWithMcpContext(
+          { principal: { type: 'local' }, profile: liveEffectiveProfile(opts.profile) },
+          () => callTool(request),
+        )
+      : callTool(request));
 }

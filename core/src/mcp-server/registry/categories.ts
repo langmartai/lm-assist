@@ -130,6 +130,7 @@ mod('expanded.ts', 'claudeai', [
 mod('refresh-connector.ts', 'claudeai', [
   'list_claudeai_connectors', 'refresh_connector_tools', 'set_connector_tool_access', 'set_connector_auto_approve',
 ]);
+mod('mcp-connectors.ts', 'claudeai', ['mcp_connectors']);
 mod('claudeai-active-sessions.ts', 'claudeai', ['claudeai_active_sessions']);
 mod('cowork.ts', 'claudeai', ['cowork_create_task']);
 // --- credentials / accounts ---

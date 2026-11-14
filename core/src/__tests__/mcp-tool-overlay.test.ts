@@ -7,6 +7,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// Hermetic, BEFORE the configure import: the ListTools closure reads the node-default
+// profile file under getDataDir(). Without this, a developer who ran
+// `mcp_profile set basic` on this host fails every full-count assertion below.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-overlay-'));
 import {
   overlayFromDocs,
   applyOverlayToToolDefs,

@@ -26,16 +26,17 @@
 // hot path, in front of the relay's fixed 25s local / 30s gateway cutoffs. Keep the hot path
 // free of: full store sweeps, unbounded network calls, and timer-only deadlines.
 import type { McpToolResult } from './configure';
-import { fleetIdentity } from './fleet-identity';
+import { fleetIdentity, shouldNameProfile, safePin } from './fleet-identity';
 import { listConversations } from '../utils/claudeai-session';
 import { extractConversationRows } from './tools/list-claudeai-conversations';
 import { getSessionCache } from '../session-cache';
-import { currentMcpContext } from './principal-context';
+import { currentMcpContext, currentEffectiveProfile } from './principal-context';
 import type { WorkerRecord } from '../worker-role/types';
 import { liveness } from '../worker-role/model';
 import { getRecord } from '../worker-role/worker-store';
 import { loadPersistedMarkers, schedulePersistMarkers, type PersistedMarker } from './bootstrap-persist';
 import { fleetBootstrappedAt, publishBootstrapToFleet } from './bootstrap-registry';
+import { activeProfileName, isNarrowedProfile, resolveEffectiveProfile, type EffectiveProfile } from './registry/profiles';
 
 export interface Candidate { id: string; label?: string; updatedAt?: string }
 export interface CallerCandidates {
@@ -538,35 +539,84 @@ export function renderRoleSection(rec: WorkerRecord | null, now: number): string
   ].join('\n');
 }
 
+// ── bootstrap marker keys (one connector per profile) ───────────────────────
+//
+// A NARROWED profile's bootstrap delivers only that profile's playbooks, so its marker
+// must not satisfy a wider connector. It is keyed `<id>#<profile>`. A full bootstrap
+// (admin / unpinned, the shipped default) keeps the BARE id, as before. The gate passes on
+// the bare key OR the call's own `#<profile>` key. So:
+//   - a full bootstrap satisfies every profile;
+//   - a narrowed bootstrap satisfies only itself.
+// The key is only a string, so it goes unchanged through REGISTRY, the node-local persist
+// file (bootstrap-persist.ts) and the fleet `mcp-bootstrap` dataset (bootstrap-registry.ts):
+// no schema change. An older build looks up only bare ids and never matches a `#` key. It
+// then asks for a bootstrap once, which is correct, because it serves the full surface.
+
+/** The gate-marker key for one caller under one effective profile. */
+export function gateKeyFor(conversationId: string, profile?: EffectiveProfile): string {
+  return profile && isNarrowedProfile(profile.name) ? `${conversationId}#${profile.name}` : conversationId;
+}
+
+/** Every key that satisfies the gate for this caller and profile, bare key first. */
+function satisfyingKeys(id: string, profile?: EffectiveProfile): string[] {
+  const key = gateKeyFor(id, profile);
+  return key === id ? [id] : [id, key];
+}
+
+/** The profile a gate/record call runs under when the caller did not pass one: the MCP
+ *  call context's profile (HTTP, /mcp-call, a pinned stdio process), else the node default
+ *  (the cached read that tools/list already pays). Returns undefined on any failure, which
+ *  means bare keys, i.e. today's behaviour. */
+function profileForGate(profile?: EffectiveProfile): EffectiveProfile | undefined {
+  if (profile) return profile;
+  try { return currentEffectiveProfile() ?? resolveEffectiveProfile(undefined); } catch { return undefined; }
+}
+
+/** True if this caller has a bootstrap that covers `profile` (by default, this call's
+ *  effective profile). A full bootstrap covers every profile. Read by session_status. */
+export function isBootstrappedFor(id: string, profile?: EffectiveProfile): boolean {
+  const reg = registry();
+  return satisfyingKeys(id, profileForGate(profile)).some((k) => !!reg.get(k)?.bootstrappedAt);
+}
+
 /** The full identity block prefixed onto a bootstrap result. Pure; exported for tests. */
-export function identityHeader(c: CallerCandidates): string {
+export function identityHeader(c: CallerCandidates, profile?: EffectiveProfile): string {
   const callerId = (c.precise ? c.claudeCode?.id : undefined) ?? c.claudeAi?.id ?? c.claudeCode?.id;
   const roleSection = renderRoleSection(callerId ? getRecord(callerId) : null, Date.now());
   const body = describeCandidates(c);
+  // A narrowed bootstrap is recorded under `<id>#<profile>` (gateKeyFor). Say so, so the
+  // model is not surprised when a wider connector asks for its own bootstrap.
+  const recorded = profile && isNarrowedProfile(profile.name)
+    ? `This session is now recorded as BOOTSTRAPPED for profile \`${profile.name}\` only — a call through a wider lm-assist connector asks for its own bootstrap once.`
+    : 'This session is now recorded as BOOTSTRAPPED.';
   if (c.precise && c.claudeCode) {
-    return `[lm-assist — your session identity]\nThis MCP call carries a tool-call id that pins the caller exactly:\n${body}\nThis session is now recorded as BOOTSTRAPPED.\n\n` + roleSection;
+    return `[lm-assist — your session identity]\nThis MCP call carries a tool-call id that pins the caller exactly:\n${body}\n${recorded}\n\n` + roleSection;
   }
-  return `[lm-assist — your session identity]\nThe connector does not pass your exact id, so here are the most-recently-active candidates — pick the one matching where you are running (you know your own runtime):\n${body}\nThis session is now recorded as BOOTSTRAPPED.\n\n` + roleSection;
+  return `[lm-assist — your session identity]\nThe connector does not pass your exact id, so here are the most-recently-active candidates — pick the one matching where you are running (you know your own runtime):\n${body}\n${recorded}\n\n` + roleSection;
 }
 
-/** Mark whichever candidate(s) exist as bootstrapped; report the precise/claude.ai id
- *  preferentially. Exported for tests — this is the seam persistence hooks into. */
-export function recordBootstrapped(c: CallerCandidates): { id?: string } {
+/** Mark whichever candidate(s) exist as bootstrapped, under gateKeyFor(id, profile). Report
+ *  the precise/claude.ai id first (always the BARE id: it is the caller's identity, not a
+ *  marker key). Exported for tests; this is the seam that persistence hooks into. */
+export function recordBootstrapped(c: CallerCandidates, profile?: EffectiveProfile): { id?: string } {
   const reg = registry();
+  const p = profileForGate(profile);
   let changed = false;
   for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {
-    const st = reg.get(cand.id) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
-    st.lastSeen = Date.now(); st.bootstrappedAt = Date.now(); reg.set(cand.id, st);
+    const key = gateKeyFor(cand.id, p);
+    const st = reg.get(key) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
+    st.lastSeen = Date.now(); st.bootstrappedAt = Date.now(); reg.set(key, st);
     changed = true;
   }
   // Write-behind: debounced + async, never sync IO on the call path. Only the
   // bootstrapped markers change here — gate-refusal stamps schedule nothing.
   if (changed) schedulePersistMarkers(persistSnapshot);
   // Fleet half: publish so a call routed to ANOTHER node is not re-refused
-  // (fire-and-forget; see bootstrap-registry.ts).
+  // (fire-and-forget; see bootstrap-registry.ts). Same key as the local marker.
   for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {
-    const at = reg.get(cand.id)?.bootstrappedAt;
-    if (at) publishBootstrapToFleet(cand.id, at);
+    const key = gateKeyFor(cand.id, p);
+    const at = reg.get(key)?.bootstrappedAt;
+    if (at) publishBootstrapToFleet(key, at);
   }
   return { id: (c.precise ? c.claudeCode?.id : undefined) ?? c.claudeAi?.id ?? c.claudeCode?.id };
 }
@@ -593,11 +643,12 @@ function prefixText(result: McpToolResult, note: string): McpToolResult {
 }
 
 /** Enrich a bootstrap result: give the conversation its candidate id(s) back + record bootstrapped. */
-export async function enrichBootstrapWithIdentity(result: McpToolResult): Promise<McpToolResult> {
+export async function enrichBootstrapWithIdentity(result: McpToolResult, profile?: EffectiveProfile): Promise<McpToolResult> {
   try {
     const c = await resolveCallerCandidates();
-    recordBootstrapped(c);
-    return prefixText(result, identityHeader(c));
+    const p = profileForGate(profile);
+    recordBootstrapped(c, p);
+    return prefixText(result, identityHeader(c, p));
   } catch { return result; }
 }
 
@@ -634,6 +685,7 @@ export function evaluateBootstrapGate(
   topic: string | null,
   c: CallerCandidates | null | undefined,
   lookup: (id: string) => { bootstrappedAt?: number; gateRefusedAt?: number } | undefined,
+  profile?: EffectiveProfile,
 ): GateVerdict {
   if (!topic) return { block: false, reason: 'not-covered', topic };
   if (GATE_EXEMPT_TOOLS.has(name)) return { block: false, reason: 'exempt', topic };
@@ -641,9 +693,11 @@ export function evaluateBootstrapGate(
   const candidates = [c.claudeAi, c.claudeCode].filter((x): x is Candidate => !!x);
   if (!candidates.length) return { block: false, reason: 'no-identity', topic };
   // Conservative on heuristic identity: if ANY plausible candidate bootstrapped, stay silent.
-  if (candidates.some((x) => lookup(x.id)?.bootstrappedAt)) return { block: false, reason: 'bootstrapped', topic };
-  // Soft-block ONCE: a caller we already refused proceeds, bootstrapped or not.
-  if (candidates.some((x) => lookup(x.id)?.gateRefusedAt)) return { block: false, reason: 'already-refused', topic };
+  // A full bootstrap (bare key) satisfies every profile; a narrowed one only its own key.
+  if (candidates.some((x) => satisfyingKeys(x.id, profile).some((k) => lookup(k)?.bootstrappedAt))) return { block: false, reason: 'bootstrapped', topic };
+  // Soft-block ONCE per (caller, profile): the refusal is stamped under the call's own key,
+  // so with no narrowed profile this is exactly the pre-profile bare-id check.
+  if (candidates.some((x) => lookup(gateKeyFor(x.id, profile))?.gateRefusedAt)) return { block: false, reason: 'already-refused', topic };
   return { block: true, reason: 'first-offence', topic };
 }
 
@@ -663,34 +717,40 @@ export function buildBootstrapRefusal(name: string, topic: string | null): McpTo
  * dispatching (checked BEFORE dispatch so a gated write has no side effects).
  * Identity comes from the cached resolver — warm calls are a cache hit.
  */
-export async function bootstrapGateCheck(name: string): Promise<McpToolResult | null> {
+export async function bootstrapGateCheck(name: string, profile?: EffectiveProfile): Promise<McpToolResult | null> {
   try {
     if ((process.env.LM_BOOTSTRAP_GATE || 'on').toLowerCase() === 'off') return null;
     const { playbookTopicForTool } = require('./tool-topics') as typeof import('./tool-topics');
     const topic = playbookTopicForTool(name);
     if (!topic || GATE_EXEMPT_TOOLS.has(name)) return null;  // skip resolution entirely for uncovered tools
+    const p = profileForGate(profile);
     const c = await resolveCallerCandidates();
     const reg = registry();
-    const v = evaluateBootstrapGate(name, topic, c, (id) => reg.get(id));
+    const v = evaluateBootstrapGate(name, topic, c, (id) => reg.get(id), p);
     if (!v.block) return null;
     // Would-be first offence: ask the FLEET copy first — the conversation may have
     // bootstrapped through another node. A local read of a synced dataset (no
     // network on the call path), paid only here; a hit is merged into the local
-    // registry (+ persisted) so the next call is a Map lookup again.
+    // registry (+ persisted) so the next call is a Map lookup again. Under a narrowed
+    // profile both satisfying keys are asked (bare first) — still local reads only.
     for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {
-      const row = await fleetBootstrappedAt(cand.id);
-      if (row) {
-        const st = reg.get(cand.id) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
-        st.lastSeen = Date.now(); st.bootstrappedAt = st.bootstrappedAt ?? row.bootstrappedAt; reg.set(cand.id, st);
-        schedulePersistMarkers(persistSnapshot);
-        return null;
+      for (const key of satisfyingKeys(cand.id, p)) {
+        const row = await fleetBootstrappedAt(key);
+        if (row) {
+          const st = reg.get(key) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
+          st.lastSeen = Date.now(); st.bootstrappedAt = st.bootstrappedAt ?? row.bootstrappedAt; reg.set(key, st);
+          schedulePersistMarkers(persistSnapshot);
+          return null;
+        }
       }
     }
     // Stamp EVERY candidate so the retry finds the refusal even if heuristic
-    // resolution flips to the other candidate between the two calls.
+    // resolution flips to the other candidate between the two calls. Stamped under
+    // the call's own key, so the soft-block is once per (caller, profile).
     for (const cand of [c.claudeAi, c.claudeCode]) if (cand) {
-      const st = reg.get(cand.id) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
-      st.lastSeen = Date.now(); st.gateRefusedAt = Date.now(); reg.set(cand.id, st);
+      const key = gateKeyFor(cand.id, p);
+      const st = reg.get(key) ?? { firstSeen: Date.now(), lastSeen: Date.now() };
+      st.lastSeen = Date.now(); st.gateRefusedAt = Date.now(); reg.set(key, st);
     }
     return buildBootstrapRefusal(name, v.topic);
   } catch { return null; }  // the gate must never break a call
@@ -720,25 +780,60 @@ async function getNodeClusterInfo(): Promise<{ cluster: string; otherClusters?: 
   } catch { return { cluster: 'default' }; }
 }
 
+/**
+ * session_status's `profile` field (spec 2026-09-23 §6) — present ONLY when the profile must be
+ * named (a pin, known or not, or a narrowed node default). Absent in the shipped case (no pin,
+ * node default `admin`) so that output stays byte-identical. `nodeDefault` is injectable for
+ * tests; the live read is the 1.5 s-cached profile file (session_status is not a hot path).
+ */
+export function sessionStatusProfile(
+  p: EffectiveProfile | undefined,
+  nodeDefault?: string,
+): Record<string, unknown> | undefined {
+  if (!shouldNameProfile(p)) return undefined;
+  return {
+    effective: p.name,
+    source: p.source,
+    ...(p.pin != null ? { pin: safePin(p.pin) } : {}),
+    ...(p.unknownPin
+      ? {
+          unknownPin: true,
+          note: 'The requested profile is not defined on this node (a typo, or a name newer than this build) — the node default is served.',
+        }
+      : {}),
+    nodeDefault: nodeDefault ?? activeProfileName(),
+  };
+}
+
 async function handleSessionStatus(_args: Record<string, unknown>): Promise<McpToolResult> {
   const c = await resolveCallerCandidates();
-  const bootstrapped = (id?: string) => (id ? !!registry().get(id)?.bootstrappedAt : false);
+  const bootstrapped = (id?: string) => (id ? isBootstrappedFor(id) : false);
   const clusterInfo = await getNodeClusterInfo();
+  // The connector's EFFECTIVE profile: the request context's (set by HTTP /mcp, by Core's
+  // /mcp-call for a stdio server, and by a pinned stdio process), else — an entry point that
+  // predates pins — the node default, which is what that call is served. No pin + default
+  // admin ⇒ no field and the legacy identity block.
+  const ep: EffectiveProfile = currentEffectiveProfile() ?? { name: activeProfileName(), source: 'node-default' };
+  const profile = sessionStatusProfile(ep);
+  const profileField = profile ? { profile } : {};
   const obj = c.precise && c.claudeCode ? {
     note: 'PRECISE: this MCP call carried a tool-call id (_meta["claudecode/toolUseId"]) that matched the calling conversation exactly — no guessing.',
     callerType: 'claude-code',
     claudeCodeSession: { ...c.claudeCode, matchedBy: 'tool-call-id', bootstrapped: bootstrapped(c.claudeCode.id) },
     ...clusterInfo,
+    ...profileField,
     howTo: 'If you have not bootstrapped, call bootstrap() once to load all lm-assist capabilities.',
   } : {
     note: 'No tool-call id on this call. These are the most-recently-active candidates resolved from the node APIs — PICK the one matching your runtime (claude.ai conversation vs Claude Code session). Heuristic by recency.',
     claudeAiConversation: c.claudeAi ? { ...c.claudeAi, bootstrapped: bootstrapped(c.claudeAi.id) } : 'unavailable (claude.ai not configured on this node)',
     claudeCodeSession: c.claudeCode ? { ...c.claudeCode, bootstrapped: bootstrapped(c.claudeCode.id) } : 'none recent',
     ...clusterInfo,
+    ...profileField,
     howTo: 'If you have not bootstrapped, call bootstrap() once to load all lm-assist capabilities.',
   };
-  // Lead with the fleet/connector identity so a conversation knows WHICH fleet it is on.
-  return { content: [{ type: 'text', text: fleetIdentity() + '\n\n' + pretty(obj) }] };
+  // Lead with the fleet/connector identity so a conversation knows WHICH fleet — and, when it
+  // matters, which PROFILE — it is on.
+  return { content: [{ type: 'text', text: fleetIdentity(ep) + '\n\n' + pretty(obj) }] };
 }
 
 export const SESSION_STATUS_TOOL_DEFS = [

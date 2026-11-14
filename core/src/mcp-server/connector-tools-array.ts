@@ -5,6 +5,9 @@
 // (the bare `claudeai_completion` sends `tools:[]`). We build it from the worker's OWN tool defs
 // (authoritative for name/description/schema) + the discovered connector identity. Pure → testable.
 
+import { mcpBase, ourConnectors, preferredConnector } from './profile-connectors';
+import { canonicalProfileName } from './registry/profiles';
+
 export interface ConnectorRef { uuid: string; url: string; name: string; connected?: boolean; tools?: string[] }
 export interface ToolDef { name: string; description?: string; inputSchema?: unknown }
 export interface SpaTool {
@@ -38,10 +41,30 @@ export function buildConnectorToolsArray(connector: ConnectorRef, toolDefs: Tool
     }));
 }
 
-/** Pick the connected lm-assist/langmart connector from a server roster (prefer a langmart-looking
- *  url/name; else the sole connected server). Returns undefined if it can't disambiguate. */
-export function pickLmAssistConnector(servers: ConnectorRef[]): ConnectorRef | undefined {
+/** A pinned profile by its canonical name (an alias → its profile; an unknown pin stays as-is). */
+const canonPin = (p: string | null): string | null => (p === null ? null : canonicalProfileName(p) ?? p);
+
+/** Pick the connected lm-assist connector for a driven turn, by URL: THIS node's connectors only
+ *  (so a dev Core never drives the production connector), preferring the unpinned one, else
+ *  `admin`, else the widest — never bootstrap order. `profile` asks for the connector pinned to
+ *  that profile (null = the unpinned one; an alias such as `langmart` means its canonical
+ *  profile) and returns undefined when there is none, rather than a silently different surface.
+ *  A node with no hub configured has no notion of "ours" and keeps the old name heuristic.
+ *  `base` defaults to this node's public MCP base (reads the hub config). */
+export function pickLmAssistConnector(
+  servers: ConnectorRef[],
+  opts: { profile?: string | null; base?: string } = {},
+): ConnectorRef | undefined {
   const connected = servers.filter((s) => s.connected);
+  const base = opts.base ?? mcpBase();
+  if (base) {
+    const mine = ourConnectors(connected, base);
+    if (opts.profile !== undefined) {
+      const want = canonPin(opts.profile);
+      return mine.find((c) => canonPin(c.profile) === want);
+    }
+    return preferredConnector(mine);
+  }
   const byName = connected.find((s) => /langmart|lm-assist/i.test(`${s.url} ${s.name}`));
   if (byName) return byName;
   return connected.length === 1 ? connected[0] : undefined;

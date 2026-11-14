@@ -300,8 +300,21 @@ const PANE_CALLS: Record<string, { must: Array<[string, string]>; mustNot: Array
     must: [['GET', '/mcp-tools'], ['GET', '/mcp-tools/some_tool'], ['POST', '/mcp-tools/some_tool'],
       ['POST', '/mcp-tools/some_tool/rollback'], ['GET', '/mcp-plugins'], ['GET', '/mcp-plugins/p/audit'],
       ['GET', '/mcp/access'], ['GET', '/mcp/pending'], ['GET', '/health'], ['GET', '/hub/status'],
-      ['GET', '/claude-ai/mcp/servers']],
-    mustNot: [['POST', '/mcp-plugins'], ['POST', '/health'], ['POST', '/claude-ai/mcp/servers']],
+      ['GET', '/claude-ai/mcp/servers'],
+      ['GET', '/mcp-tools/profile'], ['POST', '/mcp-tools/profile'],
+      // One connector per profile: list, create, delete ONE (app.js loadConnectors /
+      // createConnector / deleteConnector).
+      ['GET', '/mcp/profile-connectors'], ['POST', '/mcp/profile-connectors'],
+      ['DELETE', '/mcp/profile-connectors/basic']],
+    mustNot: [['POST', '/mcp-plugins'], ['POST', '/health'], ['POST', '/claude-ai/mcp/servers'],
+      // The generic claude.ai connector writes take ANY url / uuid. The profile route is the only
+      // connector write this pane holds, and it can only reach this hub's own profile URLs.
+      ['DELETE', '/claude-ai/mcp/servers/u-1'], ['POST', '/claude-ai/mcp/servers/u-1/clear-cache'],
+      ['POST', '/claude-ai/mcp/servers/u-1/tool-access'], ['POST', '/mcp-plugins/sync-connector'],
+      // Near misses of the DELETE leaf, one segment at a time.
+      ['DELETE', '/mcp/profile-connectors'], ['DELETE', '/mcp/profile-connectors/basic/extra'],
+      ['DELETE', '/mcp-tools/some_tool'], ['DELETE', '/mcp-tools/profile'],
+      ['PUT', '/mcp/profile-connectors'], ['POST', '/mcp/profile-connectors/basic']],
   },
   'assist-memory': {
     must: [['GET', '/memory/projects'], ['GET', '/memory/by-project/p-1'],
@@ -493,5 +506,51 @@ test('the Mission Processes pane may POST exactly two workflow routes, and no si
     const g = readDeclaredGrant(path.join(root, pane));
     assert.ok(!grantAllows(g, 'node', '/mission/workflows/case.index', 'POST'), `${pane} writes a playbook`);
     assert.ok(!grantAllows(g, 'node', '/mission/workflows/case.index/rollback', 'POST'), `${pane} rolls back a playbook`);
+  }
+});
+
+/**
+ * Connector create/delete ride their OWN exact rules, and nothing else in the grant reaches them.
+ * The routes live under `/mcp/` (spec §7.3), where this pane's only other rules are the
+ * `/mcp/access` and `/mcp/pending` read subtrees and their named leaves — none of which covers
+ * `/mcp/profile-connectors` — so all three verbs are NEW authority, granted by name. The
+ * "nothing else reaches them" check is what catches a silent widen: a later `/mcp` read subtree,
+ * or a wildcard shape that happens to fit, would hand this pane the list or a write with no rule
+ * here saying so. No other pane may create or delete a claude.ai connector at all.
+ */
+test('assist-mcp-tools: connector create/delete hold their own leaf rules, and no sibling pane holds them', () => {
+  const root = path.join(__dirname, '../../../../../ui-apps');
+  const grant = readDeclaredGrant(path.join(root, 'assist-mcp-tools'));
+
+  const own = grant.filter((r) => r.pathPrefix.startsWith('/mcp/profile-connectors'));
+  assert.ok(own.length > 0, 'the pane must name the connector routes explicitly');
+  assert.ok(own.every((r) => r.exact), 'every connector rule is a LEAF');
+  assert.ok(grantAllows(own, 'node', '/mcp/profile-connectors', 'GET'));
+  assert.ok(grantAllows(own, 'node', '/mcp/profile-connectors', 'POST'));
+  for (const p of ['basic', 'platform', 'extended', 'admin']) {
+    assert.ok(grantAllows(own, 'node', `/mcp/profile-connectors/${p}`, 'DELETE'), `DELETE ${p}`);
+  }
+
+  // No pre-existing rule of this pane covers the connector routes: they are reached through the
+  // two rules above or not at all.
+  const rest = grant.filter((r) => !own.includes(r));
+  for (const [m, p] of [['GET', '/mcp/profile-connectors'], ['POST', '/mcp/profile-connectors'],
+    ['DELETE', '/mcp/profile-connectors/basic']] as const) {
+    assert.ok(!grantAllows(rest, 'node', p, m), `${m} ${p} is already reachable without the connector rules`);
+  }
+
+  // The pane's ONLY delete authority is that one leaf.
+  assert.deepEqual(grant.filter((r) => r.verbs.includes('DELETE')).map((r) => r.pathPrefix), ['/mcp/profile-connectors/*']);
+
+  // It never reaches the generic claude.ai connector writes, which take an arbitrary url/uuid.
+  assert.ok(!grantAllows(grant, 'node', '/claude-ai/mcp/servers', 'POST'));
+  assert.ok(!grantAllows(grant, 'node', '/claude-ai/mcp/servers/u-1', 'DELETE'));
+
+  const siblings = fs.readdirSync(root)
+    .filter((n) => n !== 'assist-mcp-tools' && fs.existsSync(path.join(root, n, 'lmui.config.json')));
+  for (const pane of siblings) {
+    const g = readDeclaredGrant(path.join(root, pane));
+    assert.ok(!grantAllows(g, 'node', '/mcp/profile-connectors', 'POST'), `${pane} can create a connector`);
+    assert.ok(!grantAllows(g, 'node', '/mcp/profile-connectors/basic', 'DELETE'), `${pane} can delete a connector`);
   }
 });

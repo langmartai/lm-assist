@@ -42,6 +42,7 @@ function asScopes(v: unknown): ToolScope[] {
 }
 import { dispatch } from './mcp.routes';
 import { runWithMcpContext } from '../../mcp-server/principal-context';
+import { resolveEffectiveProfile, PROFILE_PIN_HEADER } from '../../mcp-server/registry/profiles';
 import { withOriginTag } from '../../mcp-server/result-origin';
 import { getDataService } from '../../data/data-service';
 import { isToolDisabled } from '../../mcp-server/registry/overlay';
@@ -57,6 +58,14 @@ async function disabledGuard(tool: string, start: number): Promise<ReturnType<ty
     }
   } catch { /* fail-open */ }
   return null;
+}
+
+/** The pin a stdio MCP server forwarded (header PROFILE_PIN_HEADER). Node joins a
+ *  repeated custom header with ", ", which fails the pin grammar and resolves as
+ *  unknown — the honest answer for an ambiguous pin. */
+function forwardedProfilePin(v: string | string[] | undefined): string | undefined {
+  const s = Array.isArray(v) ? v[0] : v;
+  return typeof s === 'string' && s.trim() ? s.trim() : undefined;
 }
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
@@ -366,9 +375,15 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
           const gd = await disabledGuard(tool, start);
           if (gd) return gd;
           const principal = getDataService().resolvePrincipal(req);
+          // A stdio MCP server forwards its process pin (LM_MCP_PROFILE) on every call.
+          // Lift it into the same context HTTP /mcp sets, so the Core-side handlers
+          // (bootstrap, session_status, mcp_profile) and the footer see the profile the
+          // caller advertises. Resolved against THIS Core's definitions; no header ⇒ the
+          // node default, stated as such.
+          const profile = resolveEffectiveProfile(forwardedProfilePin(req.headers?.[PROFILE_PIN_HEADER]));
           // Tag the result with its origin INSIDE the context so resultOriginTag()
           // reads this call's principal (relayed vs local).
-          const result = await runWithMcpContext({ principal }, async () =>
+          const result = await runWithMcpContext({ principal, profile }, async () =>
             withOriginTag(await handler(body.args || {}), tool));
           return wrapResponse(result, start);
         } catch (err) {
