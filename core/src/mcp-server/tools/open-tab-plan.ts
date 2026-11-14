@@ -3,8 +3,7 @@
  * to hit and assembles the request body. Extracted so it is unit-testable
  * without the worker HTTP hop.
  */
-import * as os from 'os';
-import { isCwdAllowed } from '../../utils/cwd-allowlist';
+import { isCwdAllowed, describeCwdPolicy } from '../../utils/cwd-allowlist';
 
 export type OpenTabPlan = { error: string } | { route: string; body: Record<string, unknown> };
 
@@ -14,7 +13,7 @@ export function planOpenTab(args: Record<string, unknown>): OpenTabPlan {
 
   const cwd = args.cwd ? String(args.cwd) : '';
   if (cwd && !isCwdAllowed(cwd)) {
-    return { error: `cwd "${cwd}" is not permitted; restricted to ${os.homedir()} and below.` };
+    return { error: `cwd "${cwd}" is not permitted; allowed: ${describeCwdPolicy()}` };
   }
 
   // No explicit kind -> the platform-neutral /terminal/local route, whose backend

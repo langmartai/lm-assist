@@ -150,6 +150,13 @@ export class Bus {
     return this.store.readSince(topic, cursor);
   }
 
+  /** ONE topic's per-origin head — the same value `topics()` reports as `head`, read from the
+   *  heads index (O(origins)). `topics()` decodes EVERY event of EVERY topic for its stats; on the
+   *  catch-up path peers call per topic that pinned 107's Core at ~100% CPU (55 MB store). */
+  head(topic: string): BusCursor {
+    return this.store.maxCursor(topic);
+  }
+
   async read(topic: string, from?: string, waitMs = 0): Promise<ReadResult> {
     const cursor = decodeCursor(from);
     let events = this.store.readSince(topic, cursor);

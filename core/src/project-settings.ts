@@ -66,6 +66,10 @@ export interface ProjectSettings {
   missionControllerMaxNudges: number;
   /** Model for the adjust reasoning step. Default 'claude-opus-4-8[1m]'. */
   missionControllerModel: string;
+  /** Minutes without ANY mission activity (no active mission, no non-terminal mission
+   *  touched) before the controller session is torn down as COLD; it relaunches on the
+   *  next tick that sees demand. 0 = never tear down for coldness. Default 60. */
+  missionControllerColdMin: number;
   /** Idle minutes before an auto-resumed local (native) session is auto-closed. Default 30. */
   missionSessionIdleCloseMin: number;
   /** Minutes of no detected human input before a standby mission is paused. Default 240. */
@@ -92,6 +96,8 @@ export interface ProjectSettings {
   /** Wave 4 (spec §5 S2): carry data-service sync (manifest/export/fetch) over the fabric with a
    *  peer principal, else the legacy hub-HTTPS path. Default false — opt-in; off = pure legacy sync. */
   dataSyncViaFabric: boolean;
+  /** Data bundles kept in the bundle store (exports + imports); the oldest are pruned. Default 20. */
+  bundleRetention: number;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -122,6 +128,7 @@ export const DEFAULTS: ProjectSettings = {
   missionControllerSafetyIntervalMin: 45,
   missionControllerMaxNudges: 6,
   missionControllerModel: 'claude-opus-4-8[1m]',
+  missionControllerColdMin: 60,
   missionSessionIdleCloseMin: 30,
   manualIdleInactiveMin: 240,
   missionHistoryInlineCap: 50,
@@ -134,7 +141,11 @@ export const DEFAULTS: ProjectSettings = {
   fabricRelayBulkCapMBps: 5,
   busEnabled: true,
   dataSyncViaFabric: false,
+  bundleRetention: 20,
 };
+
+/** A retention count must be a positive integer; anything else falls back. */
+const isRetention = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1;
 
 // ── Mtime Cache ──────────────────────────────────────────
 
@@ -179,6 +190,7 @@ export function getProjectSettings(): ProjectSettings {
       missionControllerSafetyIntervalMin: typeof data.missionControllerSafetyIntervalMin === 'number' ? data.missionControllerSafetyIntervalMin : DEFAULTS.missionControllerSafetyIntervalMin,
       missionControllerMaxNudges: typeof data.missionControllerMaxNudges === 'number' ? data.missionControllerMaxNudges : DEFAULTS.missionControllerMaxNudges,
       missionControllerModel: typeof data.missionControllerModel === 'string' ? data.missionControllerModel : DEFAULTS.missionControllerModel,
+      missionControllerColdMin: typeof data.missionControllerColdMin === 'number' ? data.missionControllerColdMin : DEFAULTS.missionControllerColdMin,
       missionSessionIdleCloseMin: typeof data.missionSessionIdleCloseMin === 'number' ? data.missionSessionIdleCloseMin : DEFAULTS.missionSessionIdleCloseMin,
       manualIdleInactiveMin: typeof data.manualIdleInactiveMin === 'number' ? data.manualIdleInactiveMin : DEFAULTS.manualIdleInactiveMin,
       missionHistoryInlineCap: typeof data.missionHistoryInlineCap === 'number' ? data.missionHistoryInlineCap : DEFAULTS.missionHistoryInlineCap,
@@ -191,6 +203,7 @@ export function getProjectSettings(): ProjectSettings {
       fabricRelayBulkCapMBps: typeof data.fabricRelayBulkCapMBps === 'number' ? data.fabricRelayBulkCapMBps : DEFAULTS.fabricRelayBulkCapMBps,
       busEnabled: typeof data.busEnabled === 'boolean' ? data.busEnabled : DEFAULTS.busEnabled,
       dataSyncViaFabric: typeof data.dataSyncViaFabric === 'boolean' ? data.dataSyncViaFabric : DEFAULTS.dataSyncViaFabric,
+      bundleRetention: isRetention(data.bundleRetention) ? data.bundleRetention : DEFAULTS.bundleRetention,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -231,6 +244,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     missionControllerSafetyIntervalMin: typeof partial.missionControllerSafetyIntervalMin === 'number' ? partial.missionControllerSafetyIntervalMin : current.missionControllerSafetyIntervalMin,
     missionControllerMaxNudges: typeof partial.missionControllerMaxNudges === 'number' ? partial.missionControllerMaxNudges : current.missionControllerMaxNudges,
     missionControllerModel: typeof partial.missionControllerModel === 'string' ? partial.missionControllerModel : current.missionControllerModel,
+    missionControllerColdMin: typeof partial.missionControllerColdMin === 'number' ? partial.missionControllerColdMin : current.missionControllerColdMin,
     missionSessionIdleCloseMin: typeof partial.missionSessionIdleCloseMin === 'number' ? partial.missionSessionIdleCloseMin : current.missionSessionIdleCloseMin,
     manualIdleInactiveMin: typeof partial.manualIdleInactiveMin === 'number' ? partial.manualIdleInactiveMin : current.manualIdleInactiveMin,
     missionHistoryInlineCap: typeof partial.missionHistoryInlineCap === 'number' ? partial.missionHistoryInlineCap : current.missionHistoryInlineCap,
@@ -243,6 +257,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     fabricRelayBulkCapMBps: typeof partial.fabricRelayBulkCapMBps === 'number' ? partial.fabricRelayBulkCapMBps : current.fabricRelayBulkCapMBps,
     busEnabled: typeof partial.busEnabled === 'boolean' ? partial.busEnabled : current.busEnabled,
     dataSyncViaFabric: typeof partial.dataSyncViaFabric === 'boolean' ? partial.dataSyncViaFabric : current.dataSyncViaFabric,
+    bundleRetention: isRetention(partial.bundleRetention) ? partial.bundleRetention : current.bundleRetention,
   };
 
   // Ensure parent directory exists

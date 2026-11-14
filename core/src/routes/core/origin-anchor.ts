@@ -59,8 +59,13 @@ export function realOriginAnchor(dataset: string): OriginAnchorDeps {
       try { json = JSON.parse(text); } catch { /* non-JSON relay error */ }
       if (json && typeof json === 'object' && 'success' in (json as object)) return json;
       if (!res.ok) {
-        const e = new Error(`Proxy POST to ${n}${p} returned ${res.status}`) as Error & { status?: number };
+        // `body` rides along so the classifier can tell the hub's own pre-dispatch "machine
+        // offline" 503 (nothing forwarded) from a 5xx after forwarding (may have landed).
+        // Kept OFF the message on purpose: IN_FLIGHT_RE matches message text, and an
+        // arbitrary body mentioning "abort"/"timeout" must not reclassify a 4xx.
+        const e = new Error(`Proxy POST to ${n}${p} returned ${res.status}`) as Error & { status?: number; body?: string };
         e.status = res.status;
+        e.body = text.slice(0, 400);
         throw e;
       }
       return json ?? text;
@@ -89,6 +94,31 @@ export function isRegistryEnvelope(v: unknown): v is Envelope {
  *  evidence because it proves the request DID reach the hub. */
 const IN_FLIGHT_RE = /timeout|timed out|abort|socket hang up|ECONNRESET|EPIPE|ETIMEDOUT/i;
 const IN_FLIGHT_NAMES = new Set(['AbortError', 'TimeoutError']);
+
+/** The hub's machine-proxy answers a request for a machine that is not connected with a
+ *  503 saying so ("Machine offline") — decided at the hub BEFORE anything is forwarded, so
+ *  it proves nothing was written. Matched defensively (case-insensitive 'offline' anywhere
+ *  in the response BODY — never the error message, which embeds the request path) because
+ *  the exact wording is the hub's, not ours. Only a 503 counts: a 500/502 that mentions
+ *  "offline" is an answer from somewhere past the hub, and stays ambiguous. */
+const HUB_OFFLINE_RE = /offline/i;
+
+function hubSaidOffline(e: unknown): boolean {
+  const err = e as Error & { status?: number; body?: unknown };
+  return err?.status === 503 && typeof err.body === 'string' && HUB_OFFLINE_RE.test(err.body);
+}
+
+/** A relay/hub FAILURE body (a string `error`, no {code,message} envelope) saying the
+ *  target machine is offline — the `{success:false, error:"machine offline"}` shape.
+ *  Requires a string `error` and no `success:true`, so a successful write's body that
+ *  merely mentions "offline" somewhere can never be reported as not-applied. */
+function offlineBody(v: unknown): string | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as { success?: unknown; error?: unknown; message?: unknown };
+  if (o.success === true || typeof o.error !== 'string') return null;
+  const text = [o.error, o.message].filter((x): x is string => typeof x === 'string').join(' ');
+  return HUB_OFFLINE_RE.test(text) ? text.slice(0, 160) : null;
+}
 
 function failedInFlight(e: unknown): boolean {
   const err = e as Error & { status?: number };
@@ -135,7 +165,8 @@ function timeoutEnvelope(label: string, target: string, detail: string): Envelop
  *
  *  Three distinguishable outcomes, because "it failed" is not actionable on a WRITE:
  *   - the origin's own refusal, relayed VERBATIM (rejected ⇒ nothing written, retry safe);
- *   - ORIGIN_UNREACHABLE (provably never sent ⇒ nothing written, retry safe);
+ *   - ORIGIN_UNREACHABLE (provably never sent ⇒ nothing written, retry safe) — including
+ *     the hub's own 503 "machine offline", which it answers before forwarding anything;
  *   - ORIGIN_TIMEOUT (ambiguous ⇒ may have landed, retry only with the same requestId). */
 export async function anchorToOrigin(
   origin: OriginAnchorDeps | undefined,
@@ -156,13 +187,20 @@ export async function anchorToOrigin(
     if (isRegistryEnvelope(result)) return result;
     // A relay TIMEOUT body has no `success`, so it used to slip through the branch below
     // and masquerade as a successful write — the worst possible answer for this class.
+    // Checked BEFORE the offline marker: any timeout signal means it may have landed.
     if (relayTimedOut(result)) return timeoutEnvelope(label, target, `relay reported ${JSON.stringify(result).slice(0, 120)}`);
+    const offline = offlineBody(result);
+    if (offline) return unreachableEnvelope(label, target, `hub reports the origin machine offline: ${offline}`);
     if (result && typeof result === 'object' && !('success' in (result as object))) {
       return { success: true, data: (result as { data?: unknown })?.data ?? result };
     }
     return unreachableEnvelope(label, target, 'unrecognized relay response');
   } catch (e) {
     const detail = (e as Error).message;
+    if (hubSaidOffline(e)) {
+      const body = (e as { body?: unknown }).body;
+      return unreachableEnvelope(label, target, `hub reports the origin machine offline: ${typeof body === 'string' && body ? body.slice(0, 160) : detail}`);
+    }
     return failedInFlight(e)
       ? timeoutEnvelope(label, target, detail)
       : unreachableEnvelope(label, target, detail);

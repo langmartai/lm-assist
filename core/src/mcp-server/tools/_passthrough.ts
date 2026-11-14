@@ -210,4 +210,4 @@ export async function workerDelete<T = unknown>(
  * directory-targeted ops use the exact same gate. Per operator decision: any
  * directory under /home/ubuntu is permitted.
  */
-export { isCwdAllowed } from '../../utils/cwd-allowlist';
+export { isCwdAllowed, describeCwdPolicy } from '../../utils/cwd-allowlist';

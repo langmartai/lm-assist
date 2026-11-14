@@ -4,6 +4,16 @@
 
 [![Discord](https://img.shields.io/discord/1475647234669543558?logo=discord&label=Discord&color=5865F2)](https://discord.gg/xb2BNnk4)
 
+## 🎉 Announcing the next-gen Claude Code development experience
+
+> **You still need a PC, a workstation, or a server. You no longer need to sit in front of it.**
+
+Three months ago, developing lm-assist meant a PC or Mac with Claude Code open in a terminal. Today about 99% of it happens from the Claude app on an iPad — including the 0.2.x releases, this documentation, and the sessions that wrote them. The machines still do the work: they build, test, run the sessions, drive the browsers, hold the memory. What changed is that every action that used to need a hand on the keyboard — build, restart, test, drive and resume sessions, take screenshots, move files between machines, review a PR, cut a release — is now an lm-assist MCP tool that Claude calls for you, from any device with the Claude app. In the last three months, 1,600 commits landed on this repository, most of them by Claude Code sessions steered through lm-assist itself.
+
+**Read the story:** [From a terminal to an iPad: three months of lm-assist building itself](./docs/articles/2026-09-developing-lm-assist-from-an-ipad.md) — the dated timeline of what had to exist, a day from the iPad in plain-language prompts, and the honest 1% that still needs a hand on a machine. **And the machine room behind it:** [The server build — one Windows 11 box, Hyper-V, and the Ubuntu VMs that do all the work](./docs/articles/2026-09-the-server-build-behind-it.md). More in [docs/articles](./docs/articles/README.md).
+
+---
+
 ## The Goal
 
 **Full observability and control for the Claude product line.** lm-assist is a self-hosted platform that sees and steers everything Claude does for you — Claude Code sessions (local, remote, and cloud/CCR), claude.ai conversations, Cowork sessions, Agent SDK runs, your Claude memory and rules, MCP connectors, and usage limits. It runs beside Claude Code, reads the session files Claude already writes, proxies the claude.ai surfaces you're signed into, and turns all of it into a web dashboard, a REST API, and MCP tools that work from inside Claude itself. Everything is cross-node and cross-session: enroll your machines once and every session, memory file, and tool on every machine is reachable from every other — including from inside any Claude conversation. And control is as first-class as observability: sessions can be driven, messaged, scheduled, auto-resumed after stalls, and moved off a rate-limited model — by you, or by Claude.

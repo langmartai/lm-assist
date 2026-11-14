@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Database, Plus, Trash2, KeyRound, RefreshCw, Loader2, ShieldAlert, X } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { BackupTab } from './BackupTab';
 
 type BackendKind = 'vector' | 'sql' | 'cache' | 'knowledge' | 'vectors' | 'file';
 type DataAction = 'read' | 'query' | 'search' | 'write' | 'delete' | 'manage';
@@ -20,7 +21,7 @@ interface SyncStatus {
   recordsApplied: number; recordsSkipped: number; errors: string[];
 }
 
-type Tab = 'datasets' | 'keys' | 'sync';
+type Tab = 'datasets' | 'keys' | 'sync' | 'backup';
 
 export function DataPage() {
   const { apiClient, proxy } = useAppMode();
@@ -115,6 +116,7 @@ export function DataPage() {
         <button className={`tab-item ${tab === 'datasets' ? 'active' : ''}`} onClick={() => setTab('datasets')}>Datasets</button>
         <button className={`tab-item ${tab === 'keys' ? 'active' : ''}`} onClick={() => setTab('keys')}>Access Keys</button>
         <button className={`tab-item ${tab === 'sync' ? 'active' : ''}`} onClick={() => setTab('sync')}>Sync</button>
+        <button className={`tab-item ${tab === 'backup' ? 'active' : ''}`} onClick={() => setTab('backup')}>Backup</button>
       </div>
 
       {/* Capability banner for non-local sessions */}
@@ -204,6 +206,8 @@ export function DataPage() {
 
         {tab === 'keys' && <KeysTab apiFetch={apiFetch} canManage={canManage} setError={setError} />}
         {tab === 'sync' && <SyncTab apiFetch={apiFetch} canManage={canManage} setError={setError} />}
+        {/* Owner-usable from LAN/hub sessions too — not gated on canManage (see BackupTab). */}
+        {tab === 'backup' && <BackupTab />}
       </div>
     </div>
   );

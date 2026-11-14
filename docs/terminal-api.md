@@ -319,3 +319,35 @@ All caller-supplied strings are allowlisted at the route boundary:
 
 Unknown fields in request bodies are ignored (not rejected); use the schemas
 in `core/src/terminal/validate.ts` as the source of truth.
+
+## cwd allowlist (terminal_open_tab, agent_execute, git clone/commit-push)
+
+The gate (`core/src/utils/cwd-allowlist.ts`) allows the worker's OWN home dir and below,
+**plus extra roots the node declares**:
+
+- env `LM_ASSIST_CWD_ROOTS` — `;`-separated on every platform (a Windows path contains `:`), e.g. `C:\home;D:\work`
+- file `<dataDir>/cwd-roots` (`~/.lm-assist/cwd-roots`, or `LM_ASSIST_DATA_DIR`) — one path per line, `#` comments
+
+Windows compares case-insensitively. A refusal names the effective policy and both ways to extend
+it. `windows_terminal_create` / `windows_terminal_launch` (the Claude-launch surface) are deliberately
+NOT gated — this used to be an undocumented inconsistency (2026-09: `C:\home` repos refused by
+`terminal_open_tab` on 107 while `windows_terminal_create` opened them).
+
+## Windows: text is injected by PID, not located by title
+
+`focusAndSend` (windows_terminal_send, send_session_message on Windows, the generic `wt` backend)
+types `text` through the console input buffer (`WriteConsoleInput` after `AttachConsole(pid)`) — the
+same focus-free path the special keys always used. There is no window/tab locate, no foreground
+change and no clipboard. Multi-line text is wrapped as one bracketed paste (`ESC[200~ … ESC[201~`)
+so newlines stay in the composer. The title-marker locate + clipboard paste survives only as the
+fallback when the console is unreachable by pid (cross-session), and the result says `via` /
+`fallback` so you can tell which path ran.
+
+Why: Windows Terminal shows ONE title per tab (its active pane's). Sessions in non-active panes or
+windows UI Automation does not enumerate could never show the marker — measured 2026-09-07: 6
+driveable sessions in one WT process, 1 locatable — hence "could not locate window/tab" whenever
+several sessions shared the default "Claude Code" title.
+
+The folder-trust auto-accept (Windows launcher, tmux ccr resume, tmux cc.launch) derives its keys
+from the screen (`trustPromptKeys`): Claude Code 2.1.257 highlights "No, exit" FIRST, so the old
+bare Enter made a fresh launch quit at the trust screen.

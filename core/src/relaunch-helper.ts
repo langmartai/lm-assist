@@ -5,17 +5,50 @@
 // Inherits env (so a --extra-ca node restarts with NODE_EXTRA_CA_CERTS still set).
 
 import * as net from 'net';
-import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import { spawn, type StdioOptions } from 'child_process';
+import { coreKind, coreRuntimeFiles } from './utils/core-runtime-files';
+import { rotateNow } from './utils/log-rotate';
+
+/**
+ * stdio for the relaunched Core: stdout+stderr APPENDED to the same log the service manager
+ * uses (capped first — nothing holds it once the old Core is gone). This used to be 'ignore':
+ * a lifecycle-restarted Core logged NOTHING for its whole life, so the log tail kept showing the
+ * previous Core's clean shutdown and a later crash left no trace (107, 2026-09: 12 days unlogged,
+ * then a silent death). Best-effort: any failure falls back to 'ignore', never blocks the relaunch.
+ */
+export function relaunchStdio(logFile: string): { stdio: StdioOptions; fd: number | null } {
+  try {
+    try { rotateNow(logFile); } catch { /* never block the relaunch on rotation */ }
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    const fd = fs.openSync(logFile, 'a');
+    return { stdio: ['ignore', fd, fd], fd };
+  } catch {
+    return { stdio: 'ignore', fd: null };
+  }
+}
 
 function run(): void {
   const port = parseInt(process.argv[2] || '', 10);
   const exec = process.argv[3] || process.execPath;
   const coreArgs = process.argv.slice(4); // [cliPath, ...serveArgs]
   if (!Number.isFinite(port) || coreArgs.length === 0) { process.exit(1); return; }
+  const files = coreRuntimeFiles(coreKind(__dirname));
 
   let tries = 0;
   const relaunch = (): void => {
-    try { spawn(exec, coreArgs, { detached: true, stdio: 'ignore' }).unref(); } catch { /* ignore */ }
+    const { stdio, fd } = relaunchStdio(files.log);
+    try {
+      const child = spawn(exec, coreArgs, { detached: true, stdio, windowsHide: true });
+      child.on('error', () => { /* spawn failure must not throw in a detached helper */ });
+      // Record the NEW Core. Left alone the pidfile names the Core that just exited: `lm-assist
+      // stop` would kill-by-pid a number the OS may have reused, and the Windows watchdog (which
+      // treats a surviving pidfile as "should be running") would be judging a dead pid.
+      if (child.pid) { try { fs.writeFileSync(files.pid, String(child.pid)); } catch { /* best effort */ } }
+      child.unref();
+    } catch { /* ignore */ }
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
     process.exit(0);
   };
   const poll = (): void => {

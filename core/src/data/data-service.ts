@@ -1,8 +1,9 @@
 // core/src/data/data-service.ts
 import type {
   Principal, DataAction, DataRecord, QuerySpec, SearchSpec, AccessRequest, BackendKind, NodeVisibility, SyncMode,
-  PeerClient, NodeInfo, PutOptions, DatasetDescriptor,
+  PeerClient, NodeInfo, PutOptions, DatasetDescriptor, NodeOrigin, ImportPolicy, ImportBucket, ImportOutcome,
 } from './types';
+import { isNewer, IMPORT_POLICIES, IMPORT_BUCKETS, IMPORT_SAMPLE_MAX } from './types';
 import type { DatasetRegistry } from './dataset-registry';
 import { getDatasetRegistry } from './dataset-registry';
 import type { BackendRegistry } from './backend-registry';
@@ -18,11 +19,12 @@ import { boundQuerySpec, MAX_QUERY_ROWS } from './backends/query-filter';
 import { ensureSystemDatasets, ensureTrackedFiles } from './system-datasets';
 import { getKeyStore } from './key-store';
 import { redactRecord, redactValueDeep, scrubValueDeep } from './redaction';
+import { canonicalJson } from './canonical';
 import { thisNodeId } from './paths';
 import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
 import { FabricPeerClient } from './fabric-peer-client';
-import { SyncEngine } from './sync-engine';
+import { SyncEngine, exportAllRecords } from './sync-engine';
 import { KeyedLocks } from './key-lock';
 
 export interface CallCtx { principal: Principal; keyHeader?: string; }
@@ -36,11 +38,101 @@ export const MAX_RECORD_BYTES = 1_048_576; // 1 MiB — a single data record's s
  *  (still honest — the caller's next offset reaches the remainder). 10 × the requested
  *  page covers any realistic tombstone density between 14-day GC sweeps. */
 export const TOMBSTONE_REFILL_MAX_PAGES = 10;
+/** Most ids a change-notify carries. The bus refuses a payload over its cap (64 KiB) and
+ *  notifyChange swallows that throw, so an unbounded id list (a big import) would silently
+ *  send NO notify at all. The listener pulls the whole dataset regardless of ids, so past
+ *  the bound an empty list ("something changed") is exactly as useful. */
+export const MAX_NOTIFY_IDS = 500;
+export function boundNotifyIds(ids: string[]): string[] {
+  return ids.length > MAX_NOTIFY_IDS ? [] : ids;
+}
+
 /** Returns a reason string if the record exceeds the size cap, else undefined. */
 export function recordTooLarge(record: DataRecord): string | undefined {
   let n = 0;
   try { n = Buffer.byteLength(JSON.stringify(record) ?? '', 'utf8'); } catch { return 'record is not serializable'; }
   return n > MAX_RECORD_BYTES ? `record is ${n} bytes; the per-record cap is ${MAX_RECORD_BYTES} bytes` : undefined;
+}
+
+/** Backends a bundle cannot round-trip: adapters over stores that are derived and rebuild
+ *  themselves (knowledge, the system vectors index) or are not record stores at all (file).
+ *  Their exportSince/importBatch throw SYNC_NOT_SUPPORTED. */
+export const RAW_UNSUPPORTED_BACKENDS: ReadonlySet<BackendKind> = new Set<BackendKind>(['knowledge', 'vectors', 'file']);
+
+
+/** "Identical content" for import: equal fields, text, metadata and deleted under a
+ *  canonical compare. Version, timestamps and origin are deliberately NOT content. */
+export function sameRecordContent(a: DataRecord, b: DataRecord): boolean {
+  const view = (r: DataRecord) => canonicalJson({ fields: r.fields ?? {}, text: r.text ?? null, metadata: r.metadata ?? null, deleted: r.deleted === true });
+  return view(a) === view(b);
+}
+
+/** Well-formed enough to store: the fields every reader and the LWW compare rely on. */
+function isImportableRecord(r: unknown): r is DataRecord {
+  if (!r || typeof r !== 'object') return false;
+  const x = r as DataRecord;
+  return typeof x.id === 'string' && x.id.length > 0
+    && typeof x.version === 'number' && Number.isFinite(x.version) && x.version >= 0
+    && !!x.fields && typeof x.fields === 'object' && !Array.isArray(x.fields)
+    && typeof x.createdAt === 'string' && typeof x.updatedAt === 'string'
+    && (x.deleted === undefined || typeof x.deleted === 'boolean');
+}
+
+/**
+ * PURE per-record import decision (the spec's policy table). A local TOMBSTONE counts as
+ * present: a deletion is only ever undone by a record that wins on the policy's terms.
+ *  - absent locally           → 'add', written VERBATIM (version/createdAt/updatedAt/deleted
+ *                               kept, origin cleared: the record becomes locally owned);
+ *  - 'merge'                  → bundle wins LWW ⇒ 'update' verbatim; else skip
+ *                               ('skipIdentical' when the content matches, 'skipOlder' otherwise);
+ *  - 'add-missing'            → never touches a present record ('skipIdentical' / 'skipExists');
+ *  - 'replace'                → identical content ⇒ 'skipIdentical'; else 'update' AS A NEW
+ *                               VERSION: max(local, bundle)+1 and updatedAt=now, so the restored
+ *                               state out-LWWs every replica.
+ */
+export function planImportRecord(
+  incoming: DataRecord,
+  local: DataRecord | null,
+  policy: ImportPolicy,
+  nowIso: string,
+): { bucket: ImportBucket; write?: DataRecord } {
+  const verbatim: DataRecord = { ...incoming, origin: undefined };
+  if (!local) return { bucket: 'add', write: verbatim };
+  const identical = sameRecordContent(incoming, local);
+  if (policy === 'add-missing') return { bucket: identical ? 'skipIdentical' : 'skipExists' };
+  if (policy === 'merge') {
+    // Origins are stripped on BOTH sides: isNewer's last tie-break is origin.machineId, and
+    // an owned record has none — a bundle copy of the very same write must not "win" on it.
+    if (isNewer(verbatim, { ...local, origin: undefined })) return { bucket: 'update', write: verbatim };
+    return { bucket: identical ? 'skipIdentical' : 'skipOlder' };
+  }
+  if (identical) return { bucket: 'skipIdentical' };
+  return {
+    bucket: 'update',
+    write: { ...verbatim, version: Math.max(local.version, incoming.version) + 1, updatedAt: nowIso },
+  };
+}
+
+/** The CreateDatasetInput a bundle's dataset line produces (spec: "For a created dataset").
+ *  Keeps id/backend/title/scope/syncMode/config/sensitive. visibility/acl come from the
+ *  bundle only when the BUNDLE side owned the dataset; a replica's local-only / empty ACL
+ *  is an artifact of replication, so a replica line defaults to cross-node-readable / []. */
+export function bundleDescriptorToCreateInput(
+  descriptor: DatasetDescriptor,
+  replicaOf?: NodeOrigin | null,
+): import('./dataset-registry').CreateDatasetInput {
+  const bundleOwned = !descriptor.origin && !replicaOf;
+  return {
+    id: descriptor.id,
+    backend: descriptor.backend,
+    title: descriptor.title,
+    scope: descriptor.scope,
+    syncMode: descriptor.syncMode,
+    config: descriptor.config,
+    sensitive: descriptor.sensitive,
+    visibility: bundleOwned ? descriptor.visibility : 'cross-node-readable',
+    acl: bundleOwned ? (Array.isArray(descriptor.acl) ? descriptor.acl : []) : [],
+  };
 }
 
 export class DataService {
@@ -220,7 +312,7 @@ export class DataService {
   private notifyChange(d: DatasetDescriptor, type: 'changed' | 'deleted', ids: string[]): void {
     if ((d as any).sensitive) return;
     if (!d.syncMode || d.syncMode === 'none') return;
-    try { this.deps.notify?.(d.id, type, ids); } catch { /* bus off / not ready — reconcile heals */ }
+    try { this.deps.notify?.(d.id, type, boundNotifyIds(ids)); } catch { /* bus off / not ready — reconcile heals */ }
   }
 
   async put(ctx: CallCtx, datasetId: string, record: DataRecord, opts?: PutOptions): Promise<DataResult<{ id: string }>> {
@@ -235,6 +327,10 @@ export class DataService {
     // unit per key. Route ALL puts to this key (CAS and non-CAS alike) through the mutex, so a
     // plain put can never slip between a concurrent CAS put's read and write.
     return this.withKeyLock(`${datasetId}:${record.id}`, async () => {
+      // Re-check ownership INSIDE the lock: an auto-demotion (SyncEngine.resolveSuperseded)
+      // can land between the entry check and here, and a write acknowledged onto a replica
+      // never reaches the fleet (the new owner does not pull from replicas).
+      if (this.deps.datasets.get(datasetId)?.origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" became a remote replica (read-only)` };
       const existing = await backend.get(datasetId, record.id);
       // A tombstoned record is logically ABSENT for CAS (ifVersion:0 = create-if-absent must
       // work after a delete) — but its version still seeds the counter below, so the
@@ -287,6 +383,7 @@ export class DataService {
     // under the same per-key lock as put() so a concurrent put can't interleave with the
     // read-bump-write below. Payload is dropped: a tombstone carries no data.
     return this.withKeyLock(`${datasetId}:${id}`, async () => {
+      if (this.deps.datasets.get(datasetId)?.origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" became a remote replica (read-only)` };
       const existing = await backend.get(datasetId, id);
       if (!existing || existing.deleted) return { ok: true, value: false }; // idempotent: already gone
       const now = new Date().toISOString();
@@ -334,8 +431,13 @@ export class DataService {
     if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'dataset creation is local-only' };
     // Callers (route body / MCP args) must never mint a system dataset or stamp a replica
     // origin — those are reserved for internal registration (ensureSystemDatasets / replica upsert).
-    const { system, origin, ...safe } = input as import('./dataset-registry').CreateDatasetInput & { origin?: unknown };
-    void system; void origin;
+    const { system, origin, supersedes, ...safe } = input as import('./dataset-registry').CreateDatasetInput & { origin?: unknown };
+    void system; void origin; void supersedes;
+    return this.allocateDataset(ctx, safe);
+  }
+
+  /** Registry create + backend allocation, rolled back when the allocation fails. */
+  private async allocateDataset(ctx: CallCtx, safe: import('./dataset-registry').CreateDatasetInput): Promise<DataResult<import('./types').DatasetDescriptor>> {
     let d: import('./types').DatasetDescriptor;
     try {
       d = this.deps.datasets.create(safe);
@@ -388,6 +490,145 @@ export class DataService {
     }
   }
 
+  // Data bundles (export / import) --------------------------------------------------
+  //
+  // Faithful primitives for point-in-time bundles. Unlike get/query/exportDataset they do
+  // NOT redact (a bundle must round-trip bytes, and redaction would permanently overwrite
+  // the owner's own data on restore) — which is exactly why they are LOCAL-principal only.
+  // The auth boundary for owner/remote callers is the ROUTE, which calls these with the
+  // internal {type:'local'} ctx after its own checks.
+
+  /** Unredacted, tombstone-inclusive full read of one dataset (owned or replica). Pages
+   *  past the backend's 50k export cap; an export that cannot be proven complete is an
+   *  error (EXPORT_INCOMPLETE), never a silently short bundle. */
+  async exportRaw(ctx: CallCtx, datasetId: string): Promise<DataResult<DataRecord[]>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'raw export is local-only' };
+    const d = this.deps.datasets.get(datasetId);
+    if (!d) return { ok: false, code: 'NOT_FOUND', reason: `dataset "${datasetId}" not found` };
+    if (RAW_UNSUPPORTED_BACKENDS.has(d.backend)) {
+      return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${d.backend}" is derived or file-backed and is not exported` };
+    }
+    const backend = this.deps.backends.get(d.backend);
+    if (!backend) return { ok: false, code: 'NO_BACKEND', reason: `backend "${d.backend}" unavailable` };
+    try {
+      const r = await exportAllRecords(backend, datasetId);
+      if (!r.complete) return { ok: false, code: 'EXPORT_INCOMPLETE', reason: r.reason };
+      return { ok: true, value: r.records };
+    } catch (e) {
+      return { ok: false, code: 'EXPORT_FAILED', reason: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /**
+   * Faithful import of bundle records into an OWNED dataset, per `planImportRecord`'s policy
+   * table. Import never deletes: local records absent from `records` are untouched. Each
+   * write runs under the SAME per-key lock put()/del() use, so a concurrent put cannot slip
+   * between the read and the write. After a real apply, ONE batched change-notify fires for
+   * the dataset so peers pull promptly. `dryRun` computes the identical outcome without a
+   * single write. Refuses a replica (READ_ONLY_REPLICA) — taking ownership is a separate,
+   * guarded step (takeover).
+   */
+  async importRaw(
+    ctx: CallCtx,
+    datasetId: string,
+    records: DataRecord[],
+    opts: { policy: ImportPolicy; dryRun: boolean },
+  ): Promise<DataResult<ImportOutcome>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'raw import is local-only' };
+    const policy = opts?.policy;
+    if (!IMPORT_POLICIES.includes(policy)) {
+      return { ok: false, code: 'BAD_REQUEST', reason: `unknown import policy ${JSON.stringify(policy)} (expected ${IMPORT_POLICIES.join(' | ')})` };
+    }
+    if (!Array.isArray(records)) return { ok: false, code: 'BAD_REQUEST', reason: 'records must be an array' };
+    const d = this.deps.datasets.get(datasetId);
+    if (!d) return { ok: false, code: 'NOT_FOUND', reason: `dataset "${datasetId}" not found` };
+    if (d.origin) {
+      return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" is a replica of ${d.origin.hostname || d.origin.machineId} — import on the origin, or take it over first` };
+    }
+    if (d.system) return { ok: false, code: 'FORBIDDEN', reason: `dataset "${datasetId}" is a system dataset` };
+    if (d.readOnly) return { ok: false, code: 'FORBIDDEN', reason: `dataset "${datasetId}" is read-only` };
+    if (RAW_UNSUPPORTED_BACKENDS.has(d.backend)) {
+      return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${d.backend}" is derived or file-backed and is not imported` };
+    }
+    const backend = this.deps.backends.get(d.backend);
+    if (!backend) return { ok: false, code: 'NO_BACKEND', reason: `backend "${d.backend}" unavailable` };
+
+    const dryRun = opts.dryRun !== false; // anything but an explicit false is a plan, never a write
+    const counts = Object.fromEntries(IMPORT_BUCKETS.map((b) => [b, 0])) as Record<ImportBucket, number>;
+    const samples = Object.fromEntries(IMPORT_BUCKETS.map((b) => [b, [] as string[]])) as Record<ImportBucket, string[]>;
+    const note = (bucket: ImportBucket, id: unknown) => {
+      counts[bucket]++;
+      if (samples[bucket].length < IMPORT_SAMPLE_MAX && typeof id === 'string' && id) samples[bucket].push(id);
+    };
+    const written: string[] = [];
+    // A SYNCED dataset's replicas pull by an updatedAt watermark (sync-engine pullOne:
+    // `since` = the newest updatedAt they hold). A record written with the bundle's OLD
+    // updatedAt sorts below every replica's watermark and would never reach them — the
+    // import would report `add` while the fleet never converges. So every write into a
+    // synced dataset is stamped updatedAt=now; version, createdAt and deleted stay verbatim
+    // (isNewer compares version first, so LWW only changes on a same-version tie-break).
+    // Stamped HERE, not in the pure planImportRecord, so plans compare the bundle as-is.
+    const synced = !d.sensitive && !!d.syncMode && d.syncMode !== 'none';
+    let failed: { code: string; reason: string } | undefined;
+
+    for (const incoming of records) {
+      if (!isImportableRecord(incoming)) { note('invalid', (incoming as { id?: unknown } | null)?.id); continue; }
+      if (recordTooLarge(incoming)) { note('tooLarge', incoming.id); continue; }
+      const step = async (): Promise<ImportBucket | 'demoted'> => {
+        // Re-check ownership inside the lock: an auto-demotion can land mid-import.
+        if (!dryRun && this.deps.datasets.get(datasetId)?.origin) return 'demoted';
+        const local = await backend.get(datasetId, incoming.id);
+        const nowIso = new Date().toISOString();
+        const plan = planImportRecord(incoming, local, policy, nowIso);
+        if (plan.write && !dryRun) {
+          const write = synced ? { ...plan.write, updatedAt: nowIso } : plan.write;
+          await backend.put(datasetId, write);
+        }
+        return plan.bucket;
+      };
+      let bucket: ImportBucket | 'demoted';
+      try {
+        bucket = dryRun ? await step() : await this.withKeyLock(`${datasetId}:${incoming.id}`, step);
+      } catch (e) {
+        // A backend write error (MDB_MAP_FULL, a sql worker failure) mid-import: stop, but
+        // still notify what WAS written and report the partial counts — never a raw throw
+        // that loses both.
+        failed = { code: 'IMPORT_FAILED', reason: `record "${incoming.id}": ${e instanceof Error ? e.message : String(e)}` };
+        break;
+      }
+      if (bucket === 'demoted') {
+        failed = { code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" became a replica during the import — the rest was not written` };
+        break;
+      }
+      note(bucket, incoming.id);
+      if (!dryRun && (bucket === 'add' || bucket === 'update')) written.push(incoming.id);
+    }
+
+    if (written.length) this.notifyChange(d, 'changed', written);
+    return { ok: true, value: { dataset: datasetId, policy, dryRun, total: records.length, counts, samples, ...(failed ? { failed } : {}) } };
+  }
+
+  /** Create an OWNED dataset from a bundle's descriptor (the rebuilt-origin / new-fleet path)
+   *  and allocate its storage. Local-only, like createDataset. `replicaOf` is the bundle
+   *  line's marker that the exporting node held it as a replica. Whether creating it is
+   *  SAFE (owner online elsewhere ⇒ split brain) is the caller's ownership check. */
+  async createDatasetFromBundle(
+    ctx: CallCtx,
+    descriptor: DatasetDescriptor,
+    opts: { replicaOf?: NodeOrigin | null; supersedes?: import('./types').SupersedesMarker } = {},
+  ): Promise<DataResult<DatasetDescriptor>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'dataset creation is local-only' };
+    if (!descriptor || typeof descriptor !== 'object' || typeof descriptor.id !== 'string') {
+      return { ok: false, code: 'BAD_REQUEST', reason: 'bundle dataset descriptor is malformed' };
+    }
+    if (descriptor.system) return { ok: false, code: 'FORBIDDEN', reason: `dataset "${descriptor.id}" is a system dataset` };
+    if (RAW_UNSUPPORTED_BACKENDS.has(descriptor.backend)) {
+      return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${descriptor.backend}" is derived or file-backed and is not imported` };
+    }
+    const input = bundleDescriptorToCreateInput(descriptor, opts.replicaOf);
+    return this.allocateDataset(ctx, opts.supersedes?.machineId ? { ...input, supersedes: opts.supersedes } : input);
+  }
+
   // M5 sync helpers ----------------------------------------------------------------
 
   /** Returns this node's stable id. */
@@ -416,7 +657,7 @@ export class DataService {
   }
 
   /** Returns descriptor stubs for datasets this node advertises as syncable (syncMode !== 'none'). */
-  syncManifest(p: Principal): Array<{ id: string; syncMode: SyncMode; ownerNode: string; backend: BackendKind; scope: 'cluster' | 'fleet' }> {
+  syncManifest(p: Principal): Array<{ id: string; syncMode: SyncMode; ownerNode: string; backend: BackendKind; scope: 'cluster' | 'fleet'; supersedes?: string; supersedesAt?: string }> {
     const readActions: DataAction[] = ['read'];
     const out = [];
     for (const d of this.deps.datasets.list()) {
@@ -425,7 +666,11 @@ export class DataService {
       if (syncMode === 'none') continue;
       const actions = this.deps.manager.evaluateGrants(p, d, readActions);
       if (!actions.length) continue;
-      out.push({ id: d.id, syncMode, ownerNode: d.ownerNode, backend: d.backend, scope: (d.scope ?? 'cluster') });
+      out.push({
+        id: d.id, syncMode, ownerNode: d.ownerNode, backend: d.backend, scope: (d.scope ?? 'cluster'),
+        // A takeover's marker, so the superseded origin can demote itself (SyncEngine).
+        ...(d.supersedes?.machineId ? { supersedes: d.supersedes.machineId, ...(d.supersedes.at ? { supersedesAt: d.supersedes.at } : {}) } : {}),
+      });
     }
     return out;
   }

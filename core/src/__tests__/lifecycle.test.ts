@@ -1,6 +1,29 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { normalizeTarget, coreServeInvocation, relauncherArgs, isSystemdManaged } from '../lifecycle';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { normalizeTarget, coreServeInvocation, relauncherArgs, isSystemdManaged, releaseCorePidFile } from '../lifecycle';
+
+test('releaseCorePidFile — an intentional exit removes a pidfile naming this process or a dead one, never a live other', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-'));
+  const f = path.join(dir, 'core-prod.pid');
+
+  fs.writeFileSync(f, '100');
+  assert.equal(releaseCorePidFile(f, 100, () => true), true, 'own pid');
+  assert.equal(fs.existsSync(f), false);
+
+  fs.writeFileSync(f, '200');
+  assert.equal(releaseCorePidFile(f, 100, () => false), true, 'dead pid');
+  assert.equal(fs.existsSync(f), false);
+
+  fs.writeFileSync(f, '300');
+  assert.equal(releaseCorePidFile(f, 100, (p) => p === 300), false, 'another live Core keeps its pidfile');
+  assert.equal(fs.readFileSync(f, 'utf8'), '300');
+
+  fs.unlinkSync(f);
+  assert.equal(releaseCorePidFile(f, 100, () => true), false, 'absent pidfile is a no-op');
+});
 
 test('normalizeTarget — defaults to core; passes web/both; rejects junk', () => {
   assert.equal(normalizeTarget(undefined), 'core');

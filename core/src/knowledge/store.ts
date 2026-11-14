@@ -109,6 +109,15 @@ export class KnowledgeStore {
     return this.index;
   }
 
+  /**
+   * Drop the cached index and documents so the next read re-reads the files. For writers
+   * outside this store (a data-bundle import) that replace index.json or K*.md on disk.
+   */
+  reloadIndex(): void {
+    this.index = null;
+    this.cache.clear();
+  }
+
   private saveIndex(): void {
     this.ensureDir();
     fs.writeFileSync(INDEX_FILE, JSON.stringify(this.index!, null, 2));

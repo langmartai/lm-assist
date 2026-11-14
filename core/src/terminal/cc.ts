@@ -121,9 +121,14 @@ export async function launch(session: string, opts: CCLaunchInput): Promise<{
 
       // Handle workspace trust prompt when autoAcceptTrust is set.
       if (state.phase === 'trust-prompt' && opts.autoAcceptTrust) {
-        // Default selection in the trust prompt is "Yes, I trust this folder".
-        // Sending Enter accepts it.
-        tmux.sendKeysUnlocked(session, { keys: 'Enter', literal: false, enter: false, paneQualifier: null });
+        // The highlighted default is NOT always "Yes" (2.1.257 highlights "No, exit"
+        // first) — derive the keys from the screen instead of assuming Enter.
+        let screen = '';
+        try { screen = tmux.capture(session, { paneQualifier: null, lines: null, start: null }); } catch { /* fall back to Enter */ }
+        const { trustPromptKeys } = require('./cc-classify') as typeof import('./cc-classify');
+        for (const k of trustPromptKeys(screen)) {
+          tmux.sendKeysUnlocked(session, { keys: k, literal: false, enter: false, paneQualifier: null });
+        }
         trustPromptHandled = true;
         await new Promise((r) => setTimeout(r, pollMs));
         continue;

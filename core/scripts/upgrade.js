@@ -672,6 +672,19 @@ async function main() {
     log('ERROR: Cannot find lm-assist binary to start services');
   }
 
+  // Windows: step 2c also killed the elevated worker (its command line carries ".lm-assist"), and
+  // only a logon restarts it — so every upgrade silently left the worker, the Core watchdog it
+  // hosts and every elevated_* tool DOWN until someone ran the task by hand. Bring it back.
+  if (isWindows) {
+    try {
+      execFileSync('schtasks', ['/run', '/tn', 'LmAssistElevatedWorker'],
+        { windowsHide: true, timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] });
+      log('Elevated worker restarted (LmAssistElevatedWorker)');
+    } catch {
+      log('Elevated worker not restarted (task not registered on this host, or schtasks failed)');
+    }
+  }
+
   log('=== upgrade finished ===');
 }
 

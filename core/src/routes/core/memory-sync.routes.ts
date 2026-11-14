@@ -42,7 +42,7 @@ const isLocalCaller = (req: ParsedRequest): boolean =>
 function sha256(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 
 /** Credential-shaped filenames are never exported, regardless of shareability (mirrors autosync). */
-const CREDENTIAL_PATTERNS: RegExp[] = [/token/i, /\bkey\b/i, /cookie/i, /password/i, /secret/i, /credential/i];
+import { MEMORY_CREDENTIAL_PATTERNS as CREDENTIAL_PATTERNS } from '../../utils/credential-names';
 
 /**
  * Resolve a project slug to its repo cwd, but ONLY for a project this node already knows — i.e. one

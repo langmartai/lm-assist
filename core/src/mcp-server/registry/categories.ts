@@ -88,6 +88,7 @@ mod('data-tools.ts', 'data', [
   'data_catalog', 'data_request_access', 'data_get', 'data_query', 'data_put', 'data_delete', 'data_search',
   'data_admin', 'data_create_dataset', 'data_drop_dataset', 'data_keys', 'data_revoke_key', 'data_sync', 'data_sync_status',
 ]);
+mod('data-bundle.ts', 'data', ['data_export', 'data_import']);
 // --- file transfer / remote fs / port-forward ---
 mod('transfer.ts', 'transfer', [
   'transfer_send_file', 'transfer_list_remote', 'transfer_stats', 'transfer_queue', 'transfer_cancel', 'transfer_status',

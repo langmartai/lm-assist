@@ -5,7 +5,8 @@ import type { DataRecord } from './types';
 
 export const REDACTED = '«redacted»';
 
-const SECRET_KEY_RE = /(token|secret|password|api[-_]?key|cookie|credential|authorization|private[-_]?key)/i;
+/** Key names that name a secret — redacted by the data service, dropped from bundle config sections. */
+export const SECRET_KEY_RE = /(token|secret|password|api[-_]?key|cookie|credential|authorization|private[-_]?key)/i;
 
 const home = os.homedir();
 const HARD_EXCLUDED = new Set(

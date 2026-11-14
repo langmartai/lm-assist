@@ -8,7 +8,7 @@ import { readFile, mkdir, writeFile, rm, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { isCwdAllowed } from '../utils/cwd-allowlist';
+import { isCwdAllowed, describeCwdPolicy } from '../utils/cwd-allowlist';
 
 const GH_API = 'https://api.github.com';
 const log = (...a: any[]) => console.error('[gh-svc]', ...a);
@@ -258,7 +258,7 @@ async function gitClone(owner: string, repo: string, token: any, { ssh = false, 
   if (!(await which('git'))) return { ok: false, error: { code: 'BACKEND_UNAVAILABLE', message: 'git not installed', backend: 'git' } };
   let dir: string, managed = false;
   if (targetDir) {
-    if (!isCwdAllowed(String(targetDir))) return { ok: false, error: { code: 'FORBIDDEN_DIR', message: `dir "${targetDir}" is outside the lm-assist allowlist (/home/ubuntu/*)`, backend: 'git' } };
+    if (!isCwdAllowed(String(targetDir))) return { ok: false, error: { code: 'FORBIDDEN_DIR', message: `dir "${targetDir}" is outside the lm-assist allowlist; allowed: ${describeCwdPolicy()}`, backend: 'git' } };
     dir = path.resolve(String(targetDir));
     if (existsSync(dir)) {
       const entries = await readdir(dir).catch(() => [] as string[]);
@@ -284,7 +284,7 @@ async function gitCommitPush(owner: string, repo: string, token: any, { branch, 
   let dir: string;
   if (targetDir) {
     // operate IN PLACE on an existing allowlisted checkout — no clone, no wipe.
-    if (!isCwdAllowed(String(targetDir))) return { ok: false, error: { code: 'FORBIDDEN_DIR', message: `dir "${targetDir}" is outside the lm-assist allowlist (/home/ubuntu/*)`, backend: 'git' } };
+    if (!isCwdAllowed(String(targetDir))) return { ok: false, error: { code: 'FORBIDDEN_DIR', message: `dir "${targetDir}" is outside the lm-assist allowlist; allowed: ${describeCwdPolicy()}`, backend: 'git' } };
     dir = path.resolve(String(targetDir));
     if (!existsSync(path.join(dir, '.git'))) return { ok: false, error: { code: 'NOT_A_REPO', message: `dir "${dir}" is not a git repository (clone it first)`, backend: 'git' } };
   } else {

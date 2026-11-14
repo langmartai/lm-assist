@@ -245,6 +245,13 @@ SINGLE-NODE
 CROSS-NODE: pass \`node=B\` to catalog/get/query/search/put/delete. **Request the key ON node B** (\`data_request_access(node=B)\`) — keys are per-node (else KEY_WRONG_NODE). \`synced\` datasets replicate A↔B; \`cross-node-readable\` allows the read. MANAGEMENT (create/drop/keys/sync/admin, raw SQL) is LOCAL-ONLY — run it from a Claude Code session on that host, not over the connector.
 GOTCHAS: request a key before reading; binary → read a byte range; big records are summarized → use field/grep/lines.
 
+BACKUP / MOVE / RESTORE (bundles; works over the connector) — replication is NOT a backup: a replica takes a bad write within one reconcile.
+1. \`data_export\` (no args) = inventory: owned vs replica datasets, origin online, record counts, sync errors — "is my data safe".
+2. \`data_export({action:"create"})\` writes \`lmb-…\` on that node: owned datasets + sanitized config (opt in includeReplicas / includeKnowledge / includeClaudeMemory). Secrets never travel.
+3. Move it: on the TARGET, \`data_import({action:"fetch", fromNode, bundle, node:<target>})\`.
+4. \`data_import({action:"plan", bundle})\` ALWAYS first (dry run; each refused section names its fix), then \`action:"apply"\` with confirm:true — without it nothing is written. Import never deletes; policy merge (default) | add-missing | replace.
+Import a dataset on its ORIGIN or its one intended owner: a node without it creates a second owner. Origin gone for good? \`data_import({action:"takeover", dataset})\` promotes the local replica (refused while the origin is online; force:true only when the roster is unreadable); a returning old origin demotes itself.
+
 FLOW
 \`\`\`mermaid
 flowchart LR
@@ -543,7 +550,7 @@ Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isol
 
 ONBOARDING AN EXISTING SESSION: from any session, call mission_onboard({}) to hand the CURRENT session to mission control (or mission_onboard({sessionId}) for another one). mode:"standby" (default) = mission control analyzes + watches, the human keeps driving; mode:"handoff" = mission control takes over and drives it to completion per the workflow playbooks (onboard.analyze → drive.<work-type>/recover.stuck/wrapup.completed). Switch anytime with mission_update({id, manageMode:"handoff"|"standby"}) — human-only. The playbooks themselves are editable: mission_workflow_list/get/set/history/rollback.
 
-Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.
+Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel, missionControllerColdMin (the controller session exists ONLY while there is demand: it is not launched with zero missions and is torn down when every open mission has been untouched for this many minutes; it relaunches on the next tick that sees a mission created/touched/activated).
 
 GOTCHAS
 • **\`tags\` values must be ARRAYS.** \`{priority:["high"]}\` is right; a bare string \`{priority:"high"}\` throws \`TypeError: (vals ?? []).map is not a function\` and fails the WHOLE create. If a create rejects on a shape you cannot place, create it minimal (title+objective) and \`mission_update\` the rest.

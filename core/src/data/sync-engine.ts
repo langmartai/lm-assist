@@ -5,8 +5,9 @@
 import type { DatasetRegistry } from './dataset-registry';
 import type { BackendRegistry } from './backend-registry';
 import type {
-  PeerClient, SyncStatus, ManifestEntry, NodeInfo, NodeOrigin, BackendConfig,
+  PeerClient, SyncStatus, ManifestEntry, NodeInfo, NodeOrigin, BackendConfig, DataRecord, StorageBackend,
 } from './types';
+import { isNewer } from './types';
 import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
 import { KeyedLocks } from './key-lock';
 
@@ -44,6 +45,86 @@ export function shouldPullDataset(
 export const TOMBSTONE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 export const TOMBSTONE_GC_FLOOR_MS = 60 * 60 * 1000;
 
+/** Rows one `exportSince` call returns at most when the backend does not say otherwise —
+ *  the sql engine's `LIMIT 50000` and the cache backend's CACHE_MAX_SCAN. */
+export const EXPORT_PAGE_CAP = 50_000;
+/** Backstop on the watermark loop: 1000 pages × 50k rows is far past any real dataset,
+ *  and a loop that stops advancing is reported long before this. */
+const EXPORT_MAX_PAGES = 1000;
+
+/** Version, then updatedAt — the LWW order WITHOUT isNewer's origin tie-break. Import
+ *  re-stamps `origin` on every landed record, so an origin compare would call two copies
+ *  of the same write "different"; only a real newer write counts here. */
+export function strictlyNewer(a: { version: number; updatedAt: string }, b: { version: number; updatedAt: string }): boolean {
+  if (a.version !== b.version) return a.version > b.version;
+  return a.updatedAt > b.updatedAt;
+}
+
+/**
+ * One `exportSince` page with the cache backend's scan cap lifted. That backend scans in
+ * KEY order and stops after `maxScan` matching rows, THEN sorts by updatedAt — so a capped
+ * page is an arbitrary key-range, not "the oldest N", and a watermark loop over it would
+ * skip every unscanned record older than the page's newest. Lifting the cap makes one call
+ * complete. It is restored before this returns: CacheBackend.exportSince runs its whole
+ * scan synchronously inside the call, so no other caller can observe the lifted value.
+ * Backends without a `maxScan` (sql: `ORDER BY updated_at LIMIT`) page correctly as-is.
+ */
+function exportPage(backend: StorageBackend, dataset: string, since: string | undefined): Promise<DataRecord[]> {
+  const b = backend as StorageBackend & { maxScan?: unknown };
+  if (typeof b.maxScan !== 'number') return backend.exportSince(dataset, since);
+  const prev = b.maxScan;
+  b.maxScan = Number.POSITIVE_INFINITY;
+  try {
+    return backend.exportSince(dataset, since);
+  } finally {
+    b.maxScan = prev;
+  }
+}
+
+/**
+ * Every record in a dataset — tombstones included, UNREDACTED — for bundles and for the
+ * auto-demotion stranded check. `exportSince` alone caps at 50k rows, which the sync pull
+ * tolerates (the next tick continues) but a point-in-time copy must not. Loops on the
+ * updatedAt watermark (inclusive `since`, so boundary ties re-appear and are de-duped by
+ * id, keeping the newer copy if a write landed between pages) until a page comes back
+ * short. NEVER truncates silently: a full page that adds no new id — more rows share one
+ * updatedAt than a page holds — returns `complete:false` with the reason.
+ */
+export async function exportAllRecords(
+  backend: StorageBackend,
+  dataset: string,
+  opts: { pageCap?: number } = {},
+): Promise<{ complete: true; records: DataRecord[] } | { complete: false; reason: string; records: DataRecord[] }> {
+  const pageCap = opts.pageCap ?? EXPORT_PAGE_CAP;
+  const seen = new Map<string, DataRecord>();
+  let since: string | undefined;
+  for (let page = 0; page < EXPORT_MAX_PAGES; page++) {
+    const rows = await exportPage(backend, dataset, since);
+    let fresh = 0;
+    let max = since;
+    for (const r of rows) {
+      const prev = seen.get(r.id);
+      if (!prev) { seen.set(r.id, r); fresh++; } else if (strictlyNewer(r, prev)) seen.set(r.id, r);
+      if (typeof r.updatedAt === 'string' && (max === undefined || r.updatedAt > max)) max = r.updatedAt;
+    }
+    if (rows.length < pageCap) return { complete: true, records: [...seen.values()] };
+    if (fresh === 0 || max === since) {
+      return {
+        complete: false,
+        records: [...seen.values()],
+        reason: `export of "${dataset}" cannot advance: more than ${pageCap} records share updatedAt ${since ?? max ?? '(none)'}`,
+      };
+    }
+    since = max;
+  }
+  return { complete: false, records: [...seen.values()], reason: `export of "${dataset}" exceeded ${EXPORT_MAX_PAGES} pages` };
+}
+
+/** "hostname (node)" when the roster gave a hostname — node ids alone are opaque in logs. */
+function peerLabel(peer: NodeInfo): string {
+  return peer.hostname ? `${peer.hostname} (${peer.node})` : peer.node;
+}
+
 export class SyncEngine {
   private _status: SyncStatus = {
     lastRun: null,
@@ -80,7 +161,19 @@ export class SyncEngine {
     return { ...this._status, errors: [...this._status.errors] };
   }
 
-  async reconcile(): Promise<SyncStatus> {
+  /** The run in flight. reconcile() is single-flight: the 300 s interval, the boot run and a
+   *  manual /data/sync share one pass instead of racing each other through
+   *  resolveSuperseded's check-then-demote window. */
+  private inflight: Promise<SyncStatus> | null = null;
+
+  reconcile(): Promise<SyncStatus> {
+    if (this.inflight) return this.inflight;
+    const run = this.reconcileOnce().finally(() => { if (this.inflight === run) this.inflight = null; });
+    this.inflight = run;
+    return run;
+  }
+
+  private async reconcileOnce(): Promise<SyncStatus> {
     const s: SyncStatus = {
       lastRun: new Date().toISOString(),
       peersChecked: 0,
@@ -139,6 +232,31 @@ export class SyncEngine {
         }
         // 'none' and any unknown modes are skipped entirely
         if (m.syncMode !== 'full') continue;
+
+        // A peer that TOOK OVER a dataset this node still owns — i.e. this node is the
+        // superseded origin, back online. Only the explicit marker naming THIS node
+        // triggers it; any other dual-owner cause keeps today's LWW merge below.
+        if (m.supersedes && m.supersedes === selfId) {
+          const localDesc = this.deps.datasets.get(m.id);
+          // Two takeovers in OPPOSITE directions (this node took it back from the peer after
+          // the peer took it from us): each side's manifest names the other. The NEWER
+          // takeover wins deterministically — the side holding it keeps ownership and merely
+          // pulls — so the two can never both demote in one round and leave zero owners. A
+          // peer marker without a time (old build) never out-ranks our own marker.
+          const ourTakeoverWins = !!localDesc?.supersedes && localDesc.supersedes.machineId === peer.node
+            && (!m.supersedesAt || (localDesc.supersedes.at || '') >= m.supersedesAt);
+          if (localDesc && !localDesc.origin && !ourTakeoverWins) {
+            try {
+              const r = await this.resolveSuperseded(peer, m, s);
+              s.datasetsReplicated++;
+              s.recordsApplied += r.applied;
+              s.recordsSkipped += r.skipped;
+            } catch (e) {
+              s.errors.push(`takeover ${m.id} by ${peerLabel(peer)}: ` + (e instanceof Error ? e.message : String(e)));
+            }
+            continue;
+          }
+        }
 
         try {
           const r = await this.pullOne(peer, m);
@@ -239,6 +357,59 @@ export class SyncEngine {
     return this.pullOne(peer, m);
   }
 
+  /**
+   * Auto-demotion of a returning superseded origin (data-bundle design). This node owns
+   * `m.id`, but `peer` took it over while this node was away (its manifest names us in
+   * `supersedes`).
+   *  1. Pull the peer's FULL copy LWW — exactly the dual-owner merge — so nothing of the
+   *     peer's is lost here.
+   *  2. Count local records a demotion would STRAND: strictly newer than the peer's copy,
+   *     or missing on the peer. (A local tombstone the peer never had strands nothing —
+   *     there is no record to lose.) If any: stay dual-owner and say so in status.errors;
+   *     the peer, still an owner that lists this dataset, pulls them on its next reconcile.
+   *  3. Otherwise demote to a read-only replica of the peer.
+   */
+  private async resolveSuperseded(peer: NodeInfo, m: ManifestEntry, s: SyncStatus): Promise<{ applied: number; skipped: number }> {
+    const origin: NodeOrigin = { machineId: peer.node, hostname: peer.hostname, os: peer.platform };
+    const backend = this.deps.backends.get(m.backend);
+    if (!backend) return { applied: 0, skipped: 0 };
+
+    const who = peerLabel(peer);
+    const peerRecords = await this.deps.peers.exportFrom(peer.node, m.id);
+    const applied = await backend.importBatch(m.id, peerRecords, origin);
+
+    // The peer copy must be COMPLETE for the stranded count to mean anything. One export is
+    // capped (sql LIMIT / cache maxScan, in key order — not pageable from here), and a peer
+    // client answers [] on any transport error. Either way: stay dual-owner, and say why
+    // instead of reporting a misleading "N records not yet on P".
+    if (peerRecords.length >= EXPORT_PAGE_CAP) {
+      s.errors.push(`takeover ${m.id} by ${who}: cannot read ${who}'s full copy (${peerRecords.length} rows hit the ${EXPORT_PAGE_CAP}-row export cap) — staying dual-owner`);
+      return applied;
+    }
+
+    const local = await exportAllRecords(backend, m.id);
+    const theirs = new Map(peerRecords.map((r) => [r.id, r]));
+    let stranded = 0;
+    for (const rec of local.records) {
+      const peerCopy = theirs.get(rec.id);
+      if (!peerCopy) { if (rec.deleted !== true) stranded++; continue; }
+      if (strictlyNewer(rec, peerCopy)) stranded++;
+    }
+    if (!local.complete) {
+      // Cannot prove nothing would be stranded — staying an owner is the safe side.
+      s.errors.push(`takeover ${m.id} by ${who}: local export incomplete (${local.reason}) — staying dual-owner`);
+      return applied;
+    }
+    if (stranded > 0) {
+      const empty = peerRecords.length === 0 ? ` (${who} returned no records — unreachable, or its copy is empty)` : '';
+      s.errors.push(`takeover ${m.id} by ${who}: ${stranded} local records not yet on ${who}${empty} — staying dual-owner until ${who} pulls them`);
+      return applied;
+    }
+    this.deps.datasets.demoteToReplica(m.id, origin, peer.node);
+    console.log(`[sync-engine] ${m.id}: taken over by ${who}; nothing stranded — demoted to a read-only replica`);
+    return applied;
+  }
+
   private async pullOne(
     peer: NodeInfo,
     m: ManifestEntry,
@@ -263,6 +434,14 @@ export class SyncEngine {
     const backend = this.deps.backends.get(m.backend);
     if (!backend) return { applied: 0, skipped: 0 };
 
+    // This node TOOK OVER the dataset from `peer`, which is back and still an owner: it may
+    // hold records written while it was partitioned (or ones our replica never pulled
+    // before the takeover). Those sort BELOW our watermark — our own post-takeover writes
+    // advanced it — so a watermark pull would never fetch them, the peer would count them
+    // stranded forever, and neither side would ever converge. Pull its FULL copy instead.
+    const localDesc = this.deps.datasets.get(m.id);
+    const fromSuperseded = !!localDesc && !localDesc.origin && localDesc.supersedes?.machineId === peer.node;
+
     // Compute watermark = max updatedAt of records already in local replica.
     // EXCEPTION: fleet-scoped metadata datasets (node-clusters, cluster-meta) are tiny
     // and MULTI-WRITER — every node writes its OWN record. A single global per-dataset
@@ -271,7 +450,7 @@ export class SyncEngine {
     // hostname→gatewayId resolution for cluster_assign breaks). They're cheap to re-pull
     // whole, so always full-sync them (since=undefined) and let importBatch LWW reconcile.
     const local = await backend.exportSince(m.id);
-    const since = m.scope === 'fleet'
+    const since = m.scope === 'fleet' || fromSuperseded
       ? undefined
       : local.length
         ? local.reduce(
@@ -282,6 +461,45 @@ export class SyncEngine {
 
     // Fetch records newer than the watermark (or ALL records for fleet datasets)
     const peerRecords = await this.deps.peers.exportFrom(peer.node, m.id, since);
-    return backend.importBatch(m.id, peerRecords, origin);
+    if (!fromSuperseded) return backend.importBatch(m.id, peerRecords, origin);
+    return this.adoptFromSuperseded(backend, m.id, peerRecords, local, origin, peer);
+  }
+
+  /**
+   * LWW-merge the superseded origin's full copy, then RE-STAMP every record it actually
+   * won (version+1, updatedAt=now, owned): our downstream replicas pull by an updatedAt
+   * watermark too, and the adopted records carry the peer's OLD updatedAt — without the
+   * re-stamp they would reach this node and stop here. A record this node deleted and whose
+   * tombstone the retention GC already purged comes back here — the LWW outcome, and far
+   * better than a permanent divergence — so the count is logged.
+   */
+  private async adoptFromSuperseded(
+    backend: StorageBackend,
+    dataset: string,
+    peerRecords: DataRecord[],
+    local: DataRecord[],
+    origin: NodeOrigin,
+    peer: NodeInfo,
+  ): Promise<{ applied: number; skipped: number }> {
+    const mine = new Map(local.map((r) => [r.id, r]));
+    const wins = peerRecords.filter((r) => isNewer({ ...r, origin }, mine.get(r.id) ?? null));
+    const res = await backend.importBatch(dataset, peerRecords, origin);
+    let restamped = 0;
+    let resurrected = 0;
+    for (const w of wins) {
+      await this.locks.withLock(`${dataset}:${w.id}`, async () => {
+        const cur = await backend.get(dataset, w.id);
+        // Only the exact copy importBatch just landed — a concurrent local write wins as is.
+        if (!cur || cur.version !== w.version || cur.updatedAt !== w.updatedAt || cur.origin?.machineId !== origin.machineId) return;
+        await backend.put(dataset, { ...cur, version: cur.version + 1, updatedAt: new Date().toISOString(), origin: undefined });
+        restamped++;
+        if (!mine.has(w.id) && w.deleted !== true) resurrected++;
+      });
+    }
+    if (restamped) {
+      console.log(`[sync-engine] ${dataset}: adopted ${restamped} record(s) from ${peerLabel(peer)} (the node this one took it over from)`
+        + (resurrected ? `; ${resurrected} were absent here — new on ${peerLabel(peer)}, or deleted here with the tombstone already purged` : ''));
+    }
+    return res;
   }
 }
