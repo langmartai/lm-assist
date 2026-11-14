@@ -27,6 +27,7 @@ import { execFileSync } from '../utils/exec';
 
 const execFileAsync = promisify(execFile);
 import { TerminalError } from './errors';
+import type { TurnOrigin } from '../session-messaging/types';
 import {
   anthropicOAuthGet,
   anthropicOAuthPost,
@@ -285,14 +286,44 @@ export function buildAnswerEvent(sid: string, toolUseId: string, content: string
   };
 }
 
-/** Build a follow-up drive event (POST /v1/sessions/{sid}/events — NOT wrapped, unlike create). */
-export function buildDriveEvent(sid: string, text: string, uuid?: string) {
+/**
+ * Evidence that an event was actually accepted for delivery.
+ *
+ * The two ingresses answer very differently, and only one of them proves
+ * anything (measured 2026-09-09 on a live bridge session):
+ *   /v1/sessions/{sid}/events      -> 200 {"events":[ …the event, echoed… ]}
+ *   /v1/code/sessions/{cse}/events -> 200 {"results":[{event_id, sequence_num, duplicate}]}
+ * The echo validates and reflects; for a `--remote-control` bridge session it
+ * enqueues nothing. Treating its 200 as delivery is what made five drives
+ * report success while the session received none of them.
+ */
+export function deliveryReceipt(body: unknown): { eventId: string; sequenceNum?: string; duplicate: boolean } | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const results = (body as { results?: unknown }).results;
+  if (!Array.isArray(results) || results.length === 0) return undefined;
+  const first = results[0] as { event_id?: unknown; sequence_num?: unknown; duplicate?: unknown };
+  if (typeof first?.event_id !== 'string' || !first.event_id) return undefined;
+  return {
+    eventId: first.event_id,
+    ...(typeof first.sequence_num === 'string' ? { sequenceNum: first.sequence_num } : {}),
+    duplicate: first.duplicate === true,
+  };
+}
+
+/** Build a follow-up drive event (POST /v1/sessions/{sid}/events — NOT wrapped, unlike create).
+ *
+ *  `origin` stamps provenance. Its schema requires a host wrapping keyboard input to
+ *  stamp {kind:'human'} explicitly; an absent origin is treated as unattributed and the
+ *  ingress demotes the turn to {kind:"peer",from:"unknown"}, which frames the operator's
+ *  own instruction to the receiver as "Another Claude session sent a message". */
+export function buildDriveEvent(sid: string, text: string, uuid?: string, origin?: TurnOrigin) {
   return {
     uuid: uuid || randomUUID(),
     session_id: sid,
     type: 'user' as const,
     parent_tool_use_id: null,
     message: { role: 'user' as const, content: text },
+    ...(origin ? { origin } : {}),
   };
 }
 
@@ -580,26 +611,48 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
 }
 
 /** Drive a follow-up turn into a cloud session. */
-export async function cloudDrive(opts: { sid: string; text: string; reBootstrap?: boolean; role?: CloudRole; primaryRepo?: string }): Promise<{ delivered: boolean; sid: string; eventId?: string }> {
+export interface CloudDrivePost {
+  (path: string, body: unknown): Promise<{ status: number; body: any }>;
+}
+
+export async function cloudDrive(
+  opts: { sid: string; text: string; reBootstrap?: boolean; role?: CloudRole; primaryRepo?: string; origin?: TurnOrigin },
+  deps?: { post?: CloudDrivePost },
+): Promise<{ accepted: boolean; delivered: boolean; sid: string; eventId?: string; sequenceNum?: string; duplicate?: boolean }> {
   if (!isCloudOrBridge(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
   let text = (opts.text || '').toString();
   if (!text.trim()) throw new TerminalError('INVALID_INPUT', 'text is required');
   // Resume self-heal: prepend the bootstrap/self-heal instruction so a re-engaged (possibly rebooted)
   // container ensures lm-assist is up (restart/install) before doing the new turn.
   if (opts.reBootstrap) text = buildBootstrapInstruction({ role: opts.role, primaryRepo: opts.primaryRepo }) + text;
-  const res = await anthropicOAuthPost(`/v1/sessions/${opts.sid}/events`, { events: [buildDriveEvent(opts.sid, text)] }, await ccrOpts());
-  // Bridge fallback: a `--remote-control` session isn't driveable on the cloud `/v1/sessions` ingress;
-  // drive it as a CLIENT user-event on `/v1/code/sessions/{cse}/events` (the backend relays it to the
-  // worker, the same path the web UI types into). Lets the CCR page drive a controller/executor too.
+  const post: CloudDrivePost = deps?.post ?? (async (path, body) => anthropicOAuthPost(path, body, await ccrOpts()));
+  const res = await post(`/v1/sessions/${opts.sid}/events`, { events: [buildDriveEvent(opts.sid, text, randomUUID(), opts.origin)] });
+
+  // Bridge fallback, gated on a TRANSPORT failure — deliberately NOT on "the
+  // response carried no receipt".
+  //
+  // Measured 2026-09-09 on a live lm-assist bridge: the primary answers 200 with
+  // a bare ECHO (no receipt) and STILL delivers exactly once, because the bridge
+  // relays it by typing into the session's tmux pane. Treating "no receipt" as
+  // failure and falling back therefore posted the same turn down two working
+  // paths — every probe arrived TWICE. A receipt is evidence of delivery; its
+  // absence is NOT evidence of failure, and the two must not be conflated.
   if (res.status < 200 || res.status >= 300) {
     const cse = toBridgeCse(opts.sid);
-    const ev = { ...buildDriveEvent(cse, text), type: 'user' as const };
-    const cr = await anthropicOAuthPost(`/v1/code/sessions/${cse}/events`, { events: [{ payload: ev }] }, await ccrOpts());
-    assertOk(cr, 'cloud drive (bridge)');
-    return { delivered: true, sid: opts.sid };
+    const ev = { ...buildDriveEvent(cse, text, randomUUID(), opts.origin), type: 'user' as const };
+    const cr = await post(`/v1/code/sessions/${cse}/events`, { events: [{ payload: ev }] });
+    assertOk(cr as any, 'cloud drive (bridge)');
+    const r = deliveryReceipt(cr.body);
+    return { accepted: true, delivered: true, sid: opts.sid, ...(r ? { eventId: r.eventId, sequenceNum: r.sequenceNum, duplicate: r.duplicate } : {}) };
   }
-  const r = res.body && Array.isArray(res.body.results) ? res.body.results[0] : undefined;
-  return { delivered: true, sid: opts.sid, eventId: r?.event_id };
+
+  // `accepted` is the honest word for a 2xx here: the ingress took the event.
+  // Whether the session RENDERS a turn from it depends on a relay this call
+  // cannot observe — a natively-connected (non-lm-assist) session accepts the
+  // POST and delivers nothing. `delivered` is kept as an alias for callers that
+  // already read it; confirm real effect by observing the target.
+  const receipt = deliveryReceipt(res.body);
+  return { accepted: true, delivered: true, sid: opts.sid, ...(receipt ? { eventId: receipt.eventId, sequenceNum: receipt.sequenceNum, duplicate: receipt.duplicate } : {}) };
 }
 
 /** True when the session is genuinely blocked awaiting input (a question/permission). */

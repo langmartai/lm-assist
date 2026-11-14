@@ -56,6 +56,21 @@ export interface MessageAck {
   detail?: string;
 }
 
+/**
+ * Provenance stamped on a user-role turn we hand to a Claude Code session.
+ *
+ * Claude Code's inbound-event schema: "A host wrapping keyboard input must stamp
+ * {kind:'human'} explicitly — absent origin is treated as unattributed and fails
+ * closed at strict isHuman() trust gates." Omitting it gets the turn demoted to
+ * `{kind:"peer",from:"unknown"}` and framed to the receiver as "Another Claude
+ * session sent a message", which strips the operator's authority from it.
+ *
+ * Sibling fields on that schema are NOT ours to set: `inbound_origin` is
+ * server-asserted, and `client_platform` is injected server-side from the
+ * `anthropic-client-platform` request header.
+ */
+export type TurnOrigin = { kind: 'human' } | { kind: 'peer'; from: string };
+
 /** A stored inbound message on the node where the target session lives. */
 export interface SessionMessage {
   /** Stable message id (also the ack handle returned to the sender). */

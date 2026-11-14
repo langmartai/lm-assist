@@ -7,7 +7,7 @@
  * so it reaches a session that local tmux/WT cannot (e.g. another machine).
  *
  *   GET  /terminal/remote-control/:sessionId       -> { connected, driveable, rcId, status }
- *   POST /terminal/remote-control/:sessionId/send  { text } -> relay a user turn
+ *   POST /terminal/remote-control/:sessionId/send  { text, origin? } -> relay a user turn
  *
  * The :sessionId may be a real Remote-Control id (session_… / cse_…), used
  * directly, OR a name/title matched against the live session list.
@@ -16,17 +16,24 @@
  * or expired, both endpoints report driveable:false / fail cleanly so the
  * session-messaging driver chain falls back to the local drivers.
  *
- * STATUS: protocol-complete but NOT yet e2e-verified — the host's login was
- * expired during development, so the live drive (and the exact id-mapping for a
- * `claude --remote-control` LOCAL session) must be confirmed against a live
- * Remote-Control session after re-login.
+ * DELIVERY IS RECEIPT-GATED. Measured 2026-09-09 against a live bridge session:
+ * `POST /v1/sessions/{sid}/events` answers 200 with a bare ECHO of the event and
+ * enqueues NOTHING for a `--remote-control` session, while
+ * `POST /v1/code/sessions/{cse}/events` answers with a real
+ * `results[{event_id, sequence_num, duplicate}]` receipt. This route used to
+ * post the first one itself and report `delivered:true` off the 200 — five
+ * drives reported success and none arrived. It now delegates to
+ * `ccrCloud.cloudDrive`, which gates on the receipt, falls back to the client
+ * channel, and reuses one event uuid so the retry dedupes instead of
+ * double-delivering.
  */
 
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
+import { parseOrigin } from '../../session-messaging/origin';
+import * as ccrCloud from '../../terminal/ccr-cloud';
 
 const API = 'https://api.anthropic.com';
 
@@ -73,13 +80,6 @@ async function resolveRcId(target: string, a: Auth): Promise<{ id: string; statu
   }
 }
 
-function uuidv4(): string {
-  const b = crypto.randomBytes(16);
-  b[6] = (b[6] & 0x0f) | 0x40;
-  b[8] = (b[8] & 0x3f) | 0x80;
-  const h = b.toString('hex');
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-}
 
 export function createRemoteControlRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -102,27 +102,21 @@ export function createRemoteControlRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!a) return { success: false, error: 'no valid claude.ai login (token missing/expired)' };
         const text = String((req.body as { text?: string })?.text ?? '');
         if (!text) return { success: false, error: 'text required' };
+        const origin = parseOrigin((req.body as { origin?: unknown })?.origin);
         const rc = await resolveRcId(req.params.sessionId, a);
         if (!rc) return { success: false, error: `remote-control session not found: ${req.params.sessionId}` };
-        // FLAT user event on the OAuth ingress (api.anthropic.com /v1/sessions/{id}/events).
-        const event = {
-          uuid: uuidv4(),
-          session_id: rc.id,
-          type: 'user',
-          parent_tool_use_id: null,
-          message: { role: 'user', content: [{ type: 'text', text }] },
-        };
+        // Delegate to cloudDrive rather than posting the event here. It owns the
+        // two-ingress dance this route used to get wrong: /v1/sessions/{sid}/events
+        // answers 200 with a bare ECHO for a --remote-control bridge session and
+        // enqueues nothing, so a 2xx here reported delivered:true while the turn
+        // vanished. cloudDrive gates on a delivery RECEIPT, falls back to the
+        // client channel, and reuses one event uuid so the retry dedupes.
         try {
-          const r = await fetch(`${API}/v1/sessions/${encodeURIComponent(rc.id)}/events`, {
-            method: 'POST',
-            headers: authHeaders(a),
-            body: JSON.stringify({ events: [event] }),
-            signal: AbortSignal.timeout(15000),
-          });
-          if (!r.ok) return { success: false, error: `events POST ${r.status}: ${(await r.text()).slice(0, 200)}` };
-          return { success: true, data: { rcId: rc.id, delivered: true } };
+          const out = await ccrCloud.cloudDrive({ sid: rc.id, text, ...(origin ? { origin } : {}) });
+          return { success: true, data: { rcId: rc.id, delivered: out.delivered, eventId: out.eventId, duplicate: out.duplicate } };
         } catch (e) {
-          return { success: false, error: e instanceof Error ? e.message : String(e) };
+          const code = (e as { code?: string })?.code;
+          return { success: false, error: e instanceof Error ? e.message : String(e), ...(code ? { code } : {}) };
         }
       },
     },

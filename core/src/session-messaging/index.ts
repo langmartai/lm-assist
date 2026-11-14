@@ -22,6 +22,7 @@ import * as crypto from 'crypto';
 import * as store from './store';
 import { wrapForInjection } from './preamble';
 import { injectViaChain, type InjectionDriver, type DriverTransport } from './inject';
+import { originForInjection } from './origin';
 import type {
   SessionMessage,
   SendMessageArgs,
@@ -175,7 +176,7 @@ async function deliverNew(
   store.insert(msg);
 
   const wrapped = wrapForInjection(msg);
-  const result = await injectViaChain(toSession, wrapped, opts?.drivers, opts?.transport);
+  const result = await injectViaChain(toSession, wrapped, opts?.drivers, opts?.transport, originForInjection(msg));
 
   if (result.delivered) {
     store.transition(msg.id, 'received', result.detail, result.driver);
@@ -242,7 +243,7 @@ export async function sweepPending(
   const out: Array<{ id: string; delivered: boolean; detail?: string }> = [];
   for (const msg of pending) {
     const wrapped = wrapForInjection(msg);
-    const result = await injectViaChain(msg.toSession, wrapped, opts?.drivers, opts?.transport);
+    const result = await injectViaChain(msg.toSession, wrapped, opts?.drivers, opts?.transport, originForInjection(msg));
     if (result.delivered) {
       store.transition(msg.id, 'received', result.detail, result.driver);
       out.push({ id: msg.id, delivered: true, detail: result.detail });

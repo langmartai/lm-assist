@@ -45,6 +45,13 @@ export interface ModelFallbackTickDeps {
   switchLocal: (s: ModelLimitedSession, to: ModelFamily) => Promise<boolean>;
   /** Re-read a local session's screen for verification. */
   reread?: (s: ModelLimitedSession) => Promise<string>;
+  /** Confirmation for REMOTE sessions. Separate from `reread` because remote
+   *  cannot use the local check: `parseCurrentModel` reads the status line, and a
+   *  remote "screen" is the last ASSISTANT MESSAGE from cloudRead, which has no
+   *  status line in it. Returns true when the switch is observably in effect.
+   *  Without it every remote switch is journalled verified:false — `switchRemote`
+   *  only ever proved the ingress ACCEPTED the drive, never that it was applied. */
+  confirmRemote?: (s: ModelLimitedSession, to: ModelFamily) => Promise<boolean>;
   /** Cloud CCR candidates (monitor node only). */
   findRemote: () => Promise<ModelLimitedSession[]>;
   switchRemote: (s: ModelLimitedSession, to: ModelFamily) => Promise<boolean>;
@@ -89,6 +96,7 @@ export async function runModelFallbackTick(deps: ModelFallbackTickDeps): Promise
     s: ModelLimitedSession,
     send: (to: ModelFamily) => Promise<boolean>,
     verify: ((s: ModelLimitedSession) => Promise<string>) | undefined,
+    confirm?: (s: ModelLimitedSession, to: ModelFamily) => Promise<boolean>,
   ) => {
     const decision = decideModelSwitch({
       screen: s.screen,
@@ -114,6 +122,10 @@ export async function runModelFallbackTick(deps: ModelFallbackTickDeps): Promise
     if (!sent) { skipped++; return; }
 
     // Verify: re-read and confirm the live model is no longer the limited one.
+    // LOCAL reads the status line; REMOTE cannot (a cloud read returns assistant
+    // message text, which carries no status line), so it supplies its own
+    // predicate instead. With neither, the switch stays honestly unverified —
+    // `sent` only ever meant the drive was ACCEPTED.
     let verified = false;
     if (verify) {
       try {
@@ -123,6 +135,13 @@ export async function runModelFallbackTick(deps: ModelFallbackTickDeps): Promise
         verified = !!now && now !== decision.limitedModel;
       } catch {
         verified = false; // couldn't confirm — recorded as unverified, retried after cooldown
+      }
+    } else if (confirm) {
+      try {
+        await (deps.sleep ?? defaultSleep)(VERIFY_DELAY_MS);
+        verified = await confirm(s, decision.to);
+      } catch {
+        verified = false;
       }
     }
 
@@ -146,7 +165,7 @@ export async function runModelFallbackTick(deps: ModelFallbackTickDeps): Promise
   };
 
   for (const s of local) await act(localModelKey(s.sessionId), s, (to) => deps.switchLocal(s, to), deps.reread);
-  for (const s of remote) await act(remoteModelKey(s.sessionId), s, (to) => deps.switchRemote(s, to), undefined);
+  for (const s of remote) await act(remoteModelKey(s.sessionId), s, (to) => deps.switchRemote(s, to), undefined, deps.confirmRemote);
 
   // Age out journal entries so the file stays bounded across long-lived nodes.
   for (const [k, r] of Object.entries(store)) {
@@ -271,11 +290,34 @@ export async function findRemoteModelLimited(): Promise<ModelLimitedSession[]> {
   return out;
 }
 
-/** Remote: drive `/model <to>` as a user turn — the same path the web UI types into. */
+/** Remote: drive `/model <to>` as a user turn — the same path the web UI types into.
+ *
+ *  The boolean means the ingress ACCEPTED the drive (it returned a delivery
+ *  receipt), NOT that the session applied the switch. Measured 2026-09-09: a
+ *  receipted event can still never become a turn. `confirmRemoteSwitch` below is
+ *  what turns acceptance into a verified switch. */
 export async function switchRemoteModel(s: ModelLimitedSession, to: ModelFamily): Promise<boolean> {
   const { cloudDrive } = require('../terminal/ccr-cloud') as typeof import('../terminal/ccr-cloud');
   const r = await cloudDrive({ sid: s.sessionId, text: `/model ${to}` });
-  return !!r?.delivered;
+  return !!r?.accepted;
+}
+
+/** Remote confirmation: re-read the session and report whether the model-limit
+ *  banner is gone from its newest assistant turn.
+ *
+ *  Deliberately weaker than the local check. Local reads the live model off the
+ *  status line; a cloud read returns assistant MESSAGE TEXT, which carries no
+ *  status line, so the strongest honest signal available here is "the session
+ *  moved on and is no longer reporting the limit". A session that has not
+ *  produced a new turn yet stays unverified and is retried after the cooldown. */
+export async function confirmRemoteSwitch(s: ModelLimitedSession): Promise<boolean> {
+  const { cloudRead } = require('../terminal/ccr-cloud') as typeof import('../terminal/ccr-cloud');
+  const r = await cloudRead({ sid: s.sessionId, lastN: 6 }).catch(() => null);
+  if (!r) return false;
+  const last = [...r.messages].reverse().find((m: { role?: string }) => m.role === 'assistant');
+  const screen = (last as { text?: string } | undefined)?.text || '';
+  if (!screen) return false;
+  return !/reached\s+your/i.test(screen);
 }
 
 /** Config from project-settings, in the shape the pure decider wants. */
@@ -300,6 +342,7 @@ export async function runModelFallbackWithRealDeps(): Promise<{ switched: ModelS
     reread: (x) => readLocalScreen(x.sessionId),
     findRemote: findRemoteModelLimited,
     switchRemote: switchRemoteModel,
+    confirmRemote: confirmRemoteSwitch,
     remoteScan: s.autoResumeRemoteScan,
     load: loadModelFallbackStore,
     save: saveModelFallbackStore,

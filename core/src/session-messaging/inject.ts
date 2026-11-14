@@ -27,7 +27,7 @@
  * this module never re-implements tmux/CC mechanics.
  */
 
-import type { InjectionDriverName, InjectionResult, InjectionAttempt } from './types';
+import type { InjectionDriverName, InjectionResult, InjectionAttempt, TurnOrigin } from './types';
 import { lmAuthHeaders } from '../auth/api-token';
 
 /**
@@ -118,8 +118,11 @@ export interface InjectionDriver {
   name: InjectionDriverName;
   /** True if this driver can plausibly deliver to `session` right now. */
   available(session: string, t: DriverTransport): Promise<boolean>;
-  /** Deliver `wrapped` to `session`. Throws on failure. */
-  deliver(session: string, wrapped: string, t: DriverTransport): Promise<void>;
+  /** Deliver `wrapped` to `session`. Throws on failure. `origin` stamps who is
+   *  speaking; only drivers that relay a structured event (remote-control) can
+   *  carry it — the ones that type into a composer produce a real keyboard turn
+   *  and need no stamp. */
+  deliver(session: string, wrapped: string, t: DriverTransport, origin?: TurnOrigin): Promise<void>;
 }
 
 /** Driver — unified Claude Code session injection over the cross-platform
@@ -179,8 +182,16 @@ export const remoteControlDriver: InjectionDriver = {
       return false;
     }
   },
-  async deliver(session, wrapped, t) {
-    unwrap(await t.post(`/terminal/remote-control/${enc(session)}/send`, { text: wrapped }));
+  async deliver(session, wrapped, t, origin) {
+    // `origin` is REQUIRED for correct attribution: an event posted to the
+    // /v1/sessions/:id/events ingress without it is demoted to
+    // {kind:"peer",from:"unknown"} and framed to the receiver as coming from
+    // another Claude session. Unlike the composer-typing drivers below, this
+    // one never produces a keyboard turn, so nothing else supplies it.
+    unwrap(await t.post(`/terminal/remote-control/${enc(session)}/send`, {
+      text: wrapped,
+      ...(origin ? { origin } : {}),
+    }));
   },
 };
 
@@ -198,6 +209,7 @@ export async function injectViaChain(
   wrapped: string,
   drivers: InjectionDriver[] = DEFAULT_DRIVERS,
   transport: DriverTransport = loopbackTransport(),
+  origin?: TurnOrigin,
 ): Promise<InjectionResult> {
   const skipped: string[] = [];
   const attempts: InjectionAttempt[] = [];
@@ -215,7 +227,7 @@ export async function injectViaChain(
       continue;
     }
     try {
-      await d.deliver(session, wrapped, transport);
+      await d.deliver(session, wrapped, transport, origin);
       return { driver: d.name, delivered: true, ambiguous: false, attempts, detail: `delivered via ${d.name}` };
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);

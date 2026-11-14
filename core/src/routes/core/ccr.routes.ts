@@ -15,6 +15,7 @@
 
 import type { RouteHandler, RouteContext } from '../index';
 import { TerminalError, httpStatusFor } from '../../terminal/errors';
+import { parseOrigin } from '../../session-messaging/origin';
 import { sessionVerdict } from '../../terminal/cc-sessions';
 import * as ccr from '../../terminal/ccr-manager';
 import * as ccrCloud from '../../terminal/ccr-cloud';
@@ -364,11 +365,11 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/drive$/,
       handler: async (req) => envelope(async () => {
         const sid = parseCloudSid(req.params.sid);
-        const body = (req.body || {}) as { text?: unknown; reBootstrap?: unknown; role?: unknown; primaryRepo?: unknown };
+        const body = (req.body || {}) as { text?: unknown; reBootstrap?: unknown; role?: unknown; primaryRepo?: unknown; origin?: unknown };
         const text = typeof body.text === 'string' ? body.text : '';
         if (!text.trim()) throw new TerminalError('INVALID_INPUT', 'text is required');
         const role = body.role === 'worker' || body.role === 'orchestrator' ? body.role : undefined;
-        return await ccrCloud.cloudDrive({ sid, text, reBootstrap: body.reBootstrap === true, role, primaryRepo: typeof body.primaryRepo === 'string' ? body.primaryRepo : undefined });
+        return await ccrCloud.cloudDrive({ sid, text, reBootstrap: body.reBootstrap === true, role, primaryRepo: typeof body.primaryRepo === 'string' ? body.primaryRepo : undefined, origin: parseOrigin(body.origin) });
       }),
     },
 

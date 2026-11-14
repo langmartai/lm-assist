@@ -181,3 +181,48 @@ describe('runModelFallbackTick', () => {
     assert.deepEqual(d.sent, []);
   });
 });
+
+describe('remote switches are verified, not assumed', () => {
+  // Measured 2026-09-09: `cloudDrive` reports success from an ingress RECEIPT,
+  // which is not proof the session rendered a turn — five receipted drives
+  // produced no turn at all. `switchRemote` returning true therefore means
+  // "accepted", not "switched", and every remote switch was journalled
+  // verified:false because the remote path passed no confirmation at all.
+  //
+  // Remote cannot reuse the LOCAL check. That one reads the live model off the
+  // status line (`parseCurrentModel`, which requires a 36-char UUID after
+  // `sid:`), but a remote "screen" is the last ASSISTANT MESSAGE returned by
+  // cloudRead — it has no status line in it. So remote gets its own predicate:
+  // the limit banner is gone from the newest assistant turn. Weaker than the
+  // local model-line check, and deliberately so — it is honest about what a
+  // cloud read can actually see.
+  const RSID = 'session_01U2QDhMqkup81aNDjmfzruR';
+  const remoteOnly = (over: Partial<ModelFallbackTickDeps> = {}) =>
+    deps({
+      findLocal: async () => [],
+      findRemote: async () => [{ sessionId: RSID, screen: LIMITED(RSID), tmux: null }],
+      ...over,
+    });
+
+  test('a remote switch the session actually took is journalled verified', async () => {
+    const d = remoteOnly({ confirmRemote: async () => true });
+    const r = await runModelFallbackTick(d);
+    assert.strictEqual(r.switched.length, 1);
+    assert.strictEqual(r.switched[0].verified, true);
+  });
+
+  test('an ACCEPTED-but-not-applied remote switch is not reported as verified', async () => {
+    // The drive was accepted (receipt) but the session never changed model —
+    // exactly the case that used to be indistinguishable from success.
+    const d = remoteOnly({ confirmRemote: async () => false });
+    const r = await runModelFallbackTick(d);
+    assert.strictEqual(r.switched.length, 1);
+    assert.strictEqual(r.switched[0].verified, false);
+  });
+
+  test('a remote switch with no confirmation available stays unverified', async () => {
+    const r = await runModelFallbackTick(remoteOnly());
+    assert.strictEqual(r.switched.length, 1);
+    assert.strictEqual(r.switched[0].verified, false);
+  });
+});
