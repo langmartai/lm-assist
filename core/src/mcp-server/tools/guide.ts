@@ -764,6 +764,43 @@ MANAGE (on the node itself — loopback-only, not over this connector):
 
 GATHER RECIPE (populate a node): (1) \`POST /machine-access/import\` dry-run to see candidates; (2) \`{apply:true}\` to write drafts; (3) add each machine's operational notes (the gotchas import can't know — pull from memory/CLAUDE.md); (4) \`.../check\` to verify reachability; (5) enable (\`enabled:true\`) the ones that work. Curated, hand-written profiles are equally valid — import is just a head start.`,
 
+  vm: `# Guide: vm — manage VIRTUAL MACHINES on a node (Hyper-V on Windows, KVM/libvirt on Linux)
+WHAT: create, power, snapshot and delete VMs on any fleet node through ONE contract. The node's OS picks the hypervisor — a Windows node speaks Hyper-V (PowerShell cmdlets), a Linux node speaks KVM/libvirt (\`virsh\` + \`qemu-img\`) — and every tool returns the SAME shapes (VmInfo: name, state running|off|paused|saved|starting|stopping|unknown, cpus, memoryMB, disks, ipAddresses, uptimeSec, snapshotCount, managed, notes). Containers are NOT this — those are the \`container_*\` tools.
+
+THE FIVE TOOLS
+• \`vm_status\` — CALL FIRST. No name = the DOCTOR + INVENTORY in one read: hypervisor, available (+ reason when not), version, privilege (direct | worker | sudo | root | unavailable), storageRoot + storageFreeGB, defaultNetwork, and {vms,total,truncated} (capped at 100). The inventory is a LIGHT list — disks:[] and snapshotCount:null there are normal, not missing data; pass name=<vm> for the FULL detail (disks, IPs, snapshot count, uptime). Read-only, lock-free.
+• \`vm_create\` {name, cpus?, memory_mb?, disk_gb?, iso_path?, network?, generation?, storage_path?, notes?} — defaults 1 vCPU / 1024 MB / 10 GB THIN disk / gen 2, no ISO (boots to firmware — fine for infrastructure tests), NIC = the node's default (network:null = NO NIC). The disk lands under <storageRoot>/<name>/ and the VM is tagged managed ([lm-assist]). Returns the created VmInfo, state off. A name that already exists → VM_EXISTS.
+• \`vm_power\` {name, action:start|stop, force?, timeout_sec?} — stop is GRACEFUL by default (needs a guest OS with ACPI / integration services; waits timeout_sec, default 30) and returns VM_TIMEOUT with a hint when the guest never answers; force:true = hard power-off (REQUIRED for an OS-less test guest). Idempotent: start on a running VM / stop on an off VM just returns the current state.
+• \`vm_snapshot\` {name, action:list|create|restore|delete, snapshot?, force?} — Hyper-V checkpoints / libvirt snapshots under one verb. create auto-names lm-<timestamp> when snapshot is omitted. restore/delete on a NON-managed VM need force:true (restore REWINDS the VM).
+• \`vm_delete\` {name, delete_disks? (default true), force?} — power off → unregister → delete disk files, and ONLY files under the storage root (anything else is reported in keptDisks, never touched). Non-managed VMs need force:true. ADMIN, irreversible.
+
+SINGLE-NODE vs CROSS-NODE: every tool takes node=. Omit it for the default node. A VM lives on exactly ONE host, so "is lmvm-x running?" is a question about a MACHINE — an empty inventory or VM_NOT_FOUND on the default node means "not HERE": list_nodes, then vm_status(node=<other>) before concluding it is gone. To create on a specific machine ("make a VM on the Windows box"), pass node=<hostId> to vm_create — Windows → Hyper-V, Linux → KVM, same call and same result shape. Writes serialize PER NODE behind a bounded mutex: BUSY = another VM operation is in flight on that node, retry shortly.
+
+AVAILABILITY + PRIVILEGE — trust vm_status, not assumptions:
+• available:false always carries a reason: the Hyper-V role/module is missing, libvirt is not installed (apt: qemu-kvm libvirt-daemon-system libvirt-clients qemu-utils), or no privilege path works. A Linux node needs nested virtualization ON (/dev/kvm present) to accelerate — without it guests still define and boot, slowly.
+• privilege is HOW the node runs hypervisor commands: Windows direct (the Core already has rights) or worker (falls back to the node's elevated worker on access-denied); Linux root / direct (libvirt group) / sudo (passwordless sudo -n). The elevation mode auto|always|never lives in the node's vm[-dev].json and is read PER CALL — flip it and the very next call uses it, no restart.
+• 🔴 On Linux, 'direct' proves VIRSH access ONLY. The filesystem helpers (mkdir / qemu-img / rm on the root-owned storage tree) still need sudo, and the backend falls back to it automatically — so a create failing with EACCES means sudo -n is NOT available to the Core user, not that virsh is broken.
+• KVM always talks to qemu:///system. A bare non-root \`virsh\` in a shell talks to qemu:///session — a DIFFERENT hypervisor with a different VM list — so "virsh list is empty but vm_status shows VMs" (or the reverse) is the URI, not a bug.
+
+STORAGE: the storage root is explicit and per node (vm_status.storageRoot; default C:\lm-vms on Windows, /var/lib/lm-vms on Linux; env LM_VM_STORAGE_ROOT or the vm config override it). Disks are THIN — a 2 GB qcow2/VHDX costs ~0 bytes until written. 🔴 The fleet's Linux nodes are THEMSELVES VMs: read vm_status.storageFreeGB and the host's free memory BEFORE creating, and keep test guests TINY (≤512 MB, ≤2 GB) so a nested guest can never pressure its parent. vm_delete removes only <root>/<name>/ — the root itself stays (a host guard may refuse deleting it; leave it).
+
+SECURITY BOUNDARY (why some inputs are refused): VM and snapshot names must match [A-Za-z0-9._-]{1,64}; paths must be absolute with no quotes / backticks / $ / newlines and no ".." segments; network names are charset-checked; notes are sanitized. Those charsets are exactly what make an input safe to embed in a privileged (elevated / sudo) command — a BAD_ARGS or UNSAFE_PATH refusal is the guard working, not a formatting quirk; do not "fix" it by widening the input. The managed tag ([lm-assist] in the VM's notes/description) gates every destructive verb: a VM the fleet did not create is never deleted or rewound without force:true, and force is the OPERATOR's decision — never pass it to get past a refusal on a VM the user did not name.
+
+FIELD GOTCHAS (learned on 107 Hyper-V + 117 KVM):
+• An OS-less guest (no ISO) boots to firmware and NEVER answers a graceful stop — use force:true, or expect VM_TIMEOUT after timeout_sec.
+• ipAddresses need a guest that reports them: Hyper-V integration services in the guest; on KVM a libvirt network with a DHCP lease (a network:null guest has none). uptimeSec is Hyper-V only — libvirt does not report it (null).
+• Timings measured: create = seconds (thin disk), start → running ≤ ~5 s, snapshot create/delete = seconds, a full create → delete lifecycle ≈ 1–2 min per node — all far inside the per-call ceiling. The connector's own relay deadline (~30 s) can still cut a slow create's ACK while the VM finishes server-side: re-read vm_status(name) BEFORE retrying — a blind retry answers VM_EXISTS, which is your confirmation it landed.
+• The inventory includes the operator's OWN VMs (managed:false) alongside fleet-created ones. Never vm_delete or restore one the user did not name.
+
+FLOW
+\`\`\`mermaid
+flowchart LR
+  S["vm_status (available? privilege? free space? inventory)"] --> C["vm_create (tiny for tests)"]
+  C --> P["vm_power start"] --> D["vm_status name= (running? disks? ips?)"]
+  D --> N["vm_snapshot create / list / restore / delete"]
+  N --> O["vm_power stop (force for an OS-less guest)"] --> X["vm_delete (disks under the root only)"]
+  S -.->|"another machine"| M["same tools + node=<host> (Hyper-V or KVM)"]
+\`\`\``,
   'ui-pages': `# Guide: pluggable UI pages (register + serve + manage, all over MCP)
 
 WHAT: an agent can author a WEB PAGE, register it on the platform UI gateway, and serve it FROM A NODE'S OWN DISK as a real internet URL (the gateway mints it and hands it back; \`ui_register\`/\`ui_list\` report it) — with standard OIDC sign-in, owner-only access, and a scoped data plane. Nothing is uploaded: the gateway relays each request over this node's existing hub WebSocket to a small local dev server. The open spec + SDK live in the public \`agentic-ui-spec\` repo (\`lmui\` CLI: init/login/register/dev/start/stop/status).
@@ -827,6 +864,7 @@ const ALIASES: Record<string, string> = {
   gh: 'github', git: 'github',
   file: 'files', fs: 'files', transfer: 'files',
   'ui-pages': 'ui-pages', 'ui-page': 'ui-pages', ui: 'ui-pages', 'pluggable-ui': 'ui-pages', 'pluggable ui': 'ui-pages', webpage: 'ui-pages', 'web-page': 'ui-pages', 'ui-gateway': 'ui-pages', auis: 'ui-pages', lmui: 'ui-pages', subdomain: 'ui-pages',
+  vm: 'vm', vms: 'vm', 'virtual-machine': 'vm', 'virtual machine': 'vm', 'virtual-machines': 'vm', hypervisor: 'vm', 'hyper-v': 'vm', hyperv: 'vm', kvm: 'vm', libvirt: 'vm', virsh: 'vm', qemu: 'vm', guest: 'vm', 'vm-snapshot': 'vm', checkpoint: 'vm', checkpoints: 'vm',
 };
 for (const [topic, tools] of Object.entries(TOPIC_TOOLS)) for (const t of tools) ALIASES[t] = topic;
 
@@ -858,6 +896,7 @@ const BLURB: Record<string, string> = {
   clusters: 'isolated fleet partitions — concept, shared-vs-within table, cluster_list/assign/unassign/describe, build one cluster at a time, respect-other-clusters scope norm',
   backup: 'browse/query and manage the fleet backup on node 107 — list what is in it, search/read backed-up sessions, memory, rules and claude.ai conversations WITHOUT restoring, run a capture, and remove an item for real (incl. repacking a snapshot); secrets are excluded at capture',
   'machine-access': 'how to reach OTHER machines FROM a node — node-local SSH profiles (user/host/key-path/notes) via machine_access, with ssh-config import + reachability check; run the reported command ON that node, wrap it in `bash -lc`, and never read an EMPTY registry as "no route"',
+  vm: 'manage VIRTUAL MACHINES on a node — Hyper-V (Windows) or KVM/libvirt (Linux) behind ONE contract (vm_status doctor+inventory, vm_create, vm_power, vm_snapshot, vm_delete): privilege paths, explicit storage root, charset security boundary, managed-VM gate, nested-VM sizing rule',
 };
 
 /** Separator line used between sections in the bootstrap output (reused by the auth block).
@@ -939,7 +978,7 @@ function buildIndex(lookup?: ContentLookup | null, view?: BootstrapProfileView |
 
 /** Bootstrap section order — `mission-controller` is DELIBERATELY absent (the controller
  *  contract loads via guide only, not into every bootstrapped session). */
-export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speaking', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'desktop', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'ui-pages', 'clusters'];
+export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speaking', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'desktop', 'vm', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'ui-pages', 'clusters'];
 
 /** The bootstrap preamble — content doc `bootstrap.header`. */
 export const BOOTSTRAP_HEADER_DEFAULT = [

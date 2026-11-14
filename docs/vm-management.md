@@ -80,3 +80,7 @@ delete with disks → inventory + filesystem absence.
 lifecycle, privilege `direct` + sudo filesystem fallback, thin qcow2 under `/var/lib/lm-vms`.
 ⚠ Linux fleet nodes are themselves VMs — keep nested test guests TINY (≤512 MB RAM, ≤2 GB
 thin disk) so they cannot pressure the parent VM's memory/disk.
+
+## Connector playbook
+
+The connector-side recipe for these tools is `guide(topic="vm")` (also a `bootstrap` section); `guide(topic="vm_status")` and the other tool names resolve to it. Source: `GUIDES.vm` in `core/src/mcp-server/tools/guide.ts` + the `vm` row in `core/src/mcp-server/tool-topics.ts`.
