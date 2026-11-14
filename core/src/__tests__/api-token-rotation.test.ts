@@ -46,9 +46,15 @@ import {
   apiTokenFilePath,
   apiTokenMetaFilePath,
   resolveProvidedApiKey,
+  rotateApiTokenNow,
+  ringTokensForDerivation,
+  tokenGeneration,
+  apiTokenRevokedFilePath,
   __resetApiTokenState,
+  __resetFileRecheck,
   __armedRotationMs,
 } from '../auth/api-token';
+import { createHash } from 'crypto';
 
 // Defaults from api-token.ts (no env overrides in this test process).
 const ROTATE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -304,4 +310,134 @@ test('?apiKey= query is refused EVERYWHERE — including the voice WS upgrade pa
 
 test('header still wins on a voice path (query never consulted)', () => {
   assert.strictEqual(resolveKey('hdr', '/voice/stt/ws?apiKey=qry'), 'hdr');
+});
+
+// --- revoke-now (operator action; never on boot) -----------------------------
+// Every case below runs in the mkdtemp LM_ASSIST_DATA_DIR from beforeEach — never
+// against a live data dir, whose token other Cores are serving.
+
+const sha = (t: string) => createHash('sha256').update(t, 'utf8').digest('hex');
+/** Make a token-file change observable regardless of fs timestamp granularity. */
+const bumpTokenMtime = (ms = 2_000) => {
+  const m = fs.statSync(apiTokenFilePath()).mtimeMs;
+  fs.utimesSync(apiTokenFilePath(), new Date(m + ms), new Date(m + ms));
+};
+
+test('rotateApiTokenNow kills the current AND every grace token at once; sidecar holds hashes only', () => {
+  const now = Date.now();
+  const a = initApiToken(now);
+  const b = rotateApiToken(now + 1);          // a → grace
+  assert.ok(isValidToken(a) && isValidToken(b));
+  const genBefore = tokenGeneration();
+  const r = rotateApiTokenNow(now + 2);
+  const c = readTokenFile();
+  assert.ok(c !== a && c !== b, 'a fresh token is written');
+  assert.strictEqual(r.rotatedAt, now + 2);
+  assert.ok(r.revokedCount >= 2);
+  assert.ok(!('token' in (r as object)), 'the result carries no token');
+  assert.ok(!isValidToken(a), 'grace token dies immediately');
+  assert.ok(!isValidToken(b), 'the old current token dies immediately');
+  assert.ok(isValidToken(c));
+  assert.deepStrictEqual(readMetaFile().previous, []);
+  assert.strictEqual(readMetaFile().lastRotatedAt, now + 2);
+  assert.notStrictEqual(tokenGeneration(), genBefore, 'generation moves so clients refetch cap URLs');
+  assert.deepStrictEqual(ringTokensForDerivation(), [c]);
+
+  const raw = fs.readFileSync(apiTokenRevokedFilePath(), 'utf8');
+  assert.strictEqual(fs.statSync(apiTokenRevokedFilePath()).mode & 0o777, 0o600);
+  assert.strictEqual(raw.includes(a), false, 'no token value in the sidecar');
+  assert.strictEqual(raw.includes(b), false, 'no token value in the sidecar');
+  const side = JSON.parse(raw);
+  assert.strictEqual(side.v, 1);
+  const hashes = side.revoked.map((e: { sha256: string }) => e.sha256);
+  assert.ok(hashes.includes(sha(a)) && hashes.includes(sha(b)));
+  assert.ok(!hashes.includes(sha(c)));
+});
+
+test('scheduled rotation after a revoke-now still keeps grace (revoke-now is not the default)', () => {
+  const now = Date.now();
+  initApiToken(now);
+  rotateApiTokenNow(now + 1);
+  const c = readTokenFile();
+  const d = rotateApiToken(now + 2);
+  assert.ok(isValidToken(c), 'a scheduled rotation retires into grace, as before');
+  assert.ok(isValidToken(d));
+  assert.ok(metaGraceTokens().includes(c));
+});
+
+test('startApiTokenRotation never revokes or clears grace — no boot rotate-now', () => {
+  const now = Date.now();
+  const a = initApiToken(now - 1_000);
+  const b = rotateApiToken(now - 500); // a in grace
+  __resetApiTokenState();
+  startApiTokenRotation(now);   // not overdue: no rotation at all
+  assert.ok(isValidToken(a), 'grace survives a boot');
+  assert.ok(isValidToken(b));
+  assert.strictEqual(fs.existsSync(apiTokenRevokedFilePath()), false, 'boot writes no revocations');
+  __resetApiTokenState();
+  startApiTokenRotation(now - 500 + ROTATE_MS + 1); // overdue: the SCHEDULED kind of rotation
+  assert.notStrictEqual(readTokenFile(), b, 'the overdue boot rotated');
+  assert.ok(isValidToken(b), 'the token it retired keeps its grace — nothing revoked');
+  assert.ok(metaGraceTokens().includes(b));
+  assert.strictEqual(fs.existsSync(apiTokenRevokedFilePath()), false);
+});
+
+test('cross-process: a revoke-now by ANOTHER process kills a token that was a ring HIT here', () => {
+  const now = Date.now();
+  const old = initApiToken(now);
+  assert.ok(isValidToken(old), 'old is a ring hit');
+  // Simulate another process (the CLI / the other Core) doing rotate-now on the shared
+  // dir: revocations FIRST, then the new token file, then meta.
+  const next = 'f'.repeat(64);
+  fs.writeFileSync(apiTokenRevokedFilePath(), JSON.stringify({ v: 1, revoked: [{ sha256: sha(old), revokedAt: now }] }), { mode: 0o600 });
+  fs.writeFileSync(apiTokenFilePath(), next + '\n', { mode: 0o600 });
+  fs.writeFileSync(apiTokenMetaFilePath(), JSON.stringify({ v: 2, lastRotatedAt: now, previous: [] }));
+  bumpTokenMtime();
+  __resetFileRecheck(); // the ~1 s throttle window has elapsed
+  assert.strictEqual(isValidToken(old), false, 'a HIT must re-check the file and drop the revoked token');
+  assert.ok(isValidToken(next));
+});
+
+test('older-build interference: meta `previous` re-adding a revoked token does not resurrect it', () => {
+  const now = Date.now();
+  const old = initApiToken(now);
+  rotateApiTokenNow(now + 1);
+  const cur = readTokenFile();
+  // An older build (no revoked-sidecar support) rotates and writes the revoked token
+  // back into its grace list with a fresh retiredAt.
+  const newer = 'e'.repeat(64);
+  fs.writeFileSync(apiTokenFilePath(), newer + '\n', { mode: 0o600 });
+  fs.writeFileSync(apiTokenMetaFilePath(), JSON.stringify({
+    v: 2, lastRotatedAt: Date.now(),
+    previous: [{ token: cur, retiredAt: Date.now() }, { token: old, retiredAt: Date.now() }],
+  }));
+  bumpTokenMtime();
+  __resetFileRecheck();
+  assert.ok(isValidToken(newer));
+  assert.ok(isValidToken(cur), 'a legitimately retired token keeps its grace');
+  assert.strictEqual(isValidToken(old), false, 'the revoked token stays rejected on reseed');
+  __resetApiTokenState(); // …and across a restart
+  initApiToken();
+  assert.strictEqual(isValidToken(old), false, 'the revoked token stays rejected at load');
+  assert.ok(isValidToken(cur));
+});
+
+test('a token file that holds a REVOKED token rotates at init', () => {
+  const now = Date.now();
+  const bad = 'a'.repeat(64);
+  fs.mkdirSync(path.dirname(apiTokenFilePath()), { recursive: true });
+  fs.writeFileSync(apiTokenFilePath(), bad + '\n', { mode: 0o600 });
+  fs.writeFileSync(apiTokenRevokedFilePath(), JSON.stringify({ v: 1, revoked: [{ sha256: sha(bad), revokedAt: now }] }));
+  const t = initApiToken(now);
+  assert.notStrictEqual(t, bad);
+  assert.strictEqual(readTokenFile(), t);
+  assert.strictEqual(isValidToken(bad), false);
+});
+
+test('revoked sidecar: corrupt file fails open (nothing revoked), never throws', () => {
+  const a = initApiToken(Date.now());
+  fs.writeFileSync(apiTokenRevokedFilePath(), '{ nope');
+  __resetApiTokenState();
+  assert.strictEqual(initApiToken(), a);
+  assert.ok(isValidToken(a));
 });

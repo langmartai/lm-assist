@@ -117,7 +117,7 @@ const args = process.argv.slice(3);
 // Test hatch: require() with LM_ASSIST_NO_RUN=1 exports helpers and skips CLI execution.
 if (process.env.LM_ASSIST_NO_RUN === '1') { module.exports = { isNpmGreater }; return; }
 
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'doctor', 'help'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'token', 'doctor', 'help'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -143,6 +143,13 @@ Commands:
                      On enroll, registers the hub MCP in Claude Code so new
                      sessions get the worker-role tools (--no-mcp to skip).
   logout             Remove the hub key and disconnect this node
+  token rotate --now [--lan-key]
+                     Revoke EVERY current api-token (no grace) and mint a new
+                     one; --lan-key also replaces the LAN access key. Operator
+                     action only, never automatic.
+  token lan-key --regenerate
+                     Replace the LAN access key (LAN browsers sign in again)
+  token status       Token/LAN-key state: timestamps and counts, never a secret
   upgrade [--from S]  Upgrade lm-assist (npm + plugin + restart).
                      --from S installs a specific build instead of npm latest:
                        a local .tgz, an unpacked dir, a bare version, or any
@@ -203,6 +210,24 @@ if (command === 'upgrade') {
     process.exit(err.status || 1);
   }
   process.exit(0);
+}
+
+// Token admin — runs in-process against this install's data dir; no service-manager
+// and no running Core needed (a rotate is a file operation every Core picks up).
+// __filename-relative like upgrade/doctor: projectRoot can resolve to the global npm
+// package, which would run a different build's token code than this bin ships with.
+if (command === 'token') {
+  (async () => {
+    try {
+      const tokenAdmin = path.join(path.dirname(path.dirname(__filename)), 'core', 'dist', 'auth', 'token-admin.js');
+      const { runTokenCommand } = require(tokenAdmin);
+      process.exit(await runTokenCommand(args));
+    } catch (err) {
+      console.error(`Error: ${err.message || err}`);
+      process.exit(1);
+    }
+  })();
+  return;
 }
 
 // Handle doctor separately — just runs the preflight (no service-manager needed)

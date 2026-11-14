@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { speak, cancelSpeech, speechSupported } from '@/lib/speech';
+import { withFreshVoiceToken } from '@/lib/voice-url';
 
 export type VoiceState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'error';
 
@@ -72,7 +73,8 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
     cancelSpeech(); // barge over any reply currently being spoken
     setError(null); setInterim(''); interimRef.current = ''; finalsRef.current = [];
     try {
-      console.log('[voice-client] start() v2 — requesting mic; wsUrl=', wsUrl);
+      // Path only: the query carries the Core token, which must never reach a log.
+      console.log('[voice-client] start() v2 — requesting mic; wsUrl=', wsUrl.split('?')[0]);
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
@@ -88,7 +90,7 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
       const node = new AudioWorkletNode(ctx, 'mic-downsampler');
       nodeRef.current = node;
 
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(withFreshVoiceToken(wsUrl));
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 

@@ -2212,8 +2212,9 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/mission\/controller\/adopt$/,
       handler: async (req) => {
-        const { isLoopbackAddress } = require('../../auth/enroll-exempt') as typeof import('../../auth/enroll-exempt');
-        if (!isLoopbackAddress(req.clientIp)) return fail('FORBIDDEN', 'local-only endpoint');
+        // Direct loopback (or the hub relay's direct dial) — never the web's /_coreapi proxy.
+        const { isDirectLoopbackPeer } = require('../../auth/peer-trust') as typeof import('../../auth/peer-trust');
+        if (!isDirectLoopbackPeer(req.clientIp, req.headers, { allowRelay: true })) return fail('FORBIDDEN', 'local-only endpoint');
         const b = (req.body ?? {}) as { sessionId?: unknown };
         const sid = typeof b.sessionId === 'string' ? b.sessionId : '';
         if (!/^[0-9a-f-]{36}$/.test(sid)) return fail('INVALID_INPUT', 'sessionId must be a local session UUID');

@@ -20,7 +20,25 @@ function workspaceRoot(start: string): string {
 }
 const ROOT = workspaceRoot(__dirname);
 
+/**
+ * Who may FRAME a dashboard page. The dashboard acts with full Core authority, so a
+ * third-party page framing it could lay a decoy over a button (clickjacking) — e.g. the
+ * cloud-connect confirm, which rebinds this node to another hub account. Allowed:
+ *  - 'self': hybrid mode frames same-origin pages (/api/tier-agent consoles, terminals);
+ *  - the LangMart platform origins: hub-proxied pages (/w/<id>/assist/…) are shown in a
+ *    platform iframe (TopBar's "Fullscreen" button exists for that case).
+ * frame-ancestors ONLY — no default-src/script-src here (the app relies on inline script).
+ * X-Frame-Options cannot express an allow-list, so it is not sent.
+ */
+const FRAME_ANCESTORS =
+  "frame-ancestors 'self' https://langmart.ai https://*.langmart.ai https://xeenhub.com https://*.xeenhub.com";
+
 const nextConfig: NextConfig = {
+  async headers() {
+    return [
+      { source: '/:path*', headers: [{ key: 'Content-Security-Policy', value: FRAME_ANCESTORS }] },
+    ];
+  },
   typescript: { ignoreBuildErrors: true },
   output: 'standalone',
   outputFileTracingRoot: ROOT,

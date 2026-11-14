@@ -20,7 +20,7 @@ import {
 import { proxyPost } from '../../data/peer-client';
 import { getSyncEngine } from '../../data/data-service';
 import { getHubConfig } from '../../hub-client/hub-config';
-import { isLoopbackAddress } from '../../auth/enroll-exempt';
+import { isDirectLoopbackPeer } from '../../auth/peer-trust';
 import { notifyLocalWorkersOfClusterChange } from '../../worker-role/cluster-change-notify';
 
 // ── Pure helper (exported for unit tests) ────────────────────────────────────
@@ -183,7 +183,8 @@ export function createClusterRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/cluster\/self$/,
       handler: async (req: ParsedRequest) => {
         const start = Date.now();
-        if (!isLoopbackAddress(req.clientIp)) {
+        // Direct loopback (or the hub relay's direct dial) — never the web's /_coreapi proxy.
+        if (!isDirectLoopbackPeer(req.clientIp, req.headers, { allowRelay: true })) {
           return wrapError('FORBIDDEN', 'local-only endpoint', start);
         }
         const b = (req.body || {}) as { cluster?: string };

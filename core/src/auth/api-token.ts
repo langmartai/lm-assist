@@ -19,7 +19,8 @@
  * — and the TTL holds ACROSS restarts too. The token file itself stays a
  * RAW token string — external consumers (core.sh, bin/lm-assist.js,
  * ccr/ccr-bridge.js, core/hooks/*, core/scripts/lib/loopback-auth.js, the web
- * SSR layout/server-auth, the e2e scripts) cat/trim it as-is.
+ * server's server-auth, the e2e scripts) cat/trim it as-is. (The web layout no
+ * longer inlines it into HTML; browsers fetch it from GET /auth/browser-token.)
  *
  * A missing or corrupt sidecar over an EXISTING token file seeds the rotation
  * window from the token file's mtime: the file is written only at creation/
@@ -35,6 +36,21 @@
  * and attached server-side. It is a SEPARATE secret from the langmart hub API
  * key, with its own blast radius.
  *
+ * Revoke-now (rotateApiTokenNow, operator-only: `cli.js token rotate --now` or
+ * POST /auth/token/rotate — NEVER on boot): mints a fresh token and revokes every
+ * token this process or the files know, with NO grace. The revocations are
+ * recorded as sha256 hashes in a third file, `<dataDir>/api-token.revoked.json`
+ * (0600, `{v:1, revoked:[{sha256, revokedAt}]}`), and every ring this module
+ * builds is filtered by it. A separate file rather than a meta field because an
+ * OLDER build sharing the data dir rewrites api-token.meta.json at its own
+ * rotation (re-adding a revoked token to `previous`) but never touches this one.
+ * Ring HITS re-check the token file at most once a second
+ * (maybeRecheckTokenFile), so a revoke-now done by another process takes effect
+ * here within ~1 s instead of never.
+ *
+ * Files: api-token (raw), api-token.meta.json (rotation state + grace ring),
+ * api-token.revoked.json (revoke-now hashes).
+ *
  * Env:
  *   LM_ASSIST_API_AUTH=0|off|false   disable enforcement (emergency kill-switch)
  *   LM_ASSIST_API_TOKEN_RING=N       ring depth (default 3)
@@ -43,7 +59,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import { getDataDir } from '../utils/path-utils';
 import { networkInterfaces } from 'os';
 
@@ -72,8 +88,15 @@ function tokenFile(): string {
 function metaFile(): string {
   return tokenFile() + '.meta.json';
 }
+// Revoke-now sidecar: sha256 hashes only, never a token value.
+function revokedFile(): string {
+  return tokenFile() + '.revoked.json';
+}
 function gen(): string {
   return randomBytes(32).toString('hex');
+}
+function sha256Hex(tok: string): string {
+  return createHash('sha256').update(tok, 'utf8').digest('hex');
 }
 
 // index 0 = current token (retiredAt null); the rest are still-valid grace
@@ -93,6 +116,15 @@ let lastRotatedAt = 0;
 let ringFileMtimeMs = -1;
 // Most recent full countdown armed by startApiTokenRotation (test observability).
 let armedMs: number | null = null;
+// Throttle for the ring-HIT recheck of the token file (maybeRecheckTokenFile).
+let lastFileCheckAt = 0;
+const TOKEN_FILE_RECHECK_MS = 1000;
+// Revoked-hash set, read from the sidecar at init and whenever the token file changes.
+let revokedCache: Set<string> | null = null;
+// Revocations older than this can no longer matter (grace is days, not months), and the
+// cap keeps the file bounded however often an operator rotates.
+const REVOKED_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const REVOKED_MAX = 200;
 
 interface GraceEntry {
   token: string;
@@ -153,6 +185,76 @@ function writeMeta(meta: ApiTokenMeta): void {
   }
 }
 
+interface RevokedEntry {
+  sha256: string;
+  revokedAt: number;
+}
+
+function readRevokedEntries(): RevokedEntry[] {
+  try {
+    const raw = JSON.parse(fs.readFileSync(revokedFile(), 'utf8'));
+    if (!Array.isArray(raw?.revoked)) return [];
+    const out: RevokedEntry[] = [];
+    for (const e of raw.revoked) {
+      if (e && typeof e.sha256 === 'string' && /^[0-9a-f]{64}$/.test(e.sha256)) {
+        out.push({ sha256: e.sha256, revokedAt: typeof e.revokedAt === 'number' ? e.revokedAt : 0 });
+      }
+    }
+    return out;
+  } catch {
+    return []; // absent/corrupt → nothing revoked (today's behaviour, never a crash)
+  }
+}
+
+/** The sha256 set of revoked tokens. Missing/corrupt sidecar → empty set. Refreshes the
+ *  in-memory cache every ring build consults. */
+export function readRevoked(): Set<string> {
+  revokedCache = new Set(readRevokedEntries().map((e) => e.sha256));
+  return revokedCache;
+}
+
+function revokedSet(): Set<string> {
+  return revokedCache ?? readRevoked();
+}
+
+function isRevoked(tok: string): boolean {
+  const set = revokedSet();
+  return set.size > 0 && set.has(sha256Hex(tok));
+}
+
+/** Record `tokens` as revoked (hashes only). Written atomically, 0600; entries older than
+ *  REVOKED_TTL_MS drop and the list is capped at REVOKED_MAX (newest kept). THROWS on a
+ *  write failure: a revoke that did not land must not be reported as done. */
+export function appendRevoked(tokens: string[], now: number = Date.now()): number {
+  const merged = new Map<string, number>();
+  for (const e of readRevokedEntries()) {
+    if (now - e.revokedAt <= REVOKED_TTL_MS) merged.set(e.sha256, e.revokedAt);
+  }
+  let added = 0;
+  for (const t of tokens) {
+    if (!t) continue;
+    const h = sha256Hex(t);
+    if (!merged.has(h)) added++;
+    merged.set(h, now);
+  }
+  const revoked = [...merged.entries()]
+    .map(([sha256, revokedAt]) => ({ sha256, revokedAt }))
+    .sort((a, b) => b.revokedAt - a.revokedAt)
+    .slice(0, REVOKED_MAX);
+  const f = revokedFile();
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  const tmp = f + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify({ v: 1, revoked }) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, f); // atomic replace
+  try {
+    fs.chmodSync(f, 0o600);
+  } catch {
+    /* best effort */
+  }
+  revokedCache = new Set(revoked.map((e) => e.sha256));
+  return added;
+}
+
 /** The grace entries currently in the ring (everything but the current token). */
 function graceEntries(): GraceEntry[] {
   return ring.slice(1).map((e) => ({ token: e.token, retiredAt: e.retiredAt ?? Date.now() }));
@@ -197,12 +299,24 @@ export function initApiToken(now: number = Date.now()): string {
     /* no file yet */
   }
   noteTokenFileMtime();
+  readRevoked();
+  if (seed && isRevoked(seed)) {
+    // The file still holds a token an operator revoked (a revoke-now whose token write
+    // was lost, or an older build that restored it). Never serve it: mint a fresh one.
+    console.warn('[api-token] token file holds a revoked token — rotating now');
+    const t = gen();
+    ring = [{ token: t, retiredAt: null }];
+    lastRotatedAt = now;
+    writeToken(t);
+    writeMeta({ lastRotatedAt: now, previous: [] });
+    return ring[0].token;
+  }
   if (seed) {
     const meta = readMeta(now);
     if (meta) {
       ring = [
         { token: seed, retiredAt: null },
-        ...meta.previous.filter((e) => e.token !== seed && inGrace(e, now)),
+        ...meta.previous.filter((e) => e.token !== seed && inGrace(e, now) && !isRevoked(e.token)),
       ].slice(0, RING_SIZE);
       lastRotatedAt = meta.lastRotatedAt;
     } else {
@@ -237,15 +351,27 @@ export function isValidToken(tok: string | string[] | undefined | null): boolean
   if (!tok) return false;
   const t = Array.isArray(tok) ? tok[0] : String(tok);
   if (!ring.length) initApiToken();
+  // BEFORE the hit check: a hit used to never look at the file, so a token revoked
+  // by ANOTHER process (the CLI's rotate --now, or the other Core sharing <dataDir>)
+  // stayed valid here indefinitely. Throttled to one statSync per second.
+  maybeRecheckTokenFile();
   if (ring.some((e) => e.token === t)) return true;
   return reseedIfFileChanged() && ring.some((e) => e.token === t);
 }
 
-/** On an auth miss, absorb a rotation performed by ANOTHER core process sharing
- *  <dataDir> (dev :3200 and prod :3100 share one api-token file): if the token
- *  file changed since this process last seeded/wrote it, fold the file's
- *  current token and the sidecar's grace ring into ours. Costs one statSync
- *  per MISS — ring hits stay free. */
+/** Absorb a token-file change at most once per TOKEN_FILE_RECHECK_MS (one statSync). */
+export function maybeRecheckTokenFile(now: number = Date.now()): void {
+  if (now - lastFileCheckAt < TOKEN_FILE_RECHECK_MS) return;
+  lastFileCheckAt = now;
+  reseedIfFileChanged();
+}
+
+/** On an auth miss (and on the throttled hit recheck), absorb a rotation performed by
+ *  ANOTHER core process sharing <dataDir> (dev :3200 and prod :3100 share one
+ *  api-token file): if the token file changed since this process last seeded/wrote
+ *  it, fold the file's current token and the sidecar's grace ring into ours — minus
+ *  anything the revoked sidecar lists (re-read on every change, so a revoke-now by
+ *  the other process drops our copies of the old tokens too). */
 function reseedIfFileChanged(): boolean {
   let mtime: number;
   try {
@@ -262,18 +388,28 @@ function reseedIfFileChanged(): boolean {
     /* keep current ring */
   }
   if (!fileTok) return false;
+  readRevoked();
+  if (isRevoked(fileTok)) {
+    // Never adopt a revoked token as current; just shed any revoked entries we hold.
+    // (A revoked CURRENT token here means the file was rolled back — initApiToken
+    // rotates away from it on the next boot.)
+    const kept = ring.filter((e) => !isRevoked(e.token));
+    if (kept.length) ring = kept;
+    return false;
+  }
   const now = Date.now();
   const meta = readMeta(now);
   // Our former current token was retired by the OTHER process' rotation; its
   // sidecar normally carries the honest retiredAt — a missing/corrupt sidecar
-  // fails open to `now`. Grace entries past the TTL never resurrect.
+  // fails open to `now`. Grace entries past the TTL never resurrect, and a revoked
+  // token never re-enters (an older build may have written it back into `previous`).
   const candidates: GraceEntry[] = [
     ...(meta ? meta.previous : []),
     ...ring.map((e) => ({ token: e.token, retiredAt: e.retiredAt ?? now })),
   ];
   const merged: RingEntry[] = [{ token: fileTok, retiredAt: null }];
   for (const e of candidates) {
-    if (inGrace(e, now) && !merged.some((m) => m.token === e.token)) merged.push(e);
+    if (inGrace(e, now) && !isRevoked(e.token) && !merged.some((m) => m.token === e.token)) merged.push(e);
   }
   ring = merged.slice(0, RING_SIZE);
   if (meta) lastRotatedAt = meta.lastRotatedAt;
@@ -288,7 +424,7 @@ export function rotateApiToken(now: number = Date.now()): string {
   // outlives GRACE_MS just because the ring has spare depth.
   const retired: RingEntry[] = ring
     .map((e) => (e.retiredAt === null ? { token: e.token, retiredAt: now } : e))
-    .filter((e) => inGrace(e as GraceEntry, now));
+    .filter((e) => inGrace(e as GraceEntry, now) && !isRevoked(e.token));
   ring = [{ token: next, retiredAt: null }, ...retired].slice(0, RING_SIZE);
   lastRotatedAt = now;
   writeToken(next);
@@ -296,6 +432,89 @@ export function rotateApiToken(now: number = Date.now()): string {
   return next;
 }
 
+export interface RotateNowResult {
+  rotatedAt: number;
+  revokedCount: number;
+}
+
+/**
+ * Operator revoke-now: mint a fresh token and revoke EVERY token this process or the
+ * files know (the ring, the token file's, the meta sidecar's grace entries) — no grace.
+ * NEVER runs on boot or on a timer; only `cli.js token rotate --now` and
+ * POST /auth/token/rotate call it. Returns no token (callers re-read the file).
+ *
+ * Order matters: the revocations — and the fresh meta (lastRotatedAt, empty grace) — are
+ * written BEFORE the new token file. A peer Core reseeds only when it notices the
+ * token-file change (mtime), so by then it already finds both on disk: the old tokens
+ * are filtered out and its tokenGeneration() moves in the same step.
+ * Throws when the revoke list or the new token file could not be written — a rotation
+ * that did not land must not be reported as done.
+ */
+export function rotateApiTokenNow(now: number = Date.now()): RotateNowResult {
+  if (!ring.length) initApiToken(now);
+  const known = new Set<string>(ring.map((e) => e.token));
+  try {
+    const fileTok = fs.readFileSync(tokenFile(), 'utf8').trim();
+    if (fileTok) known.add(fileTok);
+  } catch {
+    /* no file — the ring is all there is */
+  }
+  const meta = readMeta(now);
+  for (const e of meta?.previous ?? []) known.add(e.token);
+
+  const revokedCount = appendRevoked([...known], now); // FIRST (see above)
+  const next = gen();
+  ring = [{ token: next, retiredAt: null }];
+  lastRotatedAt = now;
+  writeMeta({ lastRotatedAt: now, previous: [] });
+  writeToken(next); // LAST: the change peers watch for
+  let onDisk = '';
+  try {
+    onDisk = fs.readFileSync(tokenFile(), 'utf8').trim();
+  } catch {
+    /* handled below */
+  }
+  if (onDisk !== next) throw new Error(`could not write the new token to ${tokenFile()}`);
+  lastFileCheckAt = 0;
+  return { rotatedAt: now, revokedCount };
+}
+
+/** Tokens a derived credential (ttyd caps) may have been minted from: the current
+ *  token plus the grace tokens still inside their TTL. Rechecks the file first so a
+ *  revoke-now elsewhere kills derived credentials here too. */
+export function ringTokensForDerivation(): string[] {
+  if (!ring.length) initApiToken();
+  maybeRecheckTokenFile();
+  const now = Date.now();
+  return ring
+    .filter((e) => e.retiredAt === null || inGrace({ token: e.token, retiredAt: e.retiredAt }, now))
+    .map((e) => e.token);
+}
+
+/** An opaque tag that changes on every rotation (scheduled, revoke-now, or one absorbed
+ *  from another process) — clients holding token-derived URLs refetch when it moves. */
+export function tokenGeneration(): string {
+  if (!ring.length) initApiToken();
+  maybeRecheckTokenFile();
+  return Math.max(0, Math.floor(lastRotatedAt)).toString(36);
+}
+
+/** Rotation status for `cli.js token status` — counts and timestamps, never values.
+ *  Read-only: it reads the files as they are and never inits, writes or rotates. */
+export function apiTokenStatus(now: number = Date.now()): {
+  lastRotatedAt: number | null;
+  graceCount: number;
+  revokedCount: number;
+} {
+  const meta = readMeta(now);
+  const revoked = new Set(readRevokedEntries().map((e) => e.sha256));
+  const graceCount = (meta?.previous ?? []).filter((e) => inGrace(e, now) && !revoked.has(sha256Hex(e.token))).length;
+  return { lastRotatedAt: meta ? meta.lastRotatedAt : null, graceCount, revokedCount: revoked.size };
+}
+
+/** Boot-time + scheduled rotation. A scheduled rotation KEEPS the grace ring (clients
+ *  re-read the file at their own pace); nothing here clears grace or revokes — that is
+ *  rotateApiTokenNow, an explicit operator action that never runs on boot. */
 export function startApiTokenRotation(now: number = Date.now()): void {
   initApiToken(now);
   if (timer) return;
@@ -390,27 +609,40 @@ export function resolveProvidedApiKey(header: string | string[] | undefined): st
 }
 
 let _localAddrs: Set<string> | null = null;
+let _localAddrsAt = 0;
+// Re-read the interface list at most once a minute: it was cached for the process
+// lifetime, so a DHCP renewal or a VPN coming up left a stale "own address" set
+// (a departed address stayed trusted, a new one was refused) until a restart.
+const LOCAL_ADDRS_TTL_MS = 60_000;
+
+/** This machine's own addresses: loopback, every interface address, and the
+ *  IPv4-mapped form of each IPv4 one. Cached for LOCAL_ADDRS_TTL_MS. */
+export function localAddressSet(): Set<string> {
+  const now = Date.now();
+  if (_localAddrs && now - _localAddrsAt < LOCAL_ADDRS_TTL_MS) return _localAddrs;
+  const s = new Set<string>(['127.0.0.1', '::1', '::ffff:127.0.0.1', 'localhost']);
+  try {
+    const nets = networkInterfaces();
+    for (const ifaces of Object.values(nets)) {
+      for (const i of ifaces || []) {
+        s.add(i.address);
+        if (i.family === 'IPv4') s.add('::ffff:' + i.address);
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+  _localAddrs = s;
+  _localAddrsAt = now;
+  return s;
+}
+
 /** True when the remote address is this machine itself (loopback or one of its
- *  own interface IPs) — mirrors /auth/is-local. Used for the optional
- *  LM_ASSIST_API_AUTH_EXEMPT_LOCAL gate exemption (trust the local desk). */
+ *  own interface IPs). Callers deciding TRUST must use peer-trust.ts's
+ *  isDirectLocalPeer instead, which also refuses a proxied request. */
 export function isLocalAddress(ip: string | undefined | null): boolean {
   if (!ip) return false;
-  if (!_localAddrs) {
-    const s = new Set<string>(['127.0.0.1', '::1', '::ffff:127.0.0.1', 'localhost']);
-    try {
-      const nets = networkInterfaces();
-      for (const ifaces of Object.values(nets)) {
-        for (const i of ifaces || []) {
-          s.add(i.address);
-          if (i.family === 'IPv4') s.add('::ffff:' + i.address);
-        }
-      }
-    } catch {
-      /* best effort */
-    }
-    _localAddrs = s;
-  }
-  return _localAddrs.has(ip);
+  return localAddressSet().has(ip);
 }
 
 export function apiTokenFilePath(): string {
@@ -419,6 +651,10 @@ export function apiTokenFilePath(): string {
 
 export function apiTokenMetaFilePath(): string {
   return metaFile();
+}
+
+export function apiTokenRevokedFilePath(): string {
+  return revokedFile();
 }
 
 // --- test hooks -------------------------------------------------------------
@@ -430,10 +666,18 @@ export function __resetApiTokenState(): void {
   ringFileMtimeMs = -1;
   armedMs = null;
   fileCache = null;
+  lastFileCheckAt = 0;
+  revokedCache = null;
   if (timer) {
     clearTimeout(timer);
     timer = null;
   }
+}
+
+/** Let the next isValidToken recheck the token file immediately (simulates the
+ *  throttle window elapsing in cross-process tests). */
+export function __resetFileRecheck(): void {
+  lastFileCheckAt = 0;
 }
 
 /** The most recent full countdown armed by startApiTokenRotation, in ms. */

@@ -26,8 +26,7 @@
  * a valid gatewayId can't impersonate a peer without also originating from that
  * peer's exact address (spoofing an established-TCP source is impractical), and an
  * unknown/mismatched endpoint is rejected (→ the listener falls back to relay).
- * This is strictly stronger than the roster-only lm-tcp/1 receiver, which should
- * get the same source-address binding as a follow-up.
+ * The lm-tcp/1 transfer receiver (tcp-upgrade.ts) applies the same binding.
  *
  * The arbitrary `x-lm-target-port` (any localhost port) is intentional — that IS
  * port-forwarding (parity with the hub-relayed path and SSH -L). It is safe
@@ -61,8 +60,9 @@ export interface PortfwdUpgradeDeps {
 
 let deps: PortfwdUpgradeDeps | null = null;
 
-/** Normalize an IP for comparison: strip an IPv4-mapped-IPv6 prefix, lowercase. */
-function normalizeIp(ip: string | null | undefined): string | null {
+/** Normalize an IP for comparison: strip an IPv4-mapped-IPv6 prefix, lowercase.
+ *  Shared with the lm-tcp/1 receiver (tcp-upgrade.ts), which applies the same binding. */
+export function normalizeIp(ip: string | null | undefined): string | null {
   if (!ip) return null;
   let s = String(ip).trim().toLowerCase();
   if (s.startsWith('::ffff:')) s = s.slice(7);

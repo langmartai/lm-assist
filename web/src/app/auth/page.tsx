@@ -1,24 +1,34 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Shield, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { resetBrowserToken } from '@/lib/api-client';
 
 function AuthContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [status, setStatus] = useState<'validating' | 'success' | 'error'>('validating');
   const [message, setMessage] = useState('Validating access token...');
+  // The scrub below rewrites the URL, which Next reflects into useSearchParams and so
+  // re-runs this effect with no token. Handle the link exactly once.
+  const handledRef = useRef(false);
 
   useEffect(() => {
+    if (handledRef.current) return;
+    handledRef.current = true;
     const token = searchParams.get('token');
     const rawRedirect = searchParams.get('redirect') || '/session-dashboard';
     // Prevent open redirect — only allow relative paths
     const redirect = rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/session-dashboard';
+    // Legacy ?token= links only — nothing generates them any more, because a key in a
+    // URL leaks into history, bookmarks and Referer. Scrub it from the address bar and
+    // history before doing anything else with it.
+    window.history.replaceState(null, '', '/auth');
 
     if (!token) {
       setStatus('error');
-      setMessage('No access token provided. Use the cloud dashboard to get a local access link.');
+      setMessage('No access key provided. Sign in from this dashboard\'s access page instead.');
       return;
     }
 
@@ -31,6 +41,8 @@ function AuthContent() {
       .then((data) => {
         if (data.valid) {
           localStorage.setItem('assist_access_key', token);
+          // Anything cached under the previous key (a token or a refusal) is stale now.
+          resetBrowserToken();
           setStatus('success');
           setMessage('Access granted. Redirecting...');
           setTimeout(() => {
@@ -38,7 +50,7 @@ function AuthContent() {
           }, 500);
         } else {
           setStatus('error');
-          setMessage('Invalid access token. Please use the link from the cloud dashboard.');
+          setMessage('This access link is no longer valid. Sign in from this dashboard\'s access page instead.');
         }
       })
       .catch(() => {
@@ -134,9 +146,8 @@ function AuthContent() {
             size={14}
             style={{ display: 'inline', verticalAlign: 'middle', marginRight: 6 }}
           />
-          To access this dashboard from the local network, use the
-          &quot;Switch to Local&quot; link from the cloud dashboard at your
-          authenticated proxy URL.
+          To access this dashboard from the local network, open it and use
+          &quot;Sign In&quot; with the cloud account that owns this device.
         </div>
       )}
     </div>

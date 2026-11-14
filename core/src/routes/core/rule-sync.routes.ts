@@ -17,7 +17,7 @@ import { getProjectSettings } from '../../project-settings';
 // (exactly like memory-autosync.routes.ts) — NOT a top-level import — so this routes file
 // COMPILES in Task 3 before core/src/rules/autosync.ts exists. No stub needed.
 import { readMemorySyncConfig } from '../../memory/node-mode';
-import { isLoopbackAddress } from '../../auth/enroll-exempt';
+import { isDirectLoopbackPeer } from '../../auth/peer-trust';
 import * as os from 'os';
 
 function relaySource(req: ParsedRequest): string | undefined {
@@ -25,9 +25,10 @@ function relaySource(req: ParsedRequest): string | undefined {
   return Array.isArray(v) ? v[0] : v;
 }
 
-/** Loopback-only; a relayed call (x-relay-source:hub) must carry the node key in the body. */
+/** Loopback-only (and never through the web's /_coreapi proxy); a relayed call
+ *  (x-relay-source:hub) must carry the node key in the body. */
 function authorized(req: ParsedRequest, bodyKey: unknown): boolean {
-  if (!isLoopbackAddress(req.clientIp)) return false;
+  if (!isDirectLoopbackPeer(req.clientIp, req.headers, { allowRelay: true })) return false;
   if (relaySource(req) === 'hub') return typeof bodyKey === 'string' && bodyKey.length > 0;
   return true;
 }

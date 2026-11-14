@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { buildClaudeVoiceWsUrl } from '@/lib/voice-url';
+import { buildClaudeVoiceWsUrl, withFreshVoiceToken } from '@/lib/voice-url';
 import { buildApprovalFrame, buildDenyFrame } from '@/lib/claude-voice-approval';
 import { clientToolResponse } from '@/lib/claude-voice-clienttools';
 import { demuxMessageSse, initialDemuxAcc, type ApprovalOption, type DemuxAcc, type VoiceState } from '@/lib/claude-voice-demux';
@@ -232,7 +232,7 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     pendingAbortRef.current = false;
     startingEngineRef.current = false;
 
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(withFreshVoiceToken(wsUrl));
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
     // A fresh gate per session, closed until {ready}. It sends through `wsRef`, not this local

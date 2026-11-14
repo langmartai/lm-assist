@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Search, Globe, Monitor, CloudOff, Maximize2, LogOut, Info, Download, Wifi } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
-import { detectAppMode, detectProxyInfo, workerFetch } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo, resetBrowserToken, workerFetch } from '@/lib/api-client';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useSearch } from '@/contexts/SearchContext';
 import { MachineDropdown } from './MachineDropdown';
@@ -39,8 +39,6 @@ export function TopBar() {
   const [inIframe, setInIframe] = useState(false);
   const [localIp, setLocalIp] = useState<string | null>(null);
   const [lanEnabled, setLanEnabled] = useState(false);
-  const [lanAuthEnabled, setLanAuthEnabled] = useState(false);
-  const [lanAccessToken, setLanAccessToken] = useState<string | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const [showDataModal, setShowDataModal] = useState(false);
@@ -58,20 +56,8 @@ export function TopBar() {
       .then(d => {
         if (d.localIp) setLocalIp(d.localIp);
         if (typeof d.lanEnabled === 'boolean') setLanEnabled(d.lanEnabled);
-        if (typeof d.lanAuthEnabled === 'boolean') setLanAuthEnabled(d.lanAuthEnabled);
       })
       .catch(() => {});
-    // Fetch LAN access token for building Switch to Local URL (only served to localhost/proxy)
-    const hostname = window.location.hostname;
-    const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
-    if (isLocal || proxyInfo.isProxied) {
-      fetch(`${apiBase}/api/auth/token`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => {
-          if (d?.lanAccessToken) setLanAccessToken(d.lanAccessToken);
-        })
-        .catch(() => {});
-    }
   }, []);
 
   const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -114,6 +100,8 @@ export function TopBar() {
     }
     // LAN / cloud: clear the LAN access token and re-gate at the sign-in page.
     localStorage.removeItem('assist_access_key');
+    // The Core token was granted on that key; it must not outlive the sign-out.
+    resetBrowserToken();
     router.push('/lan-blocked');
   }, [router, isLocalhost, refreshHubConnection]);
 
@@ -142,10 +130,10 @@ export function TopBar() {
   const defaultWebPort = apiPort === '3200' ? '3948' : '3848';
   const webPort = typeof window !== 'undefined' ? window.location.port || defaultWebPort : defaultWebPort;
   const localBaseUrl = `http://${localHost}:${webPort}`;
-  // Only include auth token when viewing the proxy machine (token is machine-specific)
-  const localUrl = (isSelectedProxyMachine && lanAuthEnabled && lanAccessToken)
-    ? `${localBaseUrl}/auth?token=${encodeURIComponent(lanAccessToken)}&redirect=${encodeURIComponent(currentPage)}`
-    : `${localBaseUrl}${currentPage}`;
+  // Never put the LAN key in this URL: a key in a link leaks into history, Referer
+  // and anything the link is pasted into. A LAN device that opens it goes through
+  // the dashboard guard to /lan-blocked and signs in there.
+  const localUrl = `${localBaseUrl}${currentPage}`;
 
   // Distinguish Local (localhost) vs LAN (private IP) access
   const isLan = mounted && !isCloud && !isLocalhost;

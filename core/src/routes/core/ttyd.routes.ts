@@ -25,7 +25,7 @@
 
 import type { RouteHandler, RouteContext } from '../index';
 import { getTtydManager } from '../../ttyd-manager';
-import { getTtydProxyUrl } from '../../ttyd-proxy';
+import { tokenGeneration } from '../../auth/api-token';
 import { execFileSync } from '../../utils/exec';
 import * as path from 'path';
 import * as os from 'os';
@@ -160,7 +160,10 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
           processStore.refresh(); // fire-and-forget (no await)
         }
 
-        const currentHash = processStore.getHash();
+        // The token generation rides in the hash: iframe URLs carry a capability derived
+        // from the ring token, so after ANY rotation a client polling with ?hash= must
+        // refetch — otherwise it keeps cap URLs minted from a dead token.
+        const currentHash = `${processStore.getHash()}.${tokenGeneration()}`;
 
         // Delta check: if client sends hash and it matches, return minimal response
         if (req.query.hash && req.query.hash === currentHash) {
@@ -182,7 +185,7 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
               ...cached,
               managed: cached.managed.map(p => ({
                 ...p,
-                url: getTtydProxyUrl(p.port, baseUrl),
+                url: ttydManager.proxyUrlForPort(p.port, baseUrl),
               })),
             },
           };
@@ -226,7 +229,7 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
           data: {
             ...status,
             ttydUrl: status.ttydProcess
-              ? getTtydProxyUrl(status.ttydProcess.port, baseUrl)
+              ? ttydManager.proxyUrlForPort(status.ttydProcess.port, baseUrl)
               : null,
             // Clear indicator if session can be started
             canStart: status.canStartTtyd,
@@ -452,7 +455,7 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
               data: {
                 alreadyRunning: true,
                 port: status.ttydProcess.port,
-                url: getTtydProxyUrl(status.ttydProcess.port, baseUrl),
+                url: ttydManager.proxyUrlForPort(status.ttydProcess.port, baseUrl),
                 pid: status.ttydProcess.pid,
                 warnings: status.warnings.length > 0 ? status.warnings : undefined,
               },
@@ -498,7 +501,7 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
           success: true,
           data: {
             port: result.port,
-            url: getTtydProxyUrl(result.port!, baseUrl),
+            url: ttydManager.proxyUrlForPort(result.port!, baseUrl),
             pid: result.pid,
             sessionId,
             projectPath: decodedPath,
@@ -607,7 +610,7 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
                 results.push({
                   sessionId: session.sessionId,
                   port: status.ttydProcess.port,
-                  url: getTtydProxyUrl(status.ttydProcess.port, baseUrl),
+                  url: ttydManager.proxyUrlForPort(status.ttydProcess.port, baseUrl),
                   alreadyRunning: true,
                 });
                 alreadyRunning++;
@@ -632,7 +635,7 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
               results.push({
                 sessionId: session.sessionId,
                 port: result.port,
-                url: getTtydProxyUrl(result.port, baseUrl),
+                url: ttydManager.proxyUrlForPort(result.port, baseUrl),
               });
               started++;
             } else {
@@ -844,7 +847,7 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
           success: true,
           data: {
             port: result.port,
-            url: getTtydProxyUrl(result.port!, baseUrl),
+            url: ttydManager.proxyUrlForPort(result.port!, baseUrl),
             pid: result.pid,
             sessionId: shellSessionId,
             projectPath: decodedPath,

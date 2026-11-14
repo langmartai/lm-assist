@@ -2,86 +2,57 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { detectAppMode, detectProxyInfo, workerFetch } from '@/lib/api-client';
+import { bootstrapBrowserAuth, detectAppMode, detectProxyInfo, resetBrowserToken } from '@/lib/api-client';
+import { decideLanGuard, shouldClearStoredKey } from '@/lib/lan-guard';
+
+const LAN_KEY_STORAGE = 'assist_access_key';
 
 /**
  * LAN access gate shared by the dashboard shell and full-bleed pages (e.g. /ccr).
- * Localhost + cloud-proxy always pass; a LAN request must hold a valid
- * `assist_access_key` (validated against the server's lanAccessToken) or it is
- * redirected to /lan-blocked. Extracted verbatim from the dashboard layout.
+ *
+ * Children render only after Core has answered the browser-token bootstrap, so
+ * everything below the guard (voice URLs included) can read the token
+ * synchronously. Core makes the call: this machine's own browser is served, a LAN
+ * browser is served only with a valid `assist_access_key`, and the hub web-proxy
+ * never needs a token. See decideLanGuard for where each answer leads — notably a
+ * network error off-localhost now fails CLOSED.
  */
 export function useLanAuthGuard(): boolean {
   const router = useRouter();
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let cancelled = false;
 
     (async () => {
-      const hostname = window.location.hostname;
-      const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
-
-      // Localhost always passes
-      if (isLocalhost) { setChecked(true); return; }
-
-      // Cloud proxy always passes — already authenticated by the hub gateway
-      const proxyInfo = detectProxyInfo();
-      if (proxyInfo.isProxied) { setChecked(true); return; }
-
-      // Non-localhost — check if this is actually a local request via LAN IP
-      // by asking the Core API (which can check the TCP connection's remote address)
-      // Retry once on failure (Core API may be cold-starting when a new tab opens)
-      const { baseUrl } = detectAppMode();
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const localRes = await workerFetch(`${baseUrl}/auth/is-local`, {
-            signal: AbortSignal.timeout(3000),
-          });
-          const localData = await localRes.json();
-          if (localData?.data?.isLocal === true) {
-            setChecked(true);
-            return;
-          }
-          break; // Got a response but isLocal=false, don't retry
-        } catch {
-          if (attempt === 0) await new Promise(r => setTimeout(r, 500)); // Wait before retry
-        }
+      let hadStoredKey = false;
+      try { hadStoredKey = !!localStorage.getItem(LAN_KEY_STORAGE); } catch { /* storage blocked */ }
+      let { status } = await bootstrapBrowserAuth();
+      // One retry: Core may still be cold-starting when a new tab opens, and failing
+      // closed on that first blip would bounce a legitimate user to the block page.
+      if (status === 'unreachable' && !cancelled) {
+        await new Promise((r) => setTimeout(r, 500));
+        ({ status } = await bootstrapBrowserAuth());
       }
+      if (cancelled) return;
 
-      // Truly remote — check if LAN auth is enabled
-      try {
-        const serverRes = await fetch('/api/server', { signal: controller.signal });
-        const data = await serverRes.json();
+      const decision = decideLanGuard({
+        hostname: window.location.hostname,
+        isProxied: detectProxyInfo().isProxied,
+        isHubHost: detectAppMode().mode === 'hub',
+        status,
+        hadStoredKey,
+      });
+      if (decision === 'pass') { setChecked(true); return; }
 
-        if (!data.lanAuthEnabled) { setChecked(true); return; }
-
-        // Auth enabled — check localStorage for token
-        const storedToken = localStorage.getItem('assist_access_key');
-        if (!storedToken) { router.replace('/lan-blocked'); return; }
-
-        // Validate the stored token
-        const res = await fetch('/api/auth/validate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: storedToken }),
-          signal: controller.signal,
-        });
-        const result = await res.json();
-        if (result.valid) {
-          setChecked(true);
-        } else {
-          // Had a token but it's stale/invalid — clear it and flag `expired` so the
-          // block page shows "sign in again" instead of the generic restricted copy.
-          localStorage.removeItem('assist_access_key');
-          router.replace('/lan-blocked?expired=1');
-        }
-      } catch {
-        // Can't reach server config — allow through (fail open on network error)
-        setChecked(true);
+      if (shouldClearStoredKey(decision)) {
+        try { localStorage.removeItem(LAN_KEY_STORAGE); } catch { /* storage blocked */ }
+        resetBrowserToken();
       }
+      router.replace(decision);
     })();
 
-    return () => controller.abort();
+    return () => { cancelled = true; };
   }, [router]);
 
   return checked;

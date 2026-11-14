@@ -1,24 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { execFile } from 'child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { homedir, networkInterfaces } from 'os';
+import { existsSync, readFileSync } from 'fs';
+import { networkInterfaces } from 'os';
 import { randomBytes } from 'crypto';
 import path from 'path';
 import { getHubDomain } from '@/lib/utils';
+import { assistDataDir, readAssistConfig, writeAssistConfig } from '@/lib/assist-config';
+import { requireWebCaller } from '@/lib/web-route-auth';
 
-const CONFIG_DIR = path.join(homedir(), '.lm-assist');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'assist-config.json');
-// Hub config — prod uses hub.json, dev uses hub-dev.json. We only read the
+// Hub config — prod uses hub.json, dev uses hub-dev.json, in the same data dir Core
+// writes them to (LM_ASSIST_DATA_DIR, else ~/.lm-assist). We only read the
 // non-secret fields (hubUrl + whether an apiKey is present) to tell the
 // /lan-blocked page if a cloud account is bound and which hub to sign in against.
-const HUB_FILE = path.join(CONFIG_DIR, 'hub.json');
-const HUB_DEV_FILE = path.join(CONFIG_DIR, 'hub-dev.json');
-
-interface AssistConfig {
-  lanEnabled?: boolean;
-  lanAuthEnabled?: boolean;
-  lanAccessToken?: string;
-}
 
 interface HubConfig {
   hubUrl?: string;
@@ -29,7 +22,9 @@ function readHubConfig(): HubConfig {
   // Dev web (:3200) pairs with hub-dev.json; prod web with hub.json. Prefer the
   // matching one, fall back to the other (single-install hosts have only one).
   const devFirst = process.env.NEXT_PUBLIC_LOCAL_API_PORT === '3200';
-  const order = devFirst ? [HUB_DEV_FILE, HUB_FILE] : [HUB_FILE, HUB_DEV_FILE];
+  const hubFile = path.join(assistDataDir(), 'hub.json');
+  const hubDevFile = path.join(assistDataDir(), 'hub-dev.json');
+  const order = devFirst ? [hubDevFile, hubFile] : [hubFile, hubDevFile];
   for (const f of order) {
     try {
       return JSON.parse(readFileSync(f, 'utf8')) as HubConfig;
@@ -72,24 +67,12 @@ function getLocalIp(): string {
   return 'localhost';
 }
 
-function readConfig(): AssistConfig {
-  try {
-    const raw = readFileSync(CONFIG_FILE, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-function writeConfig(config: AssistConfig): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  // 0600: holds the lanAccessToken (LAN credential) — owner-only; chmod repairs pre-existing loose files.
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
-  try { chmodSync(CONFIG_FILE, 0o600); } catch { /* ignore */ }
-}
-
 /**
  * POST /api/server  — Start the tier-agent API server via core.sh
+ *
+ * Runs a script on the node, so only an authenticated same-origin caller may ask
+ * (requireWebCaller). Note that this needs Core up to verify the caller, so the
+ * button cannot start a Core that is down; ./core.sh start covers that case.
  *
  * Body (optional):
  *   { action: 'start' }   default: 'start'
@@ -98,6 +81,8 @@ function writeConfig(config: AssistConfig): void {
  *   { success, message, output? }
  */
 export async function POST(request: NextRequest) {
+  const deny = await requireWebCaller(request);
+  if (deny) return deny;
   const body = await request.json().catch(() => ({}));
   const action: string = body.action || 'start';
 
@@ -148,16 +133,18 @@ export async function POST(request: NextRequest) {
 
 /**
  * GET /api/server  — Server info + config
+ *
+ * Public on purpose: /lan-blocked and the top bar read it before the browser holds
+ * any credential. So it returns only non-secret flags — never the LAN key, and no
+ * filesystem paths.
  */
 export async function GET() {
-  const tierDir = getTierAgentDir();
-  const coreScript = path.join(tierDir, 'core.sh');
+  const coreScript = path.join(getTierAgentDir(), 'core.sh');
   const exists = existsSync(coreScript);
-  const config = readConfig();
+  const config = readAssistConfig();
   const hub = readHubConfig();
 
   return NextResponse.json({
-    tierAgentDir: tierDir,
     coreShExists: exists,
     localIp: getLocalIp(),
     lanEnabled: config.lanEnabled ?? true,
@@ -172,12 +159,17 @@ export async function GET() {
 /**
  * PUT /api/server  — Update assist config (e.g. lanEnabled)
  *
- * Body: { lanEnabled?: boolean }
+ * Changes who may reach the dashboard, so only an authenticated same-origin caller
+ * may do it (requireWebCaller). It used to be open to any LAN device.
+ *
+ * Body: { lanEnabled?: boolean, lanAuthEnabled?: boolean }
  * Returns: { success, config, restartRequired? }
  */
 export async function PUT(request: NextRequest) {
+  const deny = await requireWebCaller(request);
+  if (deny) return deny;
   const body = await request.json().catch(() => ({}));
-  const config = readConfig();
+  const config = readAssistConfig();
   let restartRequired = false;
 
   if (typeof body.lanEnabled === 'boolean') {
@@ -195,7 +187,7 @@ export async function PUT(request: NextRequest) {
     }
   }
 
-  writeConfig(config);
+  writeAssistConfig(config);
 
   return NextResponse.json({
     success: true,

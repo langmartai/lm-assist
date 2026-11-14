@@ -230,18 +230,237 @@ export function setProxySessionExpiredCallback(cb: (() => void) | null) {
 }
 
 // ============================================
+// Browser token bootstrap
+// ============================================
+//
+// The server-rendered HTML carries NO credential. The server layout cannot tell
+// who is asking (Host and X-Forwarded-* are caller-controlled, and the /_coreapi
+// rewrite makes every LAN caller reach Core from 127.0.0.1), so it used to hand
+// the node's Core token to anyone who could load a page. Only Core sees the real
+// TCP peer, so the browser now asks Core for the token at runtime
+// (GET /auth/browser-token), and Core decides: this machine's own browser gets it,
+// a LAN browser gets it only with a valid LAN key, everyone else gets 401.
+//
+// The token lives in module memory only, never in storage. The one URL that
+// carries it is the voice WebSocket's ?token= (browsers cannot set WS headers; see
+// voice-url.ts). In hub/proxied mode there is nothing to fetch: the hub relay
+// injects x-api-key server-side.
+
+export type BrowserAuthStatus = 'ok' | 'not-needed' | 'denied' | 'lan-key-invalid' | 'unreachable';
+export interface BrowserAuthResult { status: BrowserAuthStatus; token: string | null }
+
+/** localStorage key for the LAN access key (set by /lan-blocked's OIDC grant). */
+const LAN_KEY_STORAGE = 'assist_access_key';
+/** A refusal is re-asked at most this often, so a denied LAN page does not hammer Core. */
+const DENIAL_CACHE_MS = 30_000;
+/** Stage-2 seam: a token with a numeric expiresAt is refreshed this long before it. */
+const REFRESH_LEAD_MS = 60_000;
+const BOOTSTRAP_TIMEOUT_MS = 5_000;
+
+const NOT_NEEDED: BrowserAuthResult = { status: 'not-needed', token: null };
+
+/** Last 200 answer (ok, or not-needed when Core's auth is switched off). */
+let _granted: BrowserAuthResult | null = null;
+/** Epoch ms after which _granted.token is dead; null = no expiry (Stage 1 always). */
+let _grantedExpiresAt: number | null = null;
+/** Last refusal, with the LAN key it was made with (a new key must be tried at once). */
+let _denied: { result: BrowserAuthResult; at: number; lanKey: string | null } | null = null;
+let _inflight: { promise: Promise<BrowserAuthResult>; lanKey: string | null } | null = null;
+/** Bumped by resetBrowserToken(): an answer that lands after a reset must not repopulate the cache. */
+let _epoch = 0;
+
+/** Core API port: the runtime value the server layout injects
+ *  (window.__LM_LOCAL_API_PORT__) so one build serves prod (:3100) and dev
+ *  (:3200); then the build-time NEXT_PUBLIC value; then 3100. */
+export function corePort(): string {
+  const injected = typeof window !== 'undefined'
+    ? (window as unknown as { __LM_LOCAL_API_PORT__?: string }).__LM_LOCAL_API_PORT__
+    : undefined;
+  return injected || process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+}
+
+/**
+ * Is this URL THIS node's Core (so it may carry the node token)? Same-origin
+ * URLs qualify (/_coreapi behind the HTTPS terminator or the hub web-proxy, and the
+ * web's own /api/*). A cross-origin URL qualifies only as plain-http Core on the
+ * page's own host or loopback. Everything else — notably the hub's
+ * https://assist-api.* URLs in hybrid mode — must never see the node token.
+ */
+export function isCoreUrl(url: string): boolean {
+  if (typeof window === 'undefined') return false;
+  let u: URL;
+  try { u = new URL(url, window.location.href); } catch { return false; }
+  if (u.origin === window.location.origin) return true;
+  if (u.protocol !== 'http:' || u.port !== corePort()) return false;
+  return u.hostname === window.location.hostname || u.hostname === '127.0.0.1' || u.hostname === 'localhost';
+}
+
+function readStoredLanKey(): string | null {
+  try { return localStorage.getItem(LAN_KEY_STORAGE) || null; } catch { return null; }
+}
+
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  // AbortSignal.timeout is missing on older Safari; a hung bootstrap would then
+  // just wait for the browser's own timeout, which is still fail-closed.
+  return typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(ms)
+    : undefined;
+}
+
+/** Accept epoch ms or epoch seconds (a Stage-2 Core may send either). */
+function normalizeExpiresAt(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return null;
+  return v < 1e12 ? v * 1000 : v;
+}
+
+function grantedIsFresh(): boolean {
+  if (!_granted) return false;
+  return _grantedExpiresAt === null || Date.now() < _grantedExpiresAt - REFRESH_LEAD_MS;
+}
+
+async function requestBrowserToken(lanKey: string | null): Promise<{ result: BrowserAuthResult; expiresAt: number | null }> {
+  const headers: Record<string, string> = { 'X-LM-Client': 'web' };
+  if (lanKey) headers['X-LM-LAN-Key'] = lanKey;
+  let res: Response;
+  try {
+    res = await fetch(`${detectAppMode().baseUrl}/auth/browser-token`, {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'omit',
+      headers,
+      signal: timeoutSignal(BOOTSTRAP_TIMEOUT_MS),
+    });
+  } catch {
+    return { result: { status: 'unreachable', token: null }, expiresAt: null };
+  }
+  let body: any = null;
+  try { body = await res.json(); } catch { /* non-JSON answer — judged by status below */ }
+  if (res.ok) {
+    // A 200 that is not Core's envelope (e.g. some other server's HTML on that
+    // port) is not an answer — treat it as unreachable so it is never cached.
+    if (!body || body.success !== true || typeof body.data !== 'object' || body.data === null) {
+      return { result: { status: 'unreachable', token: null }, expiresAt: null };
+    }
+    const token = typeof body.data.token === 'string' && body.data.token ? body.data.token as string : null;
+    return {
+      result: token ? { status: 'ok', token } : { status: 'not-needed', token: null },
+      expiresAt: token ? normalizeExpiresAt(body.data.expiresAt) : null,
+    };
+  }
+  if (res.status === 401 && body?.error?.code === 'LAN_KEY_INVALID') {
+    return { result: { status: 'lan-key-invalid', token: null }, expiresAt: null };
+  }
+  if (res.status >= 400 && res.status < 500) {
+    return { result: { status: 'denied', token: null }, expiresAt: null };
+  }
+  return { result: { status: 'unreachable', token: null }, expiresAt: null };
+}
+
+/**
+ * Obtain (or reuse) this browser's Core token. One request in flight at a time;
+ * a grant is cached until resetBrowserToken() or a 401, a refusal for 30 s (unless
+ * the stored LAN key changed), and 'unreachable' is never cached. `force` skips both
+ * caches. A no-op ('not-needed') during SSR and in hub/proxied mode, where the hub
+ * relay injects x-api-key server-side.
+ */
+export async function bootstrapBrowserAuth(opts: { force?: boolean } = {}): Promise<BrowserAuthResult> {
+  if (typeof window === 'undefined') return NOT_NEEDED;
+  if (detectProxyInfo().isProxied || detectAppMode().mode === 'hub') return NOT_NEEDED;
+
+  const lanKey = readStoredLanKey();
+  if (!opts.force) {
+    if (grantedIsFresh()) return _granted as BrowserAuthResult;
+    if (_denied && _denied.lanKey === lanKey && Date.now() - _denied.at < DENIAL_CACHE_MS) {
+      return _denied.result;
+    }
+  }
+  // Join a request already made with the same LAN key; a different key needs its own answer.
+  if (_inflight && _inflight.lanKey === lanKey) return _inflight.promise;
+
+  const epoch = _epoch;
+  const promise = (async () => {
+    const { result, expiresAt } = await requestBrowserToken(lanKey);
+    if (epoch === _epoch) {
+      if (result.status === 'ok' || result.status === 'not-needed') {
+        _granted = result;
+        _grantedExpiresAt = expiresAt;
+        _denied = null;
+      } else if (result.status === 'denied' || result.status === 'lan-key-invalid') {
+        _granted = null;
+        _grantedExpiresAt = null;
+        _denied = { result, at: Date.now(), lanKey };
+      }
+      // 'unreachable' leaves the caches alone: the next call asks again.
+    }
+    return result;
+  })();
+  const entry = { promise, lanKey };
+  _inflight = entry;
+  promise.finally(() => { if (_inflight === entry) _inflight = null; }).catch(() => {});
+  return promise;
+}
+
+/** The Core token for this browser, or null (not needed, refused or unreachable). */
+export async function ensureBrowserToken(): Promise<string | null> {
+  return (await bootstrapBrowserAuth()).token;
+}
+
+/** Synchronous cache read, for code that cannot await (the voice WebSocket URL). */
+export function peekBrowserToken(): string | null {
+  if (!_granted?.token) return null;
+  if (_grantedExpiresAt !== null && Date.now() >= _grantedExpiresAt) return null;
+  return _granted.token;
+}
+
+/** Forget the token and any cached refusal (after a 401, a new LAN key, or sign-out). */
+export function resetBrowserToken(): void {
+  _epoch++;
+  _granted = null;
+  _grantedExpiresAt = null;
+  _denied = null;
+  _inflight = null;
+}
+
+// ============================================
 // Shared fetch helper
 // ============================================
 
-/** x-api-key for direct local-mode calls to the worker. Token is injected into
- *  the page by the server layout (window.__LM_API_TOKEN__). Empty in hub mode
- *  (the hub relay injects it server-side). */
-export function localAuthHeader(): Record<string, string> {
-  if (typeof window !== 'undefined') {
-    const t = (window as unknown as { __LM_API_TOKEN__?: string }).__LM_API_TOKEN__;
-    if (t) return { 'x-api-key': t };
-  }
-  return {};
+function carriesToken(init: RequestInit, token: string): boolean {
+  const h = init.headers;
+  if (!h) return false;
+  if (typeof Headers !== 'undefined' && h instanceof Headers) return h.get('x-api-key') === token;
+  const entries = Array.isArray(h) ? h : Object.entries(h as Record<string, string>);
+  return entries.some(([k, v]) => k.toLowerCase() === 'x-api-key' && v === token);
+}
+
+/** Bodies fetch() can send twice. A stream is consumed by the first attempt. */
+function isReplayableBody(body: RequestInit['body']): boolean {
+  return body === undefined || body === null
+    || typeof body === 'string'
+    || (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams)
+    || (typeof Blob !== 'undefined' && body instanceof Blob)
+    || (typeof FormData !== 'undefined' && body instanceof FormData);
+}
+
+/**
+ * fetch() with this browser's Core token attached — but ONLY for Core URLs.
+ * `build` receives the auth header (empty when none applies) and returns the
+ * RequestInit, so each caller keeps its own header-merge order. A 401 on a request
+ * that carried our token means it was rotated or revoked: drop it, ask Core again,
+ * and retry once with the new token when the body can be replayed.
+ */
+async function authedFetch(url: string, build: (auth: Record<string, string>) => RequestInit): Promise<Response> {
+  const token = isCoreUrl(url) ? await ensureBrowserToken() : null;
+  const init = build(token ? { 'x-api-key': token } : {});
+  const res = await fetch(url, init);
+  if (res.status !== 401 || !token || !carriesToken(init, token)) return res;
+
+  // Only the first 401 for a given token resets it; concurrent ones join the refetch.
+  if (_granted?.token === token) resetBrowserToken();
+  const fresh = await ensureBrowserToken();
+  if (!fresh || fresh === token || !isReplayableBody(init.body)) return res;
+  try { void res.body?.cancel(); } catch { /* already consumed or not cancelable */ }
+  return fetch(url, build({ 'x-api-key': fresh }));
 }
 
 /**
@@ -249,22 +468,36 @@ export function localAuthHeader(): Record<string, string> {
  * attached (the core gates every non-/health endpoint behind it; raw fetches
  * that omit it get 401). Use this for ANY direct browser→worker call that does
  * not go through the api-client's fetchJson helpers (which already inject it).
- * In hub/proxy mode the token is empty here and the relay injects it
- * server-side, so this is a safe no-op there. Mirrors fetchJson's header merge,
- * letting callers still override headers. Returns the raw Response (like fetch).
+ * The token is attached only to Core URLs (see isCoreUrl), so a hub URL never
+ * receives it; in hub/proxy mode there is no token and the relay injects it
+ * server-side. Mirrors fetchJson's header merge, letting callers still override
+ * headers. Returns the raw Response (like fetch).
  */
-export function workerFetch(url: string, options?: RequestInit): Promise<Response> {
-  return fetch(url, {
+export async function workerFetch(url: string, options?: RequestInit): Promise<Response> {
+  return authedFetch(url, (auth) => ({
     ...options,
-    headers: { ...localAuthHeader(), ...(options?.headers || {}) },
-  });
+    headers: { ...auth, ...(options?.headers || {}) },
+  }));
+}
+
+/**
+ * fetch() for the web's OWN state-changing /api/* routes (e.g. PUT /api/server).
+ * Those routes accept a caller only if it presents this node's Core token and a
+ * same-origin Origin, so a page that merely reaches the web server (a LAN device
+ * without a key, or a cross-site form) cannot flip settings.
+ */
+export async function webApiFetch(path: string, init?: RequestInit): Promise<Response> {
+  return authedFetch(path, (auth) => ({
+    ...init,
+    headers: { ...(init?.headers as Record<string, string> | undefined), ...auth },
+  }));
 }
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...localAuthHeader(), ...options?.headers },
+  const res = await authedFetch(url, (auth) => ({
+    headers: { 'Content-Type': 'application/json', ...auth, ...options?.headers },
     ...options,
-  });
+  }));
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     // Detect proxy token expiry (401 from web-proxy)
@@ -288,10 +521,10 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
  * (e.g. { success: true, consoleUrl: "...", data: {} }).
  */
 async function fetchJsonRaw<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...localAuthHeader(), ...options?.headers },
+  const res = await authedFetch(url, (auth) => ({
+    headers: { 'Content-Type': 'application/json', ...auth, ...options?.headers },
     ...options,
-  });
+  }));
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     // Detect proxy token expiry (401 from web-proxy)
@@ -1631,9 +1864,9 @@ export function detectAppMode(): { mode: AppMode; baseUrl: string } {
   // Local mode: localhost or local IP
   // Core API port: prefer the runtime value injected by the server layout
   // (window.__LM_LOCAL_API_PORT__) so one build serves prod (:3100) and dev (:3200);
-  // fall back to the build-time NEXT_PUBLIC value, then 3100.
-  const injected = (window as unknown as { __LM_LOCAL_API_PORT__?: string }).__LM_LOCAL_API_PORT__;
-  const localPort = injected || process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+  // fall back to the build-time NEXT_PUBLIC value, then 3100. isCoreUrl() uses the
+  // same rule, so a URL built here is always recognised as Core.
+  const localPort = corePort();
   // Use 127.0.0.1 instead of 'localhost' to avoid IPv6 resolution issues on Windows
   // where browsers may resolve localhost to ::1 but the API only listens on IPv4
   const apiHost = (hostname === 'localhost' || hostname === '127.0.0.1') ? '127.0.0.1' : hostname;

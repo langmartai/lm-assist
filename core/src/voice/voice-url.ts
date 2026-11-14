@@ -33,7 +33,7 @@ export interface VoiceWsUrlInput {
   pageHostname: string;
   /** detectAppMode().baseUrl, e.g. 'http://127.0.0.1:3200' or '/_coreapi'. */
   coreBaseUrl: string;
-  /** Rotating api token (window.__LM_API_TOKEN__) — rides the query string (browsers can't set WS headers). */
+  /** Rotating api token (fetched at runtime from Core GET /auth/browser-token) — rides the query string (browsers can't set WS headers). */
   token?: string;
 }
 

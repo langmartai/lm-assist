@@ -4,6 +4,7 @@
  *
  * Usage:
  *   lm-assist serve [options]    Start REST API server
+ *   lm-assist token <sub>        Token admin: rotate --now [--lan-key] | lan-key --regenerate | status
  *
  * Options:
  *   --port, -p       Server port (default: 3100 prod / 3200 dev)
@@ -18,6 +19,7 @@ import { getHubClient, isHubConfigured } from './hub-client';
 import { saveHubConnectionConfig } from './hub-client/hub-config';
 import { getStartupProfiler } from './startup-profiler';
 import { startLogRotation } from './utils/log-rotate';
+import { installUnhandledRejectionLogger } from './utils/process-safety';
 
 // Dev repo → 3200/3948, npm package → 3100/3848
 // Override with LM_ASSIST_PROD=true to use prod ports/identity from dev repo
@@ -90,6 +92,13 @@ async function main() {
       await runServer();
       break;
 
+    case 'token': {
+      // Lazy: the admin path must not pay for (or depend on) the server modules.
+      const { runTokenCommand } = await import('./auth/token-admin');
+      process.exit(await runTokenCommand(args.slice(1)));
+      break;
+    }
+
     case 'help':
     case '--help':
     case '-h':
@@ -111,6 +120,9 @@ async function runServer() {
   // without bound (per-request relay logging reached 2.6 GB). Runs one pass now
   // to shrink an already-huge log from a prior run, then every 5 minutes.
   startLogRotation();
+
+  // A stray unhandled rejection must not kill the server (nothing restarts it).
+  installUnhandledRejectionLogger();
 
   const hubConfigured = isHubConfigured();
   const hubUrl = process.env.TIER_AGENT_HUB_URL || '';
@@ -295,6 +307,13 @@ Usage:
 
 Commands:
   serve             Start REST API server (default)
+  token rotate --now [--lan-key]
+                    Revoke EVERY current api-token (no grace) and mint a new one;
+                    --lan-key also replaces the LAN access key. Operator-only,
+                    never automatic. Restart any older Core sharing the data dir.
+  token lan-key --regenerate
+                    Replace the LAN access key (LAN browsers sign in again)
+  token status      Token/LAN-key state: timestamps and counts, never a secret
   help              Show this help
 
 Options:

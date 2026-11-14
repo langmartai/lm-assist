@@ -23,6 +23,13 @@ import * as crypto from 'crypto';
 import * as net from 'net';
 import WebSocket from 'ws';
 
+/** Options for the relay's WebSocket into Core's ttyd proxy. The proxy authenticates
+ *  every upgrade (x-api-key or a path capability), so the relay must present the local
+ *  api-token — without it every hub-proxied terminal gets a 401. */
+export function ttydRelayWsOptions(): { headers: Record<string, string> } {
+  return { headers: lmAuthHeaders() };
+}
+
 /** Interface for WebSocket-like objects that can send messages */
 export interface WebSocketSender {
   send(data: unknown): void;
@@ -332,7 +339,7 @@ export class ConsoleRelayHandler extends EventEmitter {
 
       // ttyd requires the 'tty' subprotocol - without it, it accepts the connection
       // but never sends any data
-      const ttydWs = new WebSocket(ttydWsUrl, ['tty']);
+      const ttydWs = new WebSocket(ttydWsUrl, ['tty'], ttydRelayWsOptions());
       relay.ttydWs = ttydWs;
 
       const connectionTimeout = setTimeout(() => {

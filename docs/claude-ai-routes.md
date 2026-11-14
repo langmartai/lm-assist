@@ -560,8 +560,11 @@ browser** (first consumer: the lm-unified-trade chart-chat panel). Two pieces:
 ### Scoped, revocable tokens (`core/src/auth/scoped-token.ts`)
 
 The full node api-token must never ship to a page. A **scoped token** is minted
-by a full-token caller, sent in the same `x-api-key` header (CORS already
-allows it), and validated as a fallback in the rest-server auth gate. Scope
+by a full-token caller, sent in the same `x-api-key` header (the scope's routes
+keep any-origin CORS — Core reflects any `Origin` on exactly those routes — while
+every other route is allow-listed to this machine's own web origins; see
+[browser-auth](./browser-auth.md)), and validated as a fallback in the rest-server
+auth gate. Scope
 `claude-ai-chat` allows exactly:
 
 - `POST /claude-ai/conversations` (create)

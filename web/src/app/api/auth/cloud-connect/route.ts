@@ -1,23 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { serverAuthHeader } from '@/lib/server-auth';
 
 /**
  * GET /api/auth/cloud-connect — Callback for OAuth assist-connect flow
  *
- * When the assist-connect popup on langmart.ai loses window.opener (after OAuth redirect),
- * it redirects here with the new API key so the local machine can save it.
+ * When the assist-connect popup on the platform loses window.opener (after the OAuth
+ * redirect), it redirects here with the new API key. The popup's URL is fixed on the
+ * platform side, so this route has to stay a GET.
  *
  * Query params: ?key=<api-key>&hubUrl=<wss://...>
  *
- * Flow:
- * 1. Receives the new assist API key from the langmart.ai popup redirect
- * 2. Calls PUT /hub/config on the local tier-agent to save the key + reconnect
- * 3. Redirects to /settings with a success indicator
+ * It changes NOTHING. It used to bind the node to whatever key it was handed, with
+ * no caller check — so any page could navigate a victim's browser here and rebind
+ * their node to an attacker's cloud account. Now it only hands the key to the
+ * settings page in the URL FRAGMENT (never sent to a server, scrubbed on arrival);
+ * the settings page asks the user to confirm, and the binding happens through
+ * Core's authenticated PUT /hub/config.
  */
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const key = searchParams.get('key');
-  // hubUrl is passed from the OAuth popup; fallback based on the request's host
+  // hubUrl is passed from the OAuth popup; fallback based on the request's host.
+  // The settings page accepts only an exact known platform hub URL.
   const hubUrl = searchParams.get('hubUrl') || (() => {
     const host = request.nextUrl.hostname;
     if (host.includes('xeenhub')) return 'wss://assist-api.xeenhub.com';
@@ -31,35 +34,17 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const apiPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-  const tierAgentUrl = `http://localhost:${apiPort}`;
-
-  try {
-    const res = await fetch(`${tierAgentUrl}/hub/config`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...serverAuthHeader() },
-      body: JSON.stringify({ apiKey: key, hubUrl, reconnect: true }),
-    });
-
-    const json = await res.json();
-
-    if (!json.success) {
-      return new NextResponse(errorPage(json.error || 'Failed to save API key'), {
-        status: 500,
-        headers: { 'Content-Type': 'text/html' },
-      });
-    }
-
-    // Redirect to settings page with success indicator
-    const settingsUrl = new URL('/settings', request.nextUrl.origin);
-    settingsUrl.searchParams.set('cloud', 'connected');
-    return NextResponse.redirect(settingsUrl);
-  } catch (err) {
-    return new NextResponse(errorPage('Failed to reach local API server'), {
-      status: 502,
-      headers: { 'Content-Type': 'text/html' },
-    });
-  }
+  const fragment = new URLSearchParams({ cloudConnect: '1', key, hubUrl }).toString();
+  return new NextResponse(null, {
+    status: 303,
+    headers: {
+      // Relative on purpose: nextUrl.origin is the standalone bind address (0.0.0.0).
+      Location: `/settings#${fragment}`,
+      'Cache-Control': 'no-store',
+      // The key arrived in this request's query; keep it out of the next page's Referer.
+      'Referrer-Policy': 'no-referrer',
+    },
+  });
 }
 
 function errorPage(message: string): string {

@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useAppMode } from '@/contexts/AppModeContext';
-import { detectAppMode, workerFetch } from '@/lib/api-client';
+import { detectAppMode, webApiFetch, workerFetch } from '@/lib/api-client';
+import { decideCloudConnectArm, isTopLevelWindow, cloudConnectPrompt } from '@/lib/cloud-connect-arm';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
 import MemoryTab from './MemoryTab';
@@ -366,6 +367,10 @@ export default function SettingsPage() {
   // Cloud OAuth sign-in state
   const [isCloudSigningIn, setIsCloudSigningIn] = useState(false);
   const [cloudSignInMessage, setCloudSignInMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
+  // A key handed over by /api/auth/cloud-connect (popup fallback), held in memory
+  // until the user confirms. Never bound without that click.
+  const [pendingCloudConnect, setPendingCloudConnect] = useState<{ key: string; hubUrl: string } | null>(null);
+  const [cloudConnectError, setCloudConnectError] = useState<string | null>(null);
 
   const tierAgentUrl = typeof window !== 'undefined'
     ? detectAppMode().baseUrl || `http://${window.location.hostname}:3100`
@@ -459,6 +464,46 @@ export default function SettingsPage() {
 
   useEffect(() => { fetchLanConfig(); }, [fetchLanConfig]);
 
+  // Bind this node to a cloud account key through Core's authenticated
+  // PUT /hub/config. Shared by the popup's postMessage and the confirm card for the
+  // popup's redirect fallback (/api/auth/cloud-connect).
+  const connectWithKey = useCallback(async (apiKey: string, hubUrl: string): Promise<boolean> => {
+    setIsCloudSigningIn(true);
+    setCloudSignInMessage(null);
+    try {
+      const res = await workerFetch(tierAgentUrl + '/hub/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey, hubUrl, reconnect: true }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        // Poll for authentication to complete
+        if (!json.data?.authenticated) {
+          for (let i = 0; i < 5; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            const statusRes = await workerFetch(tierAgentUrl + '/hub/status').catch(() => null);
+            if (statusRes?.ok) {
+              const s = (await statusRes.json()).data;
+              if (s?.authenticated) break;
+            }
+          }
+        }
+        setCloudSignInMessage({ text: 'Connected to cloud!', type: 'ok' });
+        await fetchStatus();
+        await refreshHubConnection();
+        return true;
+      }
+      setCloudSignInMessage({ text: json.error || 'Failed to save API key', type: 'error' });
+      return false;
+    } catch {
+      setCloudSignInMessage({ text: 'Failed to reach tier-agent', type: 'error' });
+      return false;
+    } finally {
+      setIsCloudSigningIn(false);
+    }
+  }, [tierAgentUrl, fetchStatus, refreshHubConnection]);
+
   // Listen for postMessage from Cloud OAuth popup
   useEffect(() => {
     const handler = async (event: MessageEvent) => {
@@ -471,45 +516,34 @@ export default function SettingsPage() {
       if (event.data?.type !== 'langmart-assist-connect') return;
       const receivedKey = event.data.apiKey;
       if (!receivedKey || typeof receivedKey !== 'string') return;
-
-      setIsCloudSigningIn(true);
-      setCloudSignInMessage(null);
-      try {
-        const hubUrl = getDefaultHubUrl(hubStatus?.hubUrl);
-        const res = await workerFetch(tierAgentUrl + '/hub/config', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ apiKey: receivedKey, hubUrl, reconnect: true }),
-        });
-        const json = await res.json();
-        if (json.success) {
-          // Poll for authentication to complete
-          if (!json.data?.authenticated) {
-            for (let i = 0; i < 5; i++) {
-              await new Promise(r => setTimeout(r, 1000));
-              const statusRes = await workerFetch(tierAgentUrl + '/hub/status').catch(() => null);
-              if (statusRes?.ok) {
-                const s = (await statusRes.json()).data;
-                if (s?.authenticated) break;
-              }
-            }
-          }
-          setCloudSignInMessage({ text: 'Connected to cloud!', type: 'ok' });
-          await fetchStatus();
-          await refreshHubConnection();
-        } else {
-          setCloudSignInMessage({ text: json.error || 'Failed to save API key', type: 'error' });
-        }
-      } catch {
-        setCloudSignInMessage({ text: 'Failed to reach tier-agent', type: 'error' });
-      } finally {
-        setIsCloudSigningIn(false);
-      }
+      await connectWithKey(receivedKey, getDefaultHubUrl(hubStatus?.hubUrl));
     };
 
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [tierAgentUrl, fetchStatus, refreshHubConnection, hubStatus?.hubUrl]);
+  }, [connectWithKey, hubStatus?.hubUrl]);
+
+  // Popup fallback: /api/auth/cloud-connect hands the key over in the URL FRAGMENT
+  // (#cloudConnect=1&key=…&hubUrl=…). Anyone can craft that link, so nothing is
+  // bound here: scrub the key from the address bar and history at once, refuse inside
+  // a frame (clickjacking), accept only an exact known platform hub URL, and wait for
+  // the user to confirm. See lib/cloud-connect-arm.ts.
+  useEffect(() => {
+    if (proxy.isProxied) return;
+    const decision = decideCloudConnectArm(window.location.hash, {
+      isTopLevel: isTopLevelWindow(window),
+      platformHubUrls: Object.values(PLATFORM_DOMAINS),
+    });
+    if (decision.kind === 'none') return;
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    handleSetActiveTab('connection');
+    if (decision.kind === 'error') {
+      setCloudConnectError(decision.message);
+      return;
+    }
+    setCloudConnectError(null);
+    setPendingCloudConnect({ key: decision.key, hubUrl: decision.hubUrl });
+  }, [proxy.isProxied]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Open Cloud OAuth popup
   const handleCloudSignIn = useCallback(() => {
@@ -526,7 +560,7 @@ export default function SettingsPage() {
     setLanLoading(true);
     setLanMessage(null);
     try {
-      const res = await fetch('/api/server', {
+      const res = await webApiFetch('/api/server', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lanEnabled: value }),
@@ -551,7 +585,7 @@ export default function SettingsPage() {
     setLanLoading(true);
     setLanMessage(null);
     try {
-      const res = await fetch('/api/server', {
+      const res = await webApiFetch('/api/server', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lanAuthEnabled: value }),
@@ -1606,11 +1640,18 @@ export default function SettingsPage() {
     setStartServerOutput(null);
     setStatusError(null);
     try {
-      const res = await fetch('/api/server', {
+      const res = await webApiFetch('/api/server', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'start' }),
       });
+      // The route only runs core.sh for a caller Core has vouched for, and a Core
+      // that is down cannot vouch — so from the browser this can only succeed while
+      // Core is up. Say how to start it instead of a bare auth error.
+      if (res.status === 401 || res.status === 503) {
+        setStartServerOutput({ text: 'The API is not running, so it cannot be started from the browser. Run "lm-assist start" (or ./core.sh start) on this machine.', type: 'error' });
+        return;
+      }
       const json = await res.json();
       if (json.success) {
         setStartServerOutput({ text: 'Server started. Verifying...', type: 'ok' });
@@ -1751,6 +1792,62 @@ export default function SettingsPage() {
         {/* ═══════════════ CONNECTION TAB ═══════════════ */}
         {activeTab === 'connection' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+            {/* Confirm a cloud key handed over by the sign-in popup's redirect fallback */}
+            {!isProxied && (pendingCloudConnect || cloudConnectError) && (
+              <SectionCard title="Connect to Cloud" icon={Cloud}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {cloudConnectError ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--color-status-red)' }}>
+                      <XCircle size={12} />
+                      {cloudConnectError}
+                    </div>
+                  ) : (
+                    <>
+                      <p style={{ fontSize: 12, color: cloudConnectPrompt(hasApiKey).warn ? 'var(--color-status-red)' : 'var(--color-text-secondary)', lineHeight: 1.6 }}>
+                        {cloudConnectPrompt(hasApiKey).text}
+                      </p>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          className="btn btn-sm btn-primary"
+                          disabled={isCloudSigningIn}
+                          onClick={async () => {
+                            const pending = pendingCloudConnect;
+                            if (!pending) return;
+                            const ok = await connectWithKey(pending.key, pending.hubUrl);
+                            // Drop the key from memory either way; on failure keep the
+                            // card up with the reason (the sign-in card may be hidden
+                            // when this device already had a key).
+                            setPendingCloudConnect(null);
+                            if (!ok) setCloudConnectError('Connecting to the cloud failed. Try Sign In again.');
+                          }}
+                          style={{ gap: 6 }}
+                        >
+                          {isCloudSigningIn ? <Loader2 size={12} className="spin" /> : <Plug size={12} />}
+                          {cloudConnectPrompt(hasApiKey).confirmLabel}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-ghost"
+                          disabled={isCloudSigningIn}
+                          onClick={() => setPendingCloudConnect(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </>
+                  )}
+                  {cloudConnectError && (
+                    <button
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => setCloudConnectError(null)}
+                      style={{ alignSelf: 'flex-start', fontSize: 11 }}
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </div>
+              </SectionCard>
+            )}
 
             {/* Connect to Cloud Card (local, no API key) */}
             {!isProxied && localStatus?.healthy && !hasApiKey && (
@@ -2137,7 +2234,7 @@ export default function SettingsPage() {
                       </span>
                       <div style={{ marginTop: 6, color: 'var(--color-text-tertiary)', display: 'flex', alignItems: 'center', gap: 5 }}>
                         <Monitor size={10} style={{ flexShrink: 0 }} />
-                        <span>Localhost access always bypasses authentication.</span>
+                        <span>This machine&apos;s own browser never needs to sign in.</span>
                       </div>
                     </div>
                   )}
@@ -2165,8 +2262,10 @@ export default function SettingsPage() {
                     <>
                       <div style={{ borderTop: '1px solid var(--color-border)', margin: '4px 0' }} />
                       <ToggleRow
-                        label="Require authentication"
-                        description="Devices on your local network must first authenticate through the cloud dashboard. Use 'Switch to Local' from the cloud to authorize a device — access is permanent once granted."
+                        label="Allow LAN devices (sign-in required)"
+                        description={lanAuthEnabled
+                          ? 'Devices on your network sign in with the cloud account that owns this device before they can use the dashboard.'
+                          : 'New devices on your network are refused. Devices that already signed in keep access until you revoke them: run "lm-assist token rotate --now --lan-key" on this machine.'}
                         checked={lanAuthEnabled}
                         onChange={handleLanAuthToggle}
                       />
@@ -2184,7 +2283,7 @@ export default function SettingsPage() {
                         }}>
                           <Shield size={12} style={{ flexShrink: 0, marginTop: 2, color: 'var(--color-status-green)' }} />
                           <span>
-                            LAN access is secured. Devices must authenticate via the cloud &quot;Switch to Local&quot; link before accessing the dashboard on the local network.
+                            LAN access is secured. A device opening the dashboard is asked to sign in with the cloud account that owns this device.
                           </span>
                         </div>
                       )}

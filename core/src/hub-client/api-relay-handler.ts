@@ -15,6 +15,34 @@ import { currentApiToken } from '../auth/api-token';
 import * as path from 'path';
 import { WebSocketClient } from './websocket-client';
 
+/** Headers only the relay itself may set, plus every proxy-hop header. A relayed request
+ *  is re-issued by the relay from loopback, so a client-supplied copy of any of these
+ *  would forge trust: `x-relay-source` / `x-lm-user-id` are the relay's own markers, and
+ *  forwarding headers must not reach Core's loopback guards from outside (peer-trust.ts
+ *  treats their presence as "proxied") — if the hub web-proxy ever passes a browser's
+ *  X-Forwarded-* through, a relay-accepting guard must not start refusing the relay.
+ *  (Next still adds its own x-forwarded-host on the /assist → /_coreapi hop, and that
+ *  hop correctly loses loopback trust.) */
+const RELAY_STRIPPED_HEADERS = new Set([
+  'x-relay-source',
+  'x-lm-user-id',
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'x-forwarded-port',
+  'forwarded',
+  'x-real-ip',
+]);
+
+/** Copy `h` without any relay-trust or proxy-hop header (case-insensitive). */
+export function sanitizeRelayHeaders(h?: Record<string, any> | null): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(h || {})) {
+    if (!RELAY_STRIPPED_HEADERS.has(k.toLowerCase())) out[k] = v;
+  }
+  return out;
+}
+
 /** Service route configuration for multi-service routing */
 export interface ServiceRoute {
   /** Path prefix to match (e.g., '/admin', '/assist', '/vibe') */
@@ -444,12 +472,8 @@ export class ApiRelayHandler {
     const targetPort = port || this.options.localApiPort;
 
     return new Promise((resolve, reject) => {
-      // Strip client-supplied trust headers so only the relay can set them.
-      const safeHeaders: Record<string, any> = { ...headers };
-      for (const k of Object.keys(safeHeaders)) {
-        const lk = k.toLowerCase();
-        if (lk === 'x-relay-source' || lk === 'x-lm-user-id') delete safeHeaders[k];
-      }
+      // Strip client-supplied trust + proxy-hop headers so only the relay can set them.
+      const safeHeaders = sanitizeRelayHeaders(headers);
 
       // loopbackOptions → agent:false. Without it this used http.globalAgent, whose
       // keepAlive default flipped to true in Node 19, and a relayed request could land on a

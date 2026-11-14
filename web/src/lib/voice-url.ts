@@ -18,7 +18,7 @@
  * test enforces the two blocks stay BYTE-IDENTICAL — edit both files together.
  */
 
-import { detectAppMode } from './api-client';
+import { detectAppMode, peekBrowserToken } from './api-client';
 
 // ===BEGIN SHARED VOICE URL LOGIC=== (keep byte-identical with core/src/voice/voice-url.ts)
 export interface VoiceWsUrlInput {
@@ -34,7 +34,7 @@ export interface VoiceWsUrlInput {
   pageHostname: string;
   /** detectAppMode().baseUrl, e.g. 'http://127.0.0.1:3200' or '/_coreapi'. */
   coreBaseUrl: string;
-  /** Rotating api token (window.__LM_API_TOKEN__) — rides the query string (browsers can't set WS headers). */
+  /** Rotating api token (fetched at runtime from Core GET /auth/browser-token) — rides the query string (browsers can't set WS headers). */
   token?: string;
 }
 
@@ -84,7 +84,7 @@ export function buildClaudeVoiceWsUrlFromParts(i: VoiceWsUrlInput): string | nul
 export function buildVoiceWsUrl(opts: { isRemoteNode: boolean }): string | null {
   if (typeof window === 'undefined') return null;
   const { mode, baseUrl } = detectAppMode();
-  const token = (window as unknown as { __LM_API_TOKEN__?: string }).__LM_API_TOKEN__ || '';
+  const token = peekBrowserToken() || '';
   return buildVoiceWsUrlFromParts({
     isRemoteNode: opts.isRemoteNode,
     appMode: mode,
@@ -102,7 +102,7 @@ export function buildVoiceWsUrl(opts: { isRemoteNode: boolean }): string | null 
 export function buildClaudeVoiceWsUrl(opts: { isRemoteNode: boolean }): string | null {
   if (typeof window === 'undefined') return null;
   const { mode, baseUrl } = detectAppMode();
-  const token = (window as unknown as { __LM_API_TOKEN__?: string }).__LM_API_TOKEN__ || '';
+  const token = peekBrowserToken() || '';
   return buildClaudeVoiceWsUrlFromParts({
     isRemoteNode: opts.isRemoteNode,
     appMode: mode,
@@ -112,4 +112,24 @@ export function buildClaudeVoiceWsUrl(opts: { isRemoteNode: boolean }): string |
     coreBaseUrl: baseUrl,
     token,
   });
+}
+
+/**
+ * Re-stamp a voice WS URL with the CURRENT cached token just before it is opened.
+ * Voice UIs memoise their URL at mount; if the token was rotated and re-fetched
+ * since (a 401 elsewhere triggers that), the memoised `?token=` is dead. Synchronous
+ * on purpose: every voice UI mounts under a layout whose LAN guard has already
+ * awaited the token bootstrap, so the cache is warm. With nothing cached the URL is
+ * returned unchanged (the relay then refuses it, which the UI already reports).
+ */
+export function withFreshVoiceToken(url: string): string {
+  const token = peekBrowserToken();
+  if (!token) return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.set('token', token);
+    return u.toString();
+  } catch {
+    return url;
+  }
 }

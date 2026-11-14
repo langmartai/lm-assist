@@ -13,6 +13,8 @@ import * as os from 'os';
 import WebSocket from 'ws';
 import { getDataDir, legacyEncodeProjectPath } from './utils/path-utils';
 import { findLiveNonTmuxSession } from './terminal-attach-policy';
+import { getTtydProxyUrl } from './ttyd-proxy';
+import { mintTtydCap } from './auth/ttyd-cap';
 import {
   IS_WINDOWS,
   IS_POSIX,
@@ -111,6 +113,21 @@ export interface TtydInstanceRecord {
 
 const TTYD_BASE_PORT = 7681;
 const TTYD_PORT_RANGE = 500; // 7681-8180
+
+/**
+ * ttyd listens on loopback only. Every view reaches a terminal through Core's
+ * authenticated proxy (/ttyd-proxy/<port>/c/<cap>/ — see ttyd-proxy.ts) or through the
+ * hub relay's loopback dial into that proxy; nothing needs ttyd's own port on the LAN.
+ * And ttyd 1.6.3 has no credential of its own while every terminal is writable, so a
+ * LAN-reachable ttyd would be an unauthenticated shell. `127.0.0.1` rather than the
+ * interface name `lo`, so the same argument also works on macOS (`lo0`); measured on
+ * ttyd 1.6.3: `ttyd -p N -i 127.0.0.1` opens a 127.0.0.1-only listener. Windows never
+ * spawns ttyd (startTtyd/startShell refuse there).
+ */
+export function ttydLoopbackArgs(): string[] {
+  return ['-i', '127.0.0.1'];
+}
+
 const CLAUDE_BINARY = getClaudeBinaryPath();
 const PID_SESSION_MAP_LOG = path.join(os.homedir(), '.claude/pid-session-map.log');
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude/projects');
@@ -470,7 +487,7 @@ async function checkTtydHttp(port: number, timeoutMs: number): Promise<boolean> 
     const http = require('http');
     const timeout = setTimeout(() => resolve(false), timeoutMs);
 
-    const req = http.get(`http://localhost:${port}/`, (res: any) => {
+    const req = http.get(`http://127.0.0.1:${port}/`, (res: any) => {
       clearTimeout(timeout);
       resolve(res.statusCode === 200);
     });
@@ -689,6 +706,18 @@ export class TtydInstanceStore {
     return this.instances.get(id);
   }
 
+  /** The newest (by startedAt) starting/running record on `port` — the instance the
+   *  ttyd proxy may reach and its capability is bound to. */
+  getActiveByPort(port: number): TtydInstanceRecord | undefined {
+    let best: TtydInstanceRecord | undefined;
+    for (const record of this.instances.values()) {
+      if (record.port !== port) continue;
+      if (record.status !== 'starting' && record.status !== 'running') continue;
+      if (!best || record.startedAt.localeCompare(best.startedAt) > 0) best = record;
+    }
+    return best;
+  }
+
   getActivePorts(): Set<number> {
     const ports = new Set<number>();
     for (const record of this.instances.values()) {
@@ -819,6 +848,19 @@ export class TtydManager {
 
   constructor() {
     this.store = new TtydInstanceStore();
+  }
+
+  /** The active Core-managed ttyd instance on `port` (the ttyd proxy's reach check). */
+  activeInstanceForPort(port: number): { id: string } | undefined {
+    const rec = this.store.getActiveByPort(port);
+    return rec ? { id: rec.id } : undefined;
+  }
+
+  /** The browser-facing URL for a managed terminal: the proxy path with a capability
+   *  bound to the instance, so it works in an iframe (which cannot send headers). */
+  proxyUrlForPort(port: number, baseUrl: string): string {
+    const inst = this.activeInstanceForPort(port);
+    return getTtydProxyUrl(port, baseUrl, inst ? mintTtydCap(port, inst.id) : undefined);
   }
 
   /**
@@ -1607,6 +1649,7 @@ export class TtydManager {
         // - Session ends when browser tab is closed
         ttydArgs = [
           '-p', String(port),
+          ...ttydLoopbackArgs(),
           '-o', // Once mode: exit when client disconnects
           '-t', `theme=${terminalStyle.theme}`,
           '-t', `fontFamily=${terminalStyle.fontFamily}`,
@@ -1659,6 +1702,7 @@ export class TtydManager {
         const tmuxCmd = `${selectCmd}tmux new-session -t ${tmuxSessionName} \\; set-option destroy-unattached on`;
         ttydArgs = [
           '-p', String(port),
+          ...ttydLoopbackArgs(),
           '-t', `theme=${terminalStyle.theme}`,
           '-t', `fontFamily=${terminalStyle.fontFamily}`,
           '-t', `fontSize=${terminalStyle.fontSize}`,
@@ -1798,6 +1842,7 @@ export class TtydManager {
 
         ttydArgs = [
           '-p', String(port),
+          ...ttydLoopbackArgs(),
           '-t', `theme=${terminalStyle.theme}`,
           '-t', `fontFamily=${terminalStyle.fontFamily}`,
           '-t', `fontSize=${terminalStyle.fontSize}`,
@@ -1810,6 +1855,7 @@ export class TtydManager {
         // - --chrome NOT supported (use directMode for that)
         ttydArgs = [
           '-p', String(port),
+          ...ttydLoopbackArgs(),
           '-m', '1', // Max 1 client connection when tmux not available
           '-t', `theme=${terminalStyle.theme}`,
           '-t', `fontFamily=${terminalStyle.fontFamily}`,
@@ -1941,6 +1987,7 @@ export class TtydManager {
 
       const ttydArgs = [
         '-p', String(port),
+        ...ttydLoopbackArgs(),
         '-t', `theme=${terminalStyle.theme}`,
         '-t', `fontFamily=${terminalStyle.fontFamily}`,
         '-t', `fontSize=${terminalStyle.fontSize}`,

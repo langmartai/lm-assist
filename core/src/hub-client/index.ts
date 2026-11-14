@@ -564,21 +564,23 @@ export class HubClient extends EventEmitter {
           this.tcpListenerStarted = true;
           try {
             const { setTcpUpgradeDeps } = require('../transport/tcp-upgrade') as typeof import('../transport/tcp-upgrade');
-            const { setFabricSelfTcp } = require('../fabric') as typeof import('../fabric');
+            const { setFabricSelfTcp, getPeerTcpEndpoint } = require('../fabric') as typeof import('../fabric');
             const { listAllOnlineNodeIds } = require('../data/peer-client') as typeof import('../data/peer-client');
             const nodeIp = this.getNodeInfo().ip;
             const port = this.options.localApiPort; // the already-open, LAN-reachable Core port
             setTcpUpgradeDeps({
               isKnownPeer: async (node) => { try { return (await listAllOnlineNodeIds()).includes(node); } catch { return false; } },
+              // Source-IP binding (the channel reads/writes files): the address `node`
+              // advertised over the fabric HELLO — same as the portfwd path below.
+              peerHost: (node) => { try { return getPeerTcpEndpoint(node)?.host ?? null; } catch { return null; } },
               onChannel: (tcpCh) => {
                 handleIncomingTransfer(tcpCh as never, {}).catch((e) =>
                   console.error('[HubClient] inbound TCP transfer failed:', e));
               },
             });
-            // Same roster-only auth answers direct port-forward upgrades on the
-            // Core port, so same-LAN forwards bypass the hub (see portfwd-upgrade.ts).
+            // The same roster + source-IP auth answers direct port-forward upgrades on
+            // the Core port, so same-LAN forwards bypass the hub (see portfwd-upgrade.ts).
             const { setPortfwdUpgradeDeps } = require('../transport/portfwd-upgrade') as typeof import('../transport/portfwd-upgrade');
-            const { getPeerTcpEndpoint } = require('../fabric') as typeof import('../fabric');
             setPortfwdUpgradeDeps({
               isKnownPeer: async (node) => { try { return (await listAllOnlineNodeIds()).includes(node); } catch { return false; } },
               // Source-IP binding: the address `node` advertised over the fabric HELLO.

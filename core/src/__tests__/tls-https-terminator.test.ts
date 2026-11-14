@@ -9,6 +9,7 @@ import type { AddressInfo } from 'net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { classifyTerminatorRequest, startHttpsTerminator } from '../tls/https-terminator';
 import { ensureTlsCert } from '../tls/cert-manager';
+import { hasForwardingHeaders } from '../auth/peer-trust';
 
 // ---------- pure routing ----------
 
@@ -43,6 +44,8 @@ let termPort = 0;
 let caPem = '';
 const wsServers: WebSocketServer[] = [];
 const wsClients: WebSocket[] = [];
+// Headers of the last in-process core dispatch (peer-trust check below).
+let lastCoreHeaders: http.IncomingHttpHeaders = {};
 
 function httpsGet(pathName: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
@@ -97,6 +100,7 @@ before(async () => {
     cert,
     webPort,
     coreRequest: (req, res) => {
+      lastCoreHeaders = req.headers;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ from: 'core', url: req.url, proto: req.headers['x-forwarded-proto'] }));
     },
@@ -138,4 +142,13 @@ test('terminator: wss /voice/stt/ws upgrade reaches the core upgrade router', as
 test('terminator: non-core wss upgrades proxy through to the web server', async () => {
   const msg = await wssFirstMessage('/_next/webpack-hmr');
   assert.equal(msg, 'web-ws:/_next/webpack-hmr');
+});
+
+test('terminator: in-process dispatch adds x-forwarded-proto ONLY — Core still sees a direct peer', async () => {
+  // peer-trust treats forwarding-header PRESENCE as a proxy hop; the terminator's
+  // dispatch runs on the real TLS socket, so it must not look proxied to Core.
+  const r = await httpsGet('/_coreapi/auth/browser-token');
+  assert.equal(r.status, 200);
+  assert.equal(lastCoreHeaders['x-forwarded-proto'], 'https');
+  assert.equal(hasForwardingHeaders(lastCoreHeaders), false);
 });

@@ -95,6 +95,10 @@ export default function ConsoleDashboardPage() {
   // Build ttyd URL map from managed processes
   // In proxy mode, skip localhost URLs — the auto-start flow will use
   // apiClient.startTerminal() which returns hub-proxied URLs with auth tokens
+  // ttyd URLs are OPAQUE and come only from Core: each carries the per-instance
+  // capability that authorizes the iframe, and ttyd itself listens on loopback, so
+  // a URL built here from the port alone could never connect. A managed process
+  // without a url simply gets none; auto-start / startAllTerminals fills it in.
   const ttydUrlMap = useMemo(() => {
     const map = new Map<string, string>();
     if (proxy.isProxied) return map; // Let auto-start handle URL generation
@@ -102,9 +106,6 @@ export default function ConsoleDashboardPage() {
       for (const proc of processData.managed) {
         if (proc.sessionId && proc.url) {
           map.set(proc.sessionId, resolveConsoleUrl(proc.url));
-        } else if (proc.sessionId && proc.port) {
-          const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-          map.set(proc.sessionId, `http://${host}:${proc.port}`);
         }
       }
     }

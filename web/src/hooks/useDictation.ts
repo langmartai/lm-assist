@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { withFreshVoiceToken } from '@/lib/voice-url';
 
 export type DictationState = 'idle' | 'listening' | 'transcribing' | 'error';
 
@@ -77,7 +78,7 @@ export function useDictation(opts: { wsUrl: string }) {
       const node = new AudioWorkletNode(ctx, 'mic-downsampler');
       nodeRef.current = node;
 
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(withFreshVoiceToken(wsUrl));
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 

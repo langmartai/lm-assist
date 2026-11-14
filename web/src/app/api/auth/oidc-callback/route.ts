@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync } from 'fs';
 import { randomBytes } from 'crypto';
-import { homedir } from 'os';
-import path from 'path';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { serverAuthHeader } from '@/lib/server-auth';
+import { coreBaseUrlServer, serverAuthHeader } from '@/lib/server-auth';
+import { assistConfigFile, readAssistConfig, writeAssistConfig } from '@/lib/assist-config';
 import { deriveIssuer, requestOrigin } from '@/lib/oidc-issuer';
 
 const COOKIE_NAME = 'lm_oidc';
 const CLIENT_ID = 'lm-assist-local';
-const CONFIG_FILE = path.join(homedir(), '.lm-assist', 'assist-config.json');
 
 // Cache one JWKS per issuer (jose handles refresh/cooldown internally).
 const jwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
@@ -50,27 +48,28 @@ export async function GET(req: NextRequest) {
     const { payload } = await jwtVerify(tok.id_token, jwksFor(issuer), { issuer, audience: CLIENT_ID, algorithms: ['RS256'] });
     if (!ck.nonce || payload.nonce !== ck.nonce) return fail(req, 'oidc');
 
-    // 3. The authorization rule — identical to cloud-verify: only the device-bound user is admitted.
-    const apiPort = process.env.LM_LOCAL_API_PORT || process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-    const dr = await fetch(`http://localhost:${apiPort}/hub/user`, { headers: serverAuthHeader() });
+    // 3. The authorization rule: only the device-bound user is admitted.
+    const dr = await fetch(`${coreBaseUrlServer()}/hub/user`, { headers: serverAuthHeader() });
     const dj = await dr.json().catch(() => ({}));
     const deviceUserId: string | undefined = dj?.data?.id;
     if (!dr.ok || !deviceUserId) return fail(req, 'no_hub');
     if (String(payload.sub) !== String(deviceUserId)) return fail(req, 'owner_mismatch');
 
-    // 4. Grant: read/auto-generate the lanAccessToken (same as cloud-verify).
-    let cfg: { lanEnabled?: boolean; lanAuthEnabled?: boolean; lanAccessToken?: string } = {};
-    try { cfg = JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { /* fresh */ }
+    // 4. Grant: read/auto-generate the lanAccessToken.
+    const cfg = readAssistConfig();
+    // LAN access switched off means no LAN browser gets in, owner or not — Core
+    // refuses LAN-key grants in that state, so handing out the key would only
+    // produce a sign-in that bounces straight back here.
+    if (cfg.lanAuthEnabled === false) return fail(req, 'lan_disabled');
     if (!cfg.lanAccessToken) {
       cfg.lanAuthEnabled = true;
       cfg.lanAccessToken = randomBytes(32).toString('hex');
-      mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
       // 0600: the file holds the LAN credential — owner-only.
-      writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+      writeAssistConfig(cfg);
     }
     // Repair perms on EVERY grant, not only on create — a pre-existing file from the
     // old default-mode writers can be 0664 while already holding a token.
-    try { chmodSync(CONFIG_FILE, 0o600); } catch { /* file vanished between read and chmod — grant still valid */ }
+    try { chmodSync(assistConfigFile(), 0o600); } catch { /* file vanished between read and chmod — grant still valid */ }
 
     // 5. Fragment handoff — the token must never appear in a query string / server log.
     // Cookie is HttpOnly but not authenticated input — re-validate with oidc-start's safeReturnTo guard.

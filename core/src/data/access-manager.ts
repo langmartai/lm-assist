@@ -6,6 +6,7 @@ import type {
 import type { DatasetRegistry } from './dataset-registry';
 import type { KeyStore } from './key-store';
 import type { ParsedRequest } from '../routes/index';
+import { hasForwardingHeaders } from '../auth/peer-trust';
 
 const READ_ONLY_ACTIONS: DataAction[] = ['read', 'query', 'search'];
 const TTL_DEFAULT = 3600;       // 1h
@@ -55,15 +56,16 @@ export class AccessManager {
     // NOT get peer trust). Checked BEFORE the loopback→local branch precisely because a peer RPC IS
     // loopback: without this, a peer sync call would resolve to LOCAL ROOT (the pre-W4 bug that made
     // the /data/* fabric allow-list a root-access hole).
-    if (header(req, 'x-relay-source') === 'peer' && isLoopbackAddress(req.clientIp)) {
+    if (header(req, 'x-relay-source') === 'peer' && isLoopbackAddress(req.clientIp) && !hasForwardingHeaders(req.headers)) {
       const node = header(req, 'x-lm-peer-node');
       if (node) return { type: 'peer', node };
       return { type: 'cloud' }; // malformed peer header → untrusted, never local
     }
     // Not relayed: only a genuinely loopback caller (holding the local api-token) is trusted as
     // local root. Any other origin is treated as cloud (no userId) — never local root — which
-    // defends the 0.0.0.0 bind if api-token auth is ever disabled.
-    if (isLoopbackAddress(req.clientIp)) return { type: 'local' };
+    // defends the 0.0.0.0 bind if api-token auth is ever disabled. A loopback socket carrying
+    // forwarding headers is the web's /_coreapi proxy speaking for a LAN browser: cloud, not local.
+    if (isLoopbackAddress(req.clientIp) && !hasForwardingHeaders(req.headers)) return { type: 'local' };
     return { type: 'cloud' };
   }
 
@@ -85,7 +87,7 @@ export class AccessManager {
    * resolves it to plain `cloud` (deny-by-default).
    */
   resolveSyncPrincipal(req: ParsedRequest): Principal {
-    if (header(req, 'x-relay-source') === 'hub' && isLoopbackAddress(req.clientIp)) return { type: 'owner' };
+    if (header(req, 'x-relay-source') === 'hub' && isLoopbackAddress(req.clientIp) && !hasForwardingHeaders(req.headers)) return { type: 'owner' };
     return this.resolvePrincipal(req);
   }
 

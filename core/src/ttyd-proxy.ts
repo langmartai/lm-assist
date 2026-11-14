@@ -3,6 +3,16 @@
  *
  * This solves cross-origin issues by serving ttyd through the same origin,
  * allowing the frontend to control xterm.js (e.g., scroll to bottom).
+ *
+ * Authentication: ttyd itself has no credential and every terminal is writable, so
+ * this proxy is the gate (rest-server dispatches it BEFORE the api-token gate because
+ * it authenticates itself — an iframe cannot send a header). A request passes with
+ * EITHER a valid `x-api-key` header (the hub relay, ConsoleRelayHandler, scripts) OR a
+ * valid path capability `/ttyd-proxy/<port>/c/<cap>/…` (terminal iframes; see
+ * auth/ttyd-cap.ts). It then reaches ONLY ports held by an active Core-managed ttyd
+ * instance (TtydInstanceStore): the proxy used to dial ANY local port, which made it an
+ * open relay to every loopback service on the host. Unauthenticated requests always get
+ * 401 — before the managed check — so they learn nothing about which ports exist.
  */
 
 import * as http from 'http';
@@ -10,6 +20,8 @@ import httpProxy from 'http-proxy';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Socket } from 'net';
 import type { Duplex } from 'stream';
+import { apiAuthEnabled, isValidToken, resolveProvidedApiKey } from './auth/api-token';
+import { verifyTtydCap } from './auth/ttyd-cap';
 
 // Create proxy server
 const proxy = httpProxy.createProxyServer({
@@ -27,26 +39,79 @@ proxy.on('error', (err: Error, req: IncomingMessage, res: ServerResponse | Socke
 });
 
 /**
- * Extract port from proxy path
+ * Parse a proxy path.
  * Path formats:
- *   /ttyd-proxy/:port/...  — local proxy path (used by admin-web iframes)
- *   /ttyd/:port/...        — Hub relay path (used when accessed via langmart.ai)
+ *   /ttyd-proxy/:port/c/:cap/...  — local iframe path carrying a capability
+ *   /ttyd-proxy/:port/...         — local proxy path (header-authenticated callers)
+ *   /ttyd/:port/...               — Hub relay path (used when accessed via langmart.ai)
  *
  * The Hub relay strips its prefix and forwards as /ttyd/:port/... which needs
  * the same proxy treatment as /ttyd-proxy/:port/... (e.g., /ttyd/7684/token
  * must reach the actual ttyd /token endpoint for WebSocket reconnection).
+ * `rest` keeps any query string exactly as received.
  */
-function extractPort(url: string): { port: number; path: string } | null {
-  const match = url.match(/^\/ttyd(?:-proxy)?\/(\d+)(\/.*)?$/);
+export function parseTtydProxyUrl(url: string): { port: number; cap: string | null; rest: string } | null {
+  const match = url.match(/^\/ttyd(?:-proxy)?\/(\d+)(?:\/c\/([A-Za-z0-9_-]{43}))?(\/.*)?$/);
   if (!match) return null;
 
   const port = parseInt(match[1], 10);
-  const path = match[2] || '/';
-
   if (isNaN(port) || port < 1 || port > 65535) return null;
 
-  return { port, path };
+  return { port, cap: match[2] || null, rest: match[3] || '/' };
 }
+
+export type TtydAuthDecision = 'ok' | 'unauthorized' | 'not-managed';
+
+export interface TtydProxyDeps {
+  /** The active Core-managed ttyd instance on this port, if any. */
+  activeInstanceForPort(port: number): { id: string } | undefined;
+}
+
+// Lazy: importing the proxy must never construct the instance store (ttyd-manager
+// computes INSTANCE_STORE_PATH from the data dir at import time).
+const defaultDeps: TtydProxyDeps = {
+  activeInstanceForPort: (p) =>
+    (require('./ttyd-manager') as typeof import('./ttyd-manager')).getTtydManager().activeInstanceForPort(p),
+};
+
+/** Authenticate FIRST (no port oracle), then require a Core-managed instance. */
+export function authorizeTtydRequest(
+  input: { port: number; cap: string | null; apiKey: string | null; serverApiKey?: string },
+  deps: TtydProxyDeps = defaultDeps,
+): TtydAuthDecision {
+  const inst = deps.activeInstanceForPort(input.port);
+  if (apiAuthEnabled()) {
+    const headerOk = isValidToken(input.apiKey) || (!!input.serverApiKey && input.apiKey === input.serverApiKey);
+    const capOk = !!(input.cap && inst && verifyTtydCap(input.cap, input.port, inst.id));
+    if (!headerOk && !capOk) return 'unauthorized';
+  }
+  if (!inst) return 'not-managed';
+  return 'ok';
+}
+
+export interface TtydProxyOptions {
+  /** The server's static --api-key, accepted like the ring token (as the main gate does). */
+  serverApiKey?: string;
+  deps?: TtydProxyDeps;
+}
+
+function decide(req: IncomingMessage, parsed: { port: number; cap: string | null }, opts?: TtydProxyOptions): TtydAuthDecision {
+  return authorizeTtydRequest(
+    {
+      port: parsed.port,
+      cap: parsed.cap,
+      apiKey: resolveProvidedApiKey(req.headers['x-api-key']),
+      serverApiKey: opts?.serverApiKey,
+    },
+    opts?.deps ?? defaultDeps,
+  );
+}
+
+const UNAUTHORIZED_HTML =
+  '<!doctype html><meta charset="utf-8"><title>Terminal not authorized</title>' +
+  '<body style="font:14px system-ui,sans-serif;padding:1.5em;color:#bbb;background:#111">' +
+  'This terminal link is not authorized (it may have expired after a token rotation). ' +
+  'Reload the dashboard to get a fresh terminal link.</body>';
 
 /**
  * CSS and JS injected into ttyd HTML pages.
@@ -254,7 +319,9 @@ const TTYD_INJECTED_CSS = `
  */
 function fetchAndInjectCss(port: number, res: ServerResponse): void {
   const proxyReq = http.request(
-    { hostname: 'localhost', port, path: '/', method: 'GET' },
+    // 127.0.0.1, not localhost: ttyd binds loopback IPv4 only (ttydLoopbackArgs), and
+    // `localhost` may resolve to ::1 first.
+    { hostname: '127.0.0.1', port, path: '/', method: 'GET' },
     (proxyRes) => {
       const chunks: Buffer[] = [];
       proxyRes.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -270,14 +337,15 @@ function fetchAndInjectCss(port: number, res: ServerResponse): void {
           html = TTYD_INJECTED_CSS + html;
         }
 
-        // Forward status and relevant headers, update content-length
+        // Forward status and relevant headers, update content-length.
+        // The page URL carries the terminal capability, so: never cache it, and never
+        // leak it in a Referer (xterm's link handler opens terminal URLs in new tabs).
         const headers: Record<string, string> = {
           'Content-Type': proxyRes.headers['content-type'] || 'text/html',
           'Content-Length': String(Buffer.byteLength(html)),
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer',
         };
-        if (proxyRes.headers['cache-control']) {
-          headers['Cache-Control'] = proxyRes.headers['cache-control'] as string;
-        }
         res.writeHead(proxyRes.statusCode || 200, headers);
         res.end(html);
       });
@@ -296,27 +364,43 @@ function fetchAndInjectCss(port: number, res: ServerResponse): void {
 }
 
 /**
- * Handle HTTP requests to ttyd
+ * Handle HTTP requests to ttyd. Returns false when the URL is not a proxy path (the
+ * caller falls through to the normal gate + routes).
  */
 export function handleTtydProxyRequest(
   req: IncomingMessage,
-  res: ServerResponse
+  res: ServerResponse,
+  opts?: TtydProxyOptions,
 ): boolean {
-  const parsed = extractPort(req.url || '');
+  const parsed = parseTtydProxyUrl(req.url || '');
   if (!parsed) return false;
 
-  const { port, path } = parsed;
+  const verdict = decide(req, parsed, opts);
+  if (verdict === 'unauthorized') {
+    res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(UNAUTHORIZED_HTML);
+    return true;
+  }
+  if (verdict === 'not-managed') {
+    res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+    res.end('Not a managed terminal');
+    return true;
+  }
+
+  // Never forward the ring token to ttyd (or to whatever happens to own the port).
+  delete req.headers['x-api-key'];
+  const { port, rest } = parsed;
 
   // For root page requests, inject CSS + scroll-to-bottom JS into the HTML
-  if (path === '/') {
+  if (rest === '/') {
     fetchAndInjectCss(port, res);
     return true;
   }
 
-  const target = `http://localhost:${port}`;
+  const target = `http://127.0.0.1:${port}`;
 
-  // Rewrite the URL to remove the proxy prefix
-  req.url = path;
+  // Rewrite the URL to remove the proxy prefix (and the capability segment)
+  req.url = rest;
 
   proxy.web(req, res, { target }, (err: Error) => {
     console.error('[ttyd-proxy] HTTP proxy error:', err.message);
@@ -330,21 +414,30 @@ export function handleTtydProxyRequest(
 }
 
 /**
- * Handle WebSocket upgrade requests to ttyd
+ * Handle WebSocket upgrade requests to ttyd — same decision as the HTTP path.
  */
 export function handleTtydProxyUpgrade(
   req: IncomingMessage,
   socket: Duplex,
-  head: Buffer
+  head: Buffer,
+  opts?: TtydProxyOptions,
 ): boolean {
-  const parsed = extractPort(req.url || '');
+  const parsed = parseTtydProxyUrl(req.url || '');
   if (!parsed) return false;
 
-  const { port, path } = parsed;
-  const target = `http://localhost:${port}`;
+  const verdict = decide(req, parsed, opts);
+  if (verdict !== 'ok') {
+    const line = verdict === 'unauthorized' ? 'HTTP/1.1 401 Unauthorized' : 'HTTP/1.1 404 Not Found';
+    try { socket.write(`${line}\r\nConnection: close\r\n\r\n`); } catch { /* socket gone */ }
+    try { socket.destroy(); } catch { /* already destroyed */ }
+    return true;
+  }
 
-  // Rewrite the URL to remove the proxy prefix
-  req.url = path;
+  delete req.headers['x-api-key'];
+  const target = `http://127.0.0.1:${parsed.port}`;
+
+  // Rewrite the URL to remove the proxy prefix (and the capability segment)
+  req.url = parsed.rest;
 
   proxy.ws(req, socket, head, { target }, (err: Error) => {
     console.error('[ttyd-proxy] WebSocket proxy error:', err.message);
@@ -363,8 +456,13 @@ export function isTtydProxyPath(url: string): boolean {
 }
 
 /**
- * Get the proxied URL for a ttyd instance
+ * Get the proxied URL for a ttyd instance. With a capability (TtydManager.proxyUrlForPort
+ * mints one) the URL works in an iframe; without one it needs an x-api-key header.
  */
-export function getTtydProxyUrl(port: number, baseUrl: string = `http://localhost:${__dirname.includes('node_modules') ? 3100 : 3200}`): string {
-  return `${baseUrl}/ttyd-proxy/${port}/`;
+export function getTtydProxyUrl(
+  port: number,
+  baseUrl: string = `http://localhost:${__dirname.includes('node_modules') ? 3100 : 3200}`,
+  cap?: string,
+): string {
+  return cap ? `${baseUrl}/ttyd-proxy/${port}/c/${cap}/` : `${baseUrl}/ttyd-proxy/${port}/`;
 }

@@ -7,7 +7,7 @@
  *  over the LAN, never through the hub relay, and never performed by an agent. */
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
-import { isLoopbackAddress } from '../../auth/enroll-exempt';
+import { isDirectLoopbackPeer } from '../../auth/peer-trust';
 import { discoverPlugins, type DiscoveryOptions, type PluginRecord } from '../../mcp-server/plugins/discovery';
 import { readState, writeState } from '../../mcp-server/plugins/state-store';
 import { readPluginAudit } from '../../mcp-server/plugins/audit';
@@ -34,8 +34,10 @@ function validName(name: string): boolean {
   return typeof name === 'string' && SEGMENT_RE.test(name) && name.length <= 24;
 }
 
+// A DIRECT loopback caller only: not through the web's /_coreapi rewrite (forwarding
+// headers) and not through the hub relay — exactly what the refusal message promises.
 function requireLoopback(req: ParsedRequest): Envelope | null {
-  return isLoopbackAddress(req.clientIp)
+  return isDirectLoopbackPeer(req.clientIp, req.headers)
     ? null
     : fail('FORBIDDEN', 'local-only endpoint: enabling or configuring a plugin is an owner action at the console, never over the LAN or the hub relay');
 }

@@ -28,10 +28,16 @@ import { mergeIngestRecords } from '../../memory/merge-ingest';
 import { createMemoryApiImpl } from '../../api/memory-api';
 import { getHubConfig } from '../../hub-client/hub-config';
 import { getProjectsDir, legacyEncodeProjectPath, decodePath } from '../../utils/path-utils';
-import { isLoopbackAddress } from '../../auth/enroll-exempt';
+import { isDirectLoopbackPeer } from '../../auth/peer-trust';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// Loopback AND no proxy hop: the web's /_coreapi rewrite reaches Core from 127.0.0.1 on
+// behalf of a LAN browser (marked by forwarding headers). The hub relay's direct dial is
+// still accepted — relayed calls are further gated on the body node key below.
+const isLocalCaller = (req: ParsedRequest): boolean =>
+  isDirectLoopbackPeer(req.clientIp, req.headers, { allowRelay: true });
 
 function sha256(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 
@@ -66,7 +72,7 @@ function relaySource(req: ParsedRequest): string | undefined {
  *   - loopback, no relay header      → genuine local caller (already past Core's api-token gate)
  */
 function authorized(req: ParsedRequest, bodyKey: unknown): boolean {
-  if (!isLoopbackAddress(req.clientIp)) return false;
+  if (!isLocalCaller(req)) return false;
   if (relaySource(req) === 'hub') return typeof bodyKey === 'string' && bodyKey.length > 0;
   return true;
 }
@@ -191,7 +197,7 @@ export function createMemorySyncRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/memory\/sync\/enable$/,
       handler: async (req: ParsedRequest) => {
         const start = Date.now();
-        if (!isLoopbackAddress(req.clientIp)) return wrapError('FORBIDDEN', 'local-only endpoint', start);
+        if (!isLocalCaller(req)) return wrapError('FORBIDDEN', 'local-only endpoint', start);
         const b = (req.body || {}) as { homeNode?: string; homeProject?: string; project?: string; cwd?: string };
         if (!b.homeNode || !b.homeProject) return wrapError('INVALID_INPUT', 'homeNode and homeProject are required', start);
         // localProject = this node's slug for the repo: explicit `project`, else encode `cwd`, else fall back to homeProject.
@@ -209,7 +215,7 @@ export function createMemorySyncRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/memory\/pull$/,
       handler: async (req: ParsedRequest) => {
         const start = Date.now();
-        if (!isLoopbackAddress(req.clientIp)) return wrapError('FORBIDDEN', 'local-only endpoint', start);
+        if (!isLocalCaller(req)) return wrapError('FORBIDDEN', 'local-only endpoint', start);
         const cfg = readMemorySyncConfig();
         if (cfg.nodeMode !== 'ephemeral' || !cfg.homeNode || !(cfg.homeProject || cfg.project)) {
           return wrapResponse({ pulled: 0, skipped: 'not an ephemeral node with a home + project configured' }, start);

@@ -76,7 +76,7 @@ See `docs/…` access-manager: `resolvePrincipal` + `evaluateGrants`.
 
 **Layers:** W1 link (`fabric/peer-link.ts:53`, `peer-manager.ts:32`) → W2 transmission (`fabric-link.ts:68` RPC/msgpack, `chunking.ts` >64KB, `compression.ts` path-aware gzip) → W3 bus (`bus/bus.ts:73` fanout, `:188` catch-up).
 
-**Channels:** RELAY (always, hub WS `0xFD`) → DIRECT (IPv4 UDP, `via==='host'`) → **TCP-for-LAN** (HTTP-Upgrade `lm-tcp/1` on the Core API port, 100–225 MB/s). Relay→direct upgrade via `link.onChannel()`+`channelSwapped()`.
+**Channels:** RELAY (always, hub WS `0xFD`) → DIRECT (IPv4 UDP, `via==='host'`) → **TCP-for-LAN** (HTTP-Upgrade `lm-tcp/1` on the Core API port, 100–225 MB/s; accepted only from an online fleet node connecting from the address it advertised over the fabric HELLO — the same source-IP binding as `lm-portfwd/1`, see `tcp-upgrade.ts` TRUST; a mismatch answers 403 and the sender falls back to the hybrid channel). Relay→direct upgrade via `link.onChannel()`+`channelSwapped()`.
 
 **Kill-switches** (`project-settings.ts:103-108`): `fabricEnabled=true`, `busEnabled=true`, `fabricCompressionEnabled=true`, **`fabricRpcEnabled=false`**, **`dataSyncViaFabric=false`**.
 

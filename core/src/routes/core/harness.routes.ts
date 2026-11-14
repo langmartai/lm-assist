@@ -23,6 +23,7 @@
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
 import { isLoopbackAddress } from '../../auth/enroll-exempt';
+import { FORWARDING_HEADERS, RELAY_HEADER } from '../../auth/peer-trust';
 import { describeHarnesses, getCapabilities, getHarness } from '../../harness/registry';
 import {
   describeProviderConfig,
@@ -76,8 +77,13 @@ const PROBE_TIMEOUT_MS = 8000;
  * Headers that mark a request as having come THROUGH something to reach Core's
  * loopback socket: the hub relay (`x-relay-source`) or the web's `/_coreapi`
  * rewrite (Next's proxy adds `x-forwarded-host`; other proxies the rest).
+ *
+ * Deliberately STRICTER than peer-trust's shared list: it also refuses
+ * `x-forwarded-proto`, which the HTTPS terminator sets on its in-process dispatch.
+ * This write is console-only (curl on the host, straight at Core), so the desk
+ * browser on the terminator has no business reaching it either.
  */
-const PROXY_MARKERS = ['x-relay-source', 'x-forwarded-host', 'x-forwarded-for', 'x-forwarded-proto'];
+const PROXY_MARKERS: readonly string[] = [RELAY_HEADER, ...FORWARDING_HEADERS, 'x-forwarded-proto'];
 
 /**
  * Loopback AND not relayed or proxied.

@@ -14,7 +14,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
-import { isLoopbackAddress } from '../../auth/enroll-exempt';
+import { isDirectLoopbackPeer } from '../../auth/peer-trust';
 import { getHubConfig } from '../../hub-client/hub-config';
 import {
   listMachines,
@@ -31,6 +31,12 @@ import { execFile } from 'child_process';
 import { parseSshConfig, buildImportCandidates } from '../../machine-access/ssh-config';
 import { buildSshProbeArgs, classifyProbe } from '../../machine-access/probe';
 import type { LastCheck } from '../../machine-access/store';
+
+// Loopback-only writes: a DIRECT loopback caller — a request that arrived through the
+// web's /_coreapi rewrite (forwarding headers) is a LAN caller wearing 127.0.0.1. The hub
+// relay's direct dial stays accepted, as before.
+const isLocalCaller = (req: ParsedRequest): boolean =>
+  isDirectLoopbackPeer(req.clientIp, req.headers, { allowRelay: true });
 
 const PROBE_CONNECT_TIMEOUT_S = 8;
 
@@ -77,7 +83,7 @@ export function createMachineAccessRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/machine-access\/machines\/(?<id>[^/]+)$/,
       handler: async (req: ParsedRequest) => {
         const start = Date.now();
-        if (!isLoopbackAddress(req.clientIp)) {
+        if (!isLocalCaller(req)) {
           return wrapError('FORBIDDEN', 'local-only endpoint', start);
         }
         const id = decodeURIComponent(req.params.id || '');
@@ -97,7 +103,7 @@ export function createMachineAccessRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/machine-access\/machines\/(?<id>[^/]+)$/,
       handler: async (req: ParsedRequest) => {
         const start = Date.now();
-        if (!isLoopbackAddress(req.clientIp)) {
+        if (!isLocalCaller(req)) {
           return wrapError('FORBIDDEN', 'local-only endpoint', start);
         }
         const id = decodeURIComponent(req.params.id || '');
@@ -113,7 +119,7 @@ export function createMachineAccessRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/machine-access\/machines\/(?<id>[^/]+)\/check$/,
       handler: async (req: ParsedRequest) => {
         const start = Date.now();
-        if (!isLoopbackAddress(req.clientIp)) {
+        if (!isLocalCaller(req)) {
           return wrapError('FORBIDDEN', 'local-only endpoint', start);
         }
         const id = decodeURIComponent(req.params.id || '');
@@ -135,7 +141,7 @@ export function createMachineAccessRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/machine-access\/import$/,
       handler: async (req: ParsedRequest) => {
         const start = Date.now();
-        if (!isLoopbackAddress(req.clientIp)) {
+        if (!isLocalCaller(req)) {
           return wrapError('FORBIDDEN', 'local-only endpoint', start);
         }
         const body = (req.body || {}) as { apply?: boolean; path?: string };

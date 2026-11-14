@@ -17,7 +17,13 @@ dev instances. They differ only in which local core API they talk to:
 The core port is chosen at **request time**, not build time:
 
 - `web/src/app/layout.tsx` reads `process.env.LM_LOCAL_API_PORT` and injects
-  `window.__LM_LOCAL_API_PORT__` into the HTML.
+  `window.__LM_LOCAL_API_PORT__` into the HTML — and **only** that. The layout used to
+  inline the Core api-token too (`window.__LM_API_TOKEN__`), which handed full node
+  authority to anything that could fetch a page; no HTML carries a credential now. A
+  direct (non-hub) browser fetches the token at runtime from Core's
+  `GET /auth/browser-token`, which judges the real socket peer or a LAN key
+  ([browser-auth](./browser-auth.md)). A **hub-proxied** browser needs no token at all:
+  the hub relay injects `x-api-key` server-side on every relayed request.
 - `detectAppMode()` in `web/src/lib/api-client.ts` prefers that injected value
   over the build-time-baked `NEXT_PUBLIC_LOCAL_API_PORT` (which is only a
   fallback).

@@ -12,9 +12,11 @@
  *
  * Mechanics:
  *  - Minted only by a full-token caller (POST /auth/scoped-tokens).
- *  - Sent by the browser in the SAME `x-api-key` header (CORS already allows
- *    it); the rest-server auth gate falls back to validateScopedRequest()
- *    when the ring token check fails.
+ *  - Sent by the browser in the SAME `x-api-key` header; the rest-server auth
+ *    gate falls back to validateScopedRequest() when the ring token check fails.
+ *    CORS reflects ANY origin on the scope routes only (isScopedRoute, used by
+ *    auth/origin-policy.ts) so a foreign-origin embed keeps working; every
+ *    other route is allow-listed to this machine's own web origins.
  *  - Persisted to `<dataDir>/scoped-tokens.json` (0600) so an open browser
  *    tab survives a core restart.
  *  - A scope is a fixed allow-list of (method, path-regex) pairs compiled in
@@ -68,6 +70,16 @@ const SCOPE_ROUTES: Record<ScopeName, Array<{ method: string; pattern: RegExp }>
     { method: 'GET', pattern: /^\/claude-ai\/conversations\/named$/ },
   ],
 };
+
+/** True when (method, path) is on ANY scope's route allow-list. CORS uses it to keep
+ *  any-origin reflection for scoped-token embeds while allow-listing everything else. */
+export function isScopedRoute(method: string, pathName: string): boolean {
+  const m = (method || '').toUpperCase();
+  for (const routes of Object.values(SCOPE_ROUTES)) {
+    if (routes.some((r) => r.method === m && r.pattern.test(pathName))) return true;
+  }
+  return false;
+}
 
 export function isKnownScope(s: unknown): s is ScopeName {
   return typeof s === 'string' && Object.prototype.hasOwnProperty.call(SCOPE_ROUTES, s);

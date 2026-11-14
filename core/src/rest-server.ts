@@ -6,9 +6,12 @@
 
 import * as http from 'http';
 import { getEventLoopMonitor } from './diagnostics/event-loop-monitor';
-import { startApiTokenRotation, isValidToken, apiAuthEnabled, isLocalAddress, resolveProvidedApiKey } from './auth/api-token';
+import { startApiTokenRotation, isValidToken, apiAuthEnabled, resolveProvidedApiKey } from './auth/api-token';
 import { validateScopedRequest } from './auth/scoped-token';
 import { isEnrollExempt } from './auth/enroll-exempt';
+import { isDirectLocalPeer } from './auth/peer-trust';
+import { corsHeadersFor, isAllowedWebOrigin, isOwnHost, resolveWebPorts } from './auth/origin-policy';
+import { handleBrowserTokenRequest } from './auth/browser-token';
 import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
@@ -45,6 +48,24 @@ export function busEventToSse(e: BusEvent): { type: 'bus_event'; timestamp: Date
     type: 'bus_event', timestamp: new Date(), tier: 'system',
     data: { topic: e.topic, origin: e.origin, seq: e.seq, eventType: e.type, at: e.at, id: `${e.origin}:${e.seq}` },
   };
+}
+
+/**
+ * Parse a request target for routing, or null when it does not parse.
+ *
+ * The base is FIXED: only `.pathname` and `.searchParams` are used, and neither depends
+ * on the base host. The old base was `http://${Host}`, so a syntactically invalid Host
+ * (`Host: a b`) made `new URL` throw — on the open /health route, i.e. unauthenticated,
+ * and outside any try, which killed Core. A fixed base alone is not enough: an
+ * absolute-form or protocol-relative target (`http://[/x`, `//x:99999/x`) still throws,
+ * hence the try.
+ */
+export function parseRequestTarget(rawUrl: string | undefined): URL | null {
+  try {
+    return new URL(rawUrl || '/', 'http://localhost');
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================================
@@ -376,11 +397,13 @@ export class TierRestServer {
   }
 
   private handleClaudeTasksSSE(req: http.IncomingMessage, res: http.ServerResponse): void {
+    // No CORS header here: routeRequest already staged the allow-listed ones
+    // (corsHeadersFor). A header given to writeHead REPLACES a staged one, so an
+    // `Access-Control-Allow-Origin: *` here overrode the allow-list for any Origin.
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
     });
 
     const connectedEvent = JSON.stringify({
@@ -421,7 +444,7 @@ export class TierRestServer {
     getEventLoopMonitor().start();
 
     return new Promise((resolve, reject) => {
-      this.server = http.createServer((req, res) => this.handleRequest(req, res));
+      this.server = http.createServer((req, res) => this.dispatchRequest(req, res));
 
       // Handle upgrades: ttyd WebSocket proxy, or the lm-tcp file-transfer path
       // (direct-TCP-for-LAN rides the Core port via an HTTP Upgrade — no
@@ -481,7 +504,8 @@ export class TierRestServer {
   /** Upgrade router shared by the plain-HTTP listener and the HTTPS terminator. */
   private routeUpgrade(req: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer): void {
     if (req.url && isTtydProxyPath(req.url)) {
-      handleTtydProxyUpgrade(req, socket, head);
+      // Authenticates itself (x-api-key or a path capability) — see ttyd-proxy.ts.
+      handleTtydProxyUpgrade(req, socket, head, { serverApiKey: this.options.apiKey });
     } else if (isTcpUpgrade(req)) {
       handleTcpUpgrade(req, socket, head);
     } else if (isPortfwdUpgrade(req)) {
@@ -508,11 +532,8 @@ export class TierRestServer {
 
     // Same prod/dev detection pattern as cli.ts (LM_ASSIST_PROD overrides).
     const isProdInstall = process.env.LM_ASSIST_PROD === 'true' || __dirname.includes('node_modules');
-    const webPort = parseInt(
-      process.env.WEB_PORT || process.env.ASSIST_WEB_PORT || (isProdInstall ? '3848' : '3948'),
-      10,
-    );
-    const httpsPort = parseInt(process.env.LM_HTTPS_PORT || String(webPort + 1), 10);
+    // One source of truth with the CORS allow-list (auth/origin-policy.ts).
+    const { webPort, httpsPort } = resolveWebPorts();
     const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(homedir(), '.lm-assist');
     const tlsDir = path.join(dataDir, isProdInstall ? 'tls' : 'tls-dev');
 
@@ -525,7 +546,7 @@ export class TierRestServer {
       key: tls.key,
       cert: tls.cert,
       webPort,
-      coreRequest: (req, res) => this.handleRequest(req, res),
+      coreRequest: (req, res) => this.dispatchRequest(req, res),
       coreUpgrade: (req, socket, head) => this.routeUpgrade(req, socket, head),
       log: (m) => console.log(m),
     });
@@ -578,12 +599,45 @@ export class TierRestServer {
   // Request Handling
   // --------------------------------------------------------------------------
 
+  /**
+   * Listener entry (plain HTTP + the HTTPS terminator). Fire-and-forget: nothing
+   * awaits a request handler, so a rejection escaping it would be an
+   * unhandledRejection — which on Node ≥ 15 kills Core (MCP, hub relay, terminals)
+   * with nothing to restart it. handleRequest never rejects; the .catch is the last
+   * line in case the error responder itself throws.
+   */
+  private dispatchRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+    this.handleRequest(req, res).catch((err) => {
+      console.error('[Server] request error escaped the handler:', (err as Error)?.message || err);
+      try { res.destroy(); } catch { /* already gone */ }
+    });
+  }
+
+  /** Every request, answered: a thrown/rejected route path becomes a 500, never a crash. */
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // CORS headers
+    try {
+      await this.routeRequest(req, res);
+    } catch (err) {
+      console.error(`[Server] ${req.method} ${(req.url || '').split('?')[0].slice(0, 200)} failed:`, (err as Error)?.message || err);
+      try {
+        if (!res.headersSent) {
+          // Generic on purpose: this can run before the auth gate.
+          this.sendJson(res, 500, { success: false, error: { code: 'INTERNAL_ERROR', message: 'Internal server error' } });
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      } catch {
+        try { res.destroy(); } catch { /* already gone */ }
+      }
+    }
+  }
+
+  private async routeRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    // CORS: reflect the Origin only for this machine's own web origins (plus any origin
+    // on the scoped-token routes) — never `*`. Requests without an Origin (CLI, MCP,
+    // hooks, fabric, hub relay) are unaffected. See auth/origin-policy.ts.
     if (this.options.cors) {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+      for (const [k, v] of Object.entries(corsHeadersFor(req.method, req.url, req.headers))) res.setHeader(k, v);
     }
 
     // Handle preflight
@@ -593,11 +647,20 @@ export class TierRestServer {
       return;
     }
 
-    // Handle ttyd proxy requests (bypasses authentication)
+    // ttyd proxy: dispatched BEFORE the api-token gate because it authenticates itself —
+    // an iframe cannot send a header, so it presents a path capability instead (or the
+    // relay/scripts send x-api-key). Only Core-managed ttyd ports are reachable.
     if (req.url && isTtydProxyPath(req.url)) {
-      if (handleTtydProxyRequest(req, res)) {
+      if (handleTtydProxyRequest(req, res, { serverApiKey: this.options.apiKey })) {
         return;
       }
+    }
+
+    // The browser's runtime token fetch — its own gate (real socket peer or LAN key),
+    // so it too runs before the api-token gate. See auth/browser-token.ts.
+    if ((req.url || '').split('?')[0] === '/auth/browser-token') {
+      handleBrowserTokenRequest(req, res);
+      return;
     }
 
     // API token authentication (rotating ring; /health open for liveness).
@@ -607,12 +670,20 @@ export class TierRestServer {
       // Optional: trust requests from this machine itself (the local desk) so a
       // local browser whose web build can't attach the token still works.
       // LAN/remote callers still need the token. Off unless LM_ASSIST_API_AUTH_EXEMPT_LOCAL=1.
+      // "This machine" means the REAL socket peer with no proxy hop in between (the
+      // web's /_coreapi rewrite makes every LAN caller look like loopback), a Host that
+      // names this machine (DNS rebinding), and no foreign Origin (a drive-by page's
+      // simple POST would otherwise ride the exemption).
+      const origin = req.headers['origin'];
       const exemptLocal = process.env.LM_ASSIST_API_AUTH_EXEMPT_LOCAL === '1'
-        && isLocalAddress(req.socket.remoteAddress);
+        && isDirectLocalPeer(req.socket.remoteAddress, req.headers)
+        && isOwnHost(req.headers.host)
+        && (!origin || isAllowedWebOrigin(origin));
       // Node-enrollment routes are tokenless from STRICT loopback only AND only when
-      // there is no browser Origin (blocks drive-by CSRF); the keypack is the credential.
-      // LAN/remote/browser callers still need the token. See enroll-exempt.ts.
-      const enrollExempt = isEnrollExempt(req.method, authPath, req.socket.remoteAddress, req.headers['origin']);
+      // there is no browser Origin (blocks drive-by CSRF) and no proxy/relay hop; the
+      // keypack is the credential. LAN/remote/browser callers still need the token.
+      // See enroll-exempt.ts.
+      const enrollExempt = isEnrollExempt(req.method, authPath, req.socket.remoteAddress, origin, req.headers);
       // The WhatsApp Cloud API webhook is called by Meta's servers, which
       // cannot present the lm-assist token. It carries its own auth: a verify
       // token on the GET handshake and an HMAC-SHA256 body signature on POST
@@ -684,6 +755,10 @@ export class TierRestServer {
 
     // Parse request
     const parsed = await this.parseRequest(req);
+    if (!parsed) {
+      this.sendJson(res, 400, { success: false, error: { code: 'BAD_REQUEST', message: 'Malformed request target' } });
+      return;
+    }
 
     // Find matching route
     for (const route of this.modularRoutes) {
@@ -757,8 +832,10 @@ export class TierRestServer {
     });
   }
 
-  private async parseRequest(req: http.IncomingMessage): Promise<ParsedRequest> {
-    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+  /** null ⇒ the request target does not parse (answer 400). */
+  private async parseRequest(req: http.IncomingMessage): Promise<ParsedRequest | null> {
+    const url = parseRequestTarget(req.url);
+    if (!url) return null;
     const { body, rawBody } = await this.parseBody(req);
 
     return {
@@ -807,7 +884,11 @@ export class TierRestServer {
   // --------------------------------------------------------------------------
 
   private handleSSE(req: http.IncomingMessage, res: http.ServerResponse): void {
-    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+    const url = parseRequestTarget(req.url);
+    if (!url) {
+      this.sendJson(res, 400, { success: false, error: { code: 'BAD_REQUEST', message: 'Malformed request target' } });
+      return;
+    }
     const executionId = url.searchParams.get('executionId') || undefined;
     const lastEventIdStr = url.searchParams.get('lastEventId');
     const lastEventId = lastEventIdStr ? parseInt(lastEventIdStr, 10) : undefined;

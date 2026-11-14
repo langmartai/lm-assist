@@ -1,11 +1,13 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Shield, Globe, LogIn, Loader2, CheckCircle, XCircle, Info } from 'lucide-react';
-import { detectAppMode, detectProxyInfo, workerFetch } from '@/lib/api-client';
+import { Shield, Globe, LogIn, Loader2, CheckCircle, XCircle, Info, RefreshCw } from 'lucide-react';
+import { bootstrapBrowserAuth, detectProxyInfo, resetBrowserToken } from '@/lib/api-client';
 
 type VerifyStatus = 'idle' | 'waiting' | 'verifying' | 'success' | 'error';
+
+const UNREACHABLE_MESSAGE = "Can't reach this device's API right now. Try again.";
 
 export default function LanBlockedPage() {
   const router = useRouter();
@@ -13,6 +15,11 @@ export default function LanBlockedPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cloudBound, setCloudBound] = useState<boolean | null>(null);
   const [expired, setExpired] = useState(false);
+  const [unreachable, setUnreachable] = useState(false);
+  const [probing, setProbing] = useState(false);
+  // Set when this load carries an OIDC grant; the access probe then stays out of the
+  // way so it cannot race the grant's own redirect to returnTo.
+  const grantedRef = useRef(false);
 
   // Fragment grant handoff from /api/auth/oidc-callback (#granted=<token>&returnTo=<path>).
   // Runs first, before any other mount effect, so the token is captured and the
@@ -21,7 +28,10 @@ export default function LanBlockedPage() {
     const h = new URLSearchParams(window.location.hash.replace(/^#/, ''));
     const granted = h.get('granted');
     if (!granted) return;
+    grantedRef.current = true;
     localStorage.setItem('assist_access_key', granted);
+    // A token cached (or a refusal cached) under the previous key must not outlive it.
+    resetBrowserToken();
     const rt = h.get('returnTo') || '/';
     // Same-origin relative path only — mirrors oidc-start/oidc-callback's safeReturnTo guard.
     const dest = /^\/(?![/\\])[^\x00-\x1f\x7f]*$/.test(rt) ? rt : '/';
@@ -30,26 +40,35 @@ export default function LanBlockedPage() {
     setTimeout(() => router.replace(dest), 800);
   }, [router]);
 
-  // If user is actually local (localhost or same-machine LAN IP), redirect to dashboard
-  useEffect(() => {
-    const hostname = window.location.hostname;
-    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
-    if (isLocalhost) { router.replace('/'); return; }
-
-    const proxyInfo = detectProxyInfo();
-    if (proxyInfo.isProxied) { router.replace('/'); return; }
-
-    // Check via Core API if the request originates from this machine
-    const { baseUrl } = detectAppMode();
-    workerFetch(`${baseUrl}/auth/is-local`, { signal: AbortSignal.timeout(2000) })
-      .then(r => r.json())
-      .then(data => {
-        if (data?.data?.isLocal === true) {
-          router.replace('/');
-        }
-      })
-      .catch(() => { /* not local or API unreachable — stay on blocked page */ });
+  // Already allowed in (this machine's own browser, or a LAN key Core accepts)?
+  // Ask Core directly — it judges the real socket peer — and go to the dashboard
+  // only on a grant. No blanket localhost redirect: when Core refuses a localhost
+  // page (e.g. an origin it does not recognise), bouncing to / would loop with the
+  // dashboard guard, which sends that page right back here.
+  const probeAccess = useCallback(async () => {
+    setProbing(true);
+    try {
+      const { status } = await bootstrapBrowserAuth({ force: true });
+      if (grantedRef.current) return;
+      if (status === 'ok' || status === 'not-needed') { router.replace('/'); return; }
+      if (status === 'unreachable') {
+        setUnreachable(true);
+        setErrorMessage(UNREACHABLE_MESSAGE);
+      } else {
+        // Core answered (with a refusal), so a stale "can't reach" notice is wrong now.
+        setUnreachable(false);
+        setErrorMessage((m) => (m === UNREACHABLE_MESSAGE ? null : m));
+      }
+    } finally {
+      setProbing(false);
+    }
   }, [router]);
+
+  useEffect(() => {
+    if (grantedRef.current) return;
+    if (detectProxyInfo().isProxied) { router.replace('/'); return; }
+    void probeAccess();
+  }, [router, probeAccess]);
 
   // "Session expired" vs first-time visit — the dashboard guard appends
   // ?expired=1 when it removes a stale/invalid cached token.
@@ -65,12 +84,17 @@ export default function LanBlockedPage() {
   useEffect(() => {
     const code = new URLSearchParams(window.location.search).get('error');
     if (!code) return;
+    if (code === 'unreachable') setUnreachable(true);
     setErrorMessage(
       code === 'owner_mismatch'
         ? "This account is not the owner bound to this device. Sign in with the device owner's account."
         : code === 'no_hub'
           ? 'This device is not connected to a cloud account. Connect it on localhost first.'
-          : 'Sign-in failed. Try again.',
+          : code === 'unreachable'
+            ? UNREACHABLE_MESSAGE
+            : code === 'lan_disabled'
+              ? 'LAN access is turned off on this device. Turn on "Allow LAN devices" in Settings on the device itself.'
+              : 'Sign-in failed. Try again.',
     );
   }, []);
 
@@ -234,6 +258,32 @@ export default function LanBlockedPage() {
             <XCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
             <span>{errorMessage}</span>
           </div>
+        )}
+
+        {/* Core unreachable: the guard failed closed. Let the user re-ask Core. */}
+        {unreachable && verifyStatus !== 'success' && (
+          <button
+            onClick={() => { void probeAccess(); }}
+            disabled={probing}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              padding: '8px 16px',
+              borderRadius: 8,
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              background: 'transparent',
+              color: 'var(--color-text-secondary, #999)',
+              fontSize: 12,
+              cursor: probing ? 'wait' : 'pointer',
+            }}
+          >
+            {probing
+              ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+              : <RefreshCw size={14} />}
+            Try again
+          </button>
         )}
 
         {/* Manual steps fallback */}

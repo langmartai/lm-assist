@@ -24,12 +24,20 @@ When `LM_HTTPS=1`, the Core process adds ONE `https.Server` (the *terminator*) o
 |---|---|
 | `/_coreapi[/*]` | prefix stripped → Core's request handler **in-process** (REST + SSE; the client socket stays the real remote, so loopback-only route guards keep denying LAN callers) |
 | `/voice/stt/ws` | Core's upgrade router → voice STT relay (`?token=` ring-token auth, unchanged) |
-| `/ttyd-proxy/*`, `/ttyd/*` | Core's terminal proxy (request + upgrade) |
+| `/ttyd-proxy/*`, `/ttyd/*` | Core's terminal proxy (request + upgrade) — **authenticated**: a terminal capability in the path (`/ttyd-proxy/<port>/c/<cap>/`, minted by Core into every terminal URL) or an `x-api-key` header; 401 without either, 404 for a port that is not a Core-managed ttyd. See [browser-auth](./browser-auth.md) |
 | everything else | proxied to the local Next web server (`ws:true`, so dev HMR passes) |
 
 Client side, `detectAppMode()` returns `{ mode:'local', baseUrl:'/_coreapi' }` on any
 non-hub https page, so every fetch/SSE goes same-origin. `buildVoiceWsUrl()`
 (`web/src/lib/voice-url.ts`) emits `wss://<page-host>/voice/stt/ws?token=…` there.
+
+The `?token=` value is the ring token the page **fetched at runtime** from Core's
+`GET /auth/browser-token` (via `/_coreapi/auth/browser-token` on this origin) — no HTML
+carries it any more. The terminator's in-process dispatch keeps the real TLS socket as the
+peer and adds only `x-forwarded-proto`, which is deliberately not a proxy-hop marker, so
+the desk on `https://localhost:<port>` is still recognised as this machine while a LAN
+device needs its LAN key. Single-use voice tickets (replacing the ring token in the WS
+URL) are deferred — see [browser-auth](./browser-auth.md).
 
 ## Enabling
 

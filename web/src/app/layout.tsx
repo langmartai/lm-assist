@@ -24,6 +24,13 @@ export const metadata: Metadata = {
 // (:3948 → core :3200, launched with LM_LOCAL_API_PORT=3200). Injected into the
 // client as window.__LM_LOCAL_API_PORT__; detectAppMode() prefers it. Domain/port
 // agnostic — nothing hardcoded.
+//
+// The HTML carries NO credential. This layout renders for anyone who can reach the
+// web port (a LAN device, a relayed hub request, a 404 page), and it cannot tell who
+// is asking — Host and X-Forwarded-* are caller-controlled. The browser fetches its
+// Core token at runtime from Core's GET /auth/browser-token instead (see
+// bootstrapBrowserAuth in lib/api-client.ts), and Core decides on the real socket
+// peer. Do not inject any secret here.
 export const dynamic = 'force-dynamic';
 
 export default function RootLayout({
@@ -32,16 +39,6 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   const localApiPort = process.env.LM_LOCAL_API_PORT || '';
-  // Read the worker's rotating API token (server-side; this layout runs on the
-  // worker host in local mode). Injected to the browser so local-mode fetches
-  // can send x-api-key. In hub mode there is no local file -> empty -> the hub
-  // relay injects the token server-side instead.
-  let lmApiToken = '';
-  try {
-    const _fs = require('fs'); const _os = require('os'); const _path = require('path');
-    const _dir = process.env.LM_ASSIST_DATA_DIR || _path.join(_os.homedir(), '.lm-assist');
-    lmApiToken = _fs.readFileSync(_path.join(_dir, 'api-token'), 'utf8').trim();
-  } catch { /* hub mode / no file */ }
   return (
     <html lang="en">
       <head>
@@ -49,13 +46,6 @@ export default function RootLayout({
           <script
             dangerouslySetInnerHTML={{
               __html: `window.__LM_LOCAL_API_PORT__=${JSON.stringify(localApiPort)};`,
-            }}
-          />
-        ) : null}
-        {lmApiToken ? (
-          <script
-            dangerouslySetInnerHTML={{
-              __html: `window.__LM_API_TOKEN__=${JSON.stringify(lmApiToken)};`,
             }}
           />
         ) : null}

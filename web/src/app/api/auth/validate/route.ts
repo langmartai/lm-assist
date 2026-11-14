@@ -1,25 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { readFileSync } from 'fs';
 import { timingSafeEqual } from 'crypto';
-import { homedir } from 'os';
-import path from 'path';
-
-const CONFIG_FILE = path.join(homedir(), '.lm-assist', 'assist-config.json');
-
-interface AssistConfig {
-  lanEnabled?: boolean;
-  lanAuthEnabled?: boolean;
-  lanAccessToken?: string;
-}
-
-function readConfig(): AssistConfig {
-  try {
-    const raw = readFileSync(CONFIG_FILE, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
+import { readAssistConfig } from '@/lib/assist-config';
 
 /**
  * POST /api/auth/validate — Validate a LAN access token
@@ -35,12 +16,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ valid: false });
   }
 
-  const config = readConfig();
+  const config = readAssistConfig();
   const lanAuthEnabled = config.lanAuthEnabled ?? true;
 
   if (!lanAuthEnabled) {
-    // Auth explicitly disabled — treat as valid (no gate)
-    return NextResponse.json({ valid: true });
+    // LAN access is switched OFF (only this machine may use the dashboard), so no
+    // LAN key is valid — Core refuses LAN-key grants in this state too. This used
+    // to answer true ("no gate"), which is the opposite of what the setting means now.
+    return NextResponse.json({ valid: false });
   }
 
   if (!config.lanAccessToken) {
@@ -48,8 +31,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ valid: false });
   }
 
-  const expected = config.lanAccessToken;
-  const valid = token.length === expected.length
-    && timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+  // Compare BYTE lengths: equal string lengths can still differ in bytes (non-ASCII
+  // input), and timingSafeEqual throws on a length mismatch.
+  const given = Buffer.from(token);
+  const expected = Buffer.from(config.lanAccessToken);
+  const valid = given.length === expected.length && timingSafeEqual(given, expected);
   return NextResponse.json({ valid });
 }

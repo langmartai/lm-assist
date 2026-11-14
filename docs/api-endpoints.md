@@ -11,6 +11,18 @@
 |--------|----------|-------------|
 | GET | `/health` | Health check |
 | GET | `/status` | Server status (uptime, project path) |
+| GET | `/auth/is-local` | `{ isLocal }` — true only for a DIRECT local peer: a request that carries a forwarding header (`x-forwarded-for`/`-host`, `forwarded`, `x-real-ip` — e.g. via the web's `/_coreapi` rewrite) or `x-relay-source` is never local. Kept for compatibility; the browser uses `/auth/browser-token` |
+
+### Browser auth & tokens
+
+**Full model:** [`docs/browser-auth.md`](./browser-auth.md).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/auth/browser-token` | The browser's runtime token fetch (no HTML carries the token). Its own gate, dispatched before the api-token gate: requires `X-LM-Client: web`; issues `{ token, via, expiresAt: null }` to a direct local peer with an own `Host`, or to a caller with a valid `X-LM-LAN-Key` while `lanAuthEnabled`. Relayed → 403, foreign `Origin` → 403, otherwise 401. `Cache-Control: no-store`. Ignores `x-api-key` |
+| GET | `/auth/check` | Behind the gate. Re-validates the presented `x-api-key` against the ring itself → `{ valid: true }` or 401. `lmsc_` scoped tokens never pass. Used by the web server to authenticate its state-changing routes |
+| POST | `/auth/token/rotate` | Operator revoke-now `{ regenerateLanKey? }` → `{ rotatedAt, revokedCount, lanKeyRegenerated }` (no secrets). Token required AND a direct loopback caller with no `Origin`, no forwarding or relay header — else 403. Every old token (current + grace) dies at once; re-read `<dataDir>/api-token`. CLI: `node core/dist/cli.js token rotate --now` |
+| POST/GET/DELETE | `/auth/scoped-tokens[/:id]` | Mint / list / revoke narrow `lmsc_` tokens (see [claude-ai-routes](./claude-ai-routes.md)) |
 
 ### Sessions (27 endpoints)
 | Method | Endpoint | Description |
@@ -155,7 +167,11 @@ Server-sent events with `execution_update` events. Omit `executionId` for all ev
 | POST | `/ttyd/start` | Start ttyd for a session |
 | POST | `/ttyd/stop` | Stop ttyd server |
 | GET | `/ttyd/status` | Get ttyd status |
-| GET | `/ttyd/processes` | List session processes |
+| GET | `/ttyd/processes` | List session processes. `hash` is `<processHash>.<tokenGeneration>` — opaque; it changes on any token rotation so clients refetch terminal URLs |
+| GET/WS | `/ttyd-proxy/:port/c/:cap/…` | Terminal iframe URL, as returned in every `url`/`ttydUrl` field. `:cap` is a 43-char capability bound to that ttyd instance (see [browser-auth](./browser-auth.md)); treat the whole URL as opaque |
+| GET/WS | `/ttyd-proxy/:port/…`, `/ttyd/:port/…` | Same proxy for header-authenticated callers (`x-api-key`: the hub relay, scripts) |
+
+The ttyd proxy authenticates itself (it runs before the api-token gate because an iframe cannot send headers): a valid `x-api-key` OR a valid capability. Unauthenticated → **401** on every port (no port oracle); authenticated but not an active Core-managed ttyd instance → **404** `Not a managed terminal`. The proxy never forwards `x-api-key` to ttyd, and ttyd itself listens on `127.0.0.1` only.
 
 ### Hub Client (6 endpoints)
 | Method | Endpoint | Description |
