@@ -265,11 +265,12 @@ function killByPort(port) {
 function killAllLmAssistProcesses() {
   if (!isWindows) return;
   const myPid = process.pid;
+  const ppid = process.ppid || 0;
   try {
     // PowerShell one-liner: find node.exe processes with lm-assist in cmdline, kill them
     const psCmd = [
       `Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue`,
-      `| Where-Object { $_.CommandLine -like '*lm-assist*' -and $_.ProcessId -ne ${myPid} }`,
+      `| Where-Object { $_.CommandLine -like '*lm-assist*' -and $_.ProcessId -ne ${myPid} -and $_.ProcessId -ne ${ppid} }`,
       `| ForEach-Object {`,
       `    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}`,
       `    $_.ProcessId`,

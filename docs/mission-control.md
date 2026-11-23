@@ -56,8 +56,7 @@ Design: [`docs/superpowers/specs/2026-07-22-auto-model-limit-mitigation-design.m
 ### Controller session exists only while there is DEMAND (`missionControllerColdMin`)
 
 The supervisor computes a controller **demand** every tick (`computeControllerDemand`):
-`none` (no non-terminal mission), `active` (an `active` mission), `warm` (open missions, one touched
-within `missionControllerColdMin`, default 60 min) or `cold` (open missions, none touched for that long).
+`none` (no non-terminal mission), `active` (an `active` mission touched — via `updatedAt`, `createdAt`, `interim.at`, `progress.updatedAt`, or `binding.boundAt` — within `missionControllerColdMin`, default 60 min), `warm` (open non-active missions, one touched within `missionControllerColdMin`) or `cold` (open missions, including abandoned `active` ones, with none touched for that long).
 
 - `none` / `cold` → a live controller is **torn down** (history reason names the cause) and a dead one is
   **not launched**. A default install therefore runs no controller session until a mission exists.

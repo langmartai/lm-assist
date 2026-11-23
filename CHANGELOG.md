@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.6] - 2026-11-23
 
 ### Upgrade notes
 - **A pinned connector needs an updated hub.** An older hub drops `?profile=` without a word and answers
@@ -8,6 +8,8 @@
   a pinned connector names its profile; when it names none, the hub or node that answered predates pins.
 
 ### Added
+- **Google Gemini Desktop App and Gemini CLI MCP integration.** Added endpoints `GET/POST /claude-code/ide-mcp/(gemini|gemini-cli|gemini-app)` (and activate/deactivate), detecting Windows Gemini Desktop app at `%LOCALAPPDATA%\Google\Gemini\Gemini.exe` (or `app-*\Gemini.exe`) and Gemini CLI `gemini` in PATH. Added CLI command `lm-assist mcp gemini [status|add|remove] [--mode stdio|hub|both] [--profile P]` (aliases `gemini-cli`, `gemini-app`) and web UI settings support, configuring `~/.gemini/settings.json` with local stdio (`LM_MCP_PROFILE`) and/or LangMart Hub Streamable HTTP (`lm-assist-hub`).
+- **Antigravity CLI (`agy`) and Antigravity IDE/Desktop MCP integration.** Added endpoints `GET/POST /claude-code/ide-mcp/antigravity-cli` (and alias `/agy`) alongside `/antigravity`, CLI command `lm-assist mcp antigravity [status|add|remove] [--mode stdio|hub|both] [--profile P]` (and alias `lm-assist mcp agy`), and web UI settings support. Supports both local stdio (with `LM_MCP_PROFILE` and forward slashes) and LangMart Hub Streamable HTTP (`lm-assist-hub`).
 - **One claude.ai connector per tool loading profile, at `https://mcp.<domain>/mcp/<profile>`.** The hub
   relays it to the node as `/mcp?profile=<profile>`, a pin that holds for that connector alone, so several
   connectors can each carry their own profile against one node. A stdio server is pinned with
@@ -34,6 +36,8 @@
   unpinned clients get. A pinned connector keeps its own profile.
 
 ### Fixed
+- **Mission Control demand gate (`missionControllerColdMin`) now retires abandoned `active` missions and recovers from cloud drive failures.** `computeControllerDemand` previously treated any `status: "active"` mission as permanently `'active'` regardless of age, keeping a background Mission Controller Claude session alive indefinitely when stale `"active"` missions survived in a node's replica. Active missions now respect `missionControllerColdMin` (evaluating last touch across `updatedAt`, `createdAt`, `interim.at`, `progress.updatedAt`, and `binding.boundAt`), `driveFailureStreak` checks both `cs.sessionId` and `cs.cse`, and failed cloud drives fall back to native terminal prompt delivery when a local session is available.
+- **Antigravity MCP config path fix.** Corrected the config path from `~/.gemini/antigravity/mcp_config.json` to canonical `~/.gemini/config/mcp_config.json`, which is the true path read by both Antigravity Desktop and Antigravity CLI (`agy`) on Windows.
 - **`platform` also lists the LangMart plugin under its old name, `ext__langmart-design__*`.** That name stays
   on a node where `langmart` could not be enabled, and 0.2.4 peers keep advertising it; `platform` and its
   connector used to show none of the LangMart tools there, and `GET /mcp-tools/profile` reported

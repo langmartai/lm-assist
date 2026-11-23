@@ -730,31 +730,58 @@ export function controllerRecordOwnedHere(
  * Controller DEMAND — is there any work for a controller session to exist for?
  *
  *   none   — no non-terminal mission at all (fresh install, or everything done/failed)
- *   active — at least one mission is `active` (an executor is running / being driven)
+ *   active — at least one mission is `active` AND either `coldMs <= 0` or it has been
+ *            touched (updatedAt / createdAt / interim.at / progress.updatedAt / binding.boundAt)
+ *            within `coldMs`
  *   warm   — non-terminal missions exist (waiting/draft/paused/blocked) and one was
  *            touched within `coldMs` — the controller may still need to place / answer
- *   cold   — non-terminal missions exist but NOTHING has been touched for `coldMs`
+ *   cold   — non-terminal missions exist (including abandoned `active` ones) but NOTHING
+ *            has been touched for `coldMs`
  *
  * Requested 2026-09: a default install must not keep a controller session alive
  * with nothing to control (it costs a live claude process + a claude.ai/code
  * session for a `⟦HEARTBEAT⟧ idle — 0 active missions` loop), and a controller
  * whose missions have gone cold should be torn down and come back on demand.
- * `coldMs <= 0` disables the cold verdict (missions present ⇒ warm).
+ * `coldMs <= 0` disables the cold verdict (missions present ⇒ active/warm).
  */
 export type ControllerDemand = 'none' | 'active' | 'warm' | 'cold';
 const TERMINAL_MISSION_STATUSES: ReadonlySet<string> = new Set(['done', 'failed']);
 
+function missionLastTouch(m: {
+  updatedAt?: number;
+  createdAt?: number;
+  interim?: { at?: number } | null;
+  progress?: { updatedAt?: number } | null;
+  binding?: { boundAt?: number } | null;
+}): number {
+  return Math.max(
+    m.updatedAt ?? 0,
+    m.createdAt ?? 0,
+    m.interim?.at ?? 0,
+    m.progress?.updatedAt ?? 0,
+    m.binding?.boundAt ?? 0,
+  );
+}
+
 export function computeControllerDemand(
-  missions: ReadonlyArray<{ status: string; updatedAt?: number; createdAt?: number }>,
+  missions: ReadonlyArray<{
+    status: string;
+    updatedAt?: number;
+    createdAt?: number;
+    interim?: { at?: number } | null;
+    progress?: { updatedAt?: number } | null;
+    binding?: { boundAt?: number } | null;
+  }>,
   now: number,
   coldMs: number,
 ): ControllerDemand {
   const open = missions.filter((m) => !TERMINAL_MISSION_STATUSES.has(m.status));
   if (!open.length) return 'none';
-  if (open.some((m) => m.status === 'active')) return 'active';
-  if (coldMs <= 0) return 'warm';
-  const lastTouch = Math.max(...open.map((m) => Math.max(m.updatedAt ?? 0, m.createdAt ?? 0)));
-  return now - lastTouch < coldMs ? 'warm' : 'cold';
+  const hasActive = open.some((m) => m.status === 'active');
+  if (coldMs <= 0) return hasActive ? 'active' : 'warm';
+  const lastTouch = Math.max(...open.map(missionLastTouch));
+  if (now - lastTouch >= coldMs) return 'cold';
+  return hasActive ? 'active' : 'warm';
 }
 
 export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean; notMonitorStreak?: number; indeterminate?: boolean; demand?: ControllerDemand }): { action: 'teardown' | 'launch' | 'drive' | 'idle'; reason?: string } {
@@ -1442,7 +1469,11 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   if (cs && live && deps.recentJournal) {
     try {
       const { driveFailureStreak } = require('./control-journal') as typeof import('./control-journal');
-      const streak = driveFailureStreak(deps.recentJournal() as never, cs.sessionId);
+      const entries = deps.recentJournal() as never;
+      const streak = Math.max(
+        driveFailureStreak(entries, cs.sessionId),
+        cs.cse ? driveFailureStreak(entries, cs.cse) : 0,
+      );
       if (streak >= 3) {
         live = false;
         recoveryReason = `drive-failure streak ${streak} → relaunch (resume-first keeps the session)`;
@@ -2480,8 +2511,17 @@ export function registerMissionController(
           } catch { /* advisory */ }
         };
         if (cs.cse) {
-          await cloudDrive({ sid, text }).then(() => journalDrive('cloud', true)).catch((e: Error) => {
-            console.debug(`[mission-supervisor] drive to ${sid} failed: ${e.message}`);
+          await cloudDrive({ sid, text }).then(() => journalDrive('cloud', true)).catch(async (e: Error) => {
+            console.debug(`[mission-supervisor] cloud drive to ${sid} failed: ${e.message}`);
+            if (cs.sessionId && cs.sessionId !== cs.cse) {
+              try {
+                await getCcController().prompt(cs.sessionId, text);
+                journalDrive('tmux', true);
+                return;
+              } catch (e2) {
+                console.debug(`[mission-supervisor] native fallback drive to ${cs.sessionId} failed: ${(e2 as Error).message}`);
+              }
+            }
             journalDrive('cloud', false, e.message);
           });
         } else {

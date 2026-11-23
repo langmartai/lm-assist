@@ -16,8 +16,15 @@ test('computeControllerDemand: no missions / only done+failed ⇒ none', () => {
   assert.equal(computeControllerDemand([m('done', 1), m('failed', 1)], now, 60 * MIN), 'none');
 });
 
-test('computeControllerDemand: any active mission ⇒ active, whatever its age', () => {
-  assert.equal(computeControllerDemand([m('active', 500), m('done', 0)], now, 60 * MIN), 'active');
+test('computeControllerDemand: active mission within coldMin ⇒ active; abandoned past coldMin ⇒ cold (unless coldMin <= 0)', () => {
+  assert.equal(computeControllerDemand([m('active', 30), m('done', 0)], now, 60 * MIN), 'active');
+  assert.equal(computeControllerDemand([m('active', 500), m('done', 0)], now, 60 * MIN), 'cold');
+  assert.equal(computeControllerDemand([m('active', 500), m('done', 0)], now, 0), 'active');
+  // interim progress within coldMin keeps an active mission active even if updatedAt is older
+  assert.equal(
+    computeControllerDemand([{ status: 'active', updatedAt: now - 500 * MIN, interim: { at: now - 10 * MIN } }], now, 60 * MIN),
+    'active',
+  );
 });
 
 test('computeControllerDemand: open-but-not-active missions are warm within coldMin, cold after', () => {
