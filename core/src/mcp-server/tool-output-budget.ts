@@ -375,7 +375,7 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
     'transfer_queue', 'transfer_cancel', 'elevated_exec', 'elevated_grant', 'elevated_revoke',
     'terminal_prompt', 'terminal_slash', 'terminal_send', 'terminal_interrupt', 'terminal_open_tab',
     'windows_terminal_launch', 'windows_terminal_create', 'windows_terminal_send',
-    'windows_terminal_auto_handle', 'windows_terminal_close', 'github_mutate',
+    'windows_terminal_auto_handle', 'windows_terminal_close', 'github_mutate', 'colab_mutate',
     'refresh_connector_tools', 'set_connector_tool_access', 'set_connector_auto_approve',
     // create/delete write the claude.ai account; `list` is bounded by construction (one line per
     // profile, never tool names), but the guard must not auto-invoke a tool that can create.
@@ -390,7 +390,7 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
   // Read-only, but need an id/argument the guard cannot synthesise safely, or
   // reach a remote/offline peer. Covered statically in the audit doc.
   ...['get_execution', 'mission_session_read', 'get_message_status', 'transfer_status',
-    'ccr_cloud_read', 'ccr_cloud_repos', 'github_query', 'whatsapp_list_chats',
+    'ccr_cloud_read', 'ccr_cloud_repos', 'github_query', 'colab_query', 'whatsapp_list_chats',
     'whatsapp_read_messages', 'whatsapp_search', 'claudeai_list_marketplace_plugins',
     'read_conversation', 'conversation_tokens', 'data_get', 'memory_cross_host', 'memory_import_candidates',
     'rule_cross_host', 'worker_status', 'transfer_list_remote', 'bus_read',

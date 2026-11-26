@@ -265,6 +265,16 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
       console.error('Job manager recover() failed:', err.message);
     }
 
+    // Best-effort auto-activation for detected Antigravity / Gemini CLI MCP configs
+    // (skipped for any target explicitly deactivated by the user).
+    try {
+      const { ensureAutoActivatedIdeMcp } = require('./routes/core/claude-code.routes');
+      const autoRes = ensureAutoActivatedIdeMcp();
+      if (autoRes?.activated?.length) {
+        console.log(`[ide-mcp] Auto-activated: ${autoRes.activated.join(', ')}`);
+      }
+    } catch { /* non-fatal */ }
+
     profiler.end('total');
     profiler.summary();
 

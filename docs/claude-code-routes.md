@@ -53,6 +53,44 @@ macOS is **not yet supported** (Claude Code uses Keychain there rather than the 
 | `GET` | `/claude-code/mcp-servers?limit=` | Anthropic-managed MCP servers connected to this account (Google Drive, etc.). Uses `anthropic-beta: mcp-servers-2025-12-04` + `anthropic-version: 2023-06-01` (not the standard `oauth-2025-04-20`). |
 | `GET` | `/claude-code/mcp-registry?limit=&version=&visibility=&cursor=` | Public MCP marketplace catalog. **No auth required** — public endpoint. |
 
+## IDE & CLI MCP Integrations
+
+Endpoints to inspect, activate, and deactivate `lm-assist` MCP servers across external IDEs and CLI agents (VS Code, Codex, Google Antigravity & `agy` CLI, Gemini CLI, Cursor, Windsurf).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/claude-code/ide-mcp/:ide` | Check MCP integration status for `:ide` (`vscode`, `codex`, `antigravity`, `antigravity-cli`, `agy`, `gemini-cli`, `gemini`, `gemini-app`, `cursor`, `windsurf`). For Antigravity and Gemini, also reports `autoActivateOptedOut`. |
+| `POST` | `/claude-code/ide-mcp/:ide/activate` | Configure `lm-assist` MCP server in target IDE / CLI config file (clearing any prior auto-activation opt-out). Supports `mode: 'stdio' \| 'hub' \| 'both'` and `profile` selection for Antigravity / `agy` and Gemini. |
+| `POST` | `/claude-code/ide-mcp/:ide/deactivate` | Remove `lm-assist` MCP server entries from target IDE / CLI configuration (and persist opt-out in `<dataDir>/ide-mcp-optout.json` for Antigravity / Gemini when fully deactivated). |
+
+### Default Startup Auto-Activation (Antigravity & Gemini)
+
+On Core startup (`core/src/cli.ts`), `ensureAutoActivatedIdeMcp()` automatically activates detected `antigravity` (`agy` or `~/.gemini/config/mcp_config.json`) and `gemini-cli` (`gemini` CLI or Gemini Desktop App) integrations using `mode: 'both'` (`stdio` + `lm-assist-hub`, `profile: 'basic'`), unless:
+- `lm-assist` or `lm-assist-hub` is already configured in the target config file,
+- the operator previously clicked **Deactivate** (persisted in `<dataDir>/ide-mcp-optout.json` via `core/src/utils/ide-mcp-optout.ts`, cleared automatically if re-activated), or
+- `LM_ASSIST_DISABLE_AUTO_IDE_MCP=1` is set in Core's environment.
+
+Both integrations also have dedicated dashboard pages in the Web UI (`:3848`):
+- `/antigravity` (`web/src/app/(dashboard)/antigravity/page.tsx`) — Antigravity IDE / `agy` MCP status, activate/deactivate (`stdio|hub|both`, profile), and `lm-assist mcp antigravity` CLI commands.
+- `/gemini` (`web/src/app/(dashboard)/gemini/page.tsx`) — Gemini CLI / Desktop App MCP controls alongside the Gemini Web browser bridge.
+
+### Antigravity Desktop & agy CLI
+- **Config Path**: `~/.gemini/config/mcp_config.json` (shared between Antigravity Desktop and Antigravity CLI `agy`).
+- **Binary Detection**: Automatically discovers `agy` in PATH or `%LOCALAPPDATA%\agy\bin\agy.exe`.
+- **Modes**:
+  - `stdio`: Configures local `lm-assist` (`node .../mcp-server/index.js`) with `LM_MCP_PROFILE`.
+  - `hub`: Configures remote Streamable HTTP `lm-assist-hub` (`https://mcp.langmart.ai/mcp/:profile`) with Bearer token authentication.
+  - `both`: Configures both local stdio and remote hub instances.
+
+### Google Gemini Desktop App & CLI
+- **Config Path**: `~/.gemini/settings.json` (shared between Google Gemini Windows App and Gemini CLI).
+- **Binary / App Detection**: Automatically discovers Gemini Windows Desktop App at `%LOCALAPPDATA%\Google\Gemini\Gemini.exe` (or `app-*\Gemini.exe`) and Gemini CLI `gemini` in PATH.
+- **Modes**:
+  - `stdio`: Configures local `lm-assist` (`node .../mcp-server/index.js`) with `LM_MCP_PROFILE`.
+  - `hub`: Configures remote Streamable HTTP `lm-assist-hub` (`https://mcp.langmart.ai/mcp/:profile`) with Bearer token authentication.
+  - `both`: Configures both local stdio and remote hub instances.
+
+
 ## Routines / Triggers (CCR)
 
 Full CRUD over the Claude Code **Routines** (a.k.a. *Triggers*) surface — the scheduled cloud agents that run on a cron and fire a CCR (Claude Code Remote) session. lm-assist proxies the upstream `/v1/code/triggers` family (plus `/v1/environment_providers`, needed to build create bodies) using the OAuth bearer + the `ccr-triggers-2026-01-30` fingerprint (see the exceptions table below). Helpers live in `core/src/utils/claude-oauth.ts` (`listRoutines`, `getRoutine`, `createRoutine`, `updateRoutine`, `runRoutine`, `deleteRoutine`, `listRoutineEnvironments`, `getClaudeCodeRoutineRunBudget`).

@@ -18,6 +18,7 @@ import { createHubRoutes } from './hub.routes';
 import { createTmuxRoutes } from './tmux.routes';
 import { createClaudeCodeRoutes } from './claude-code.routes';
 import { createClaudeAIRoutes } from './claude-ai.routes';
+import { createGeminiWebRoutes } from './gemini-web.routes';
 import { createKnowledgeRoutes } from './knowledge.routes';
 import { createKnowledgeSettingsRoutes } from './knowledge-settings.routes';
 import { createSessionSearchRoutes } from './session-search.routes';
@@ -30,6 +31,7 @@ import { createVectorRoutes } from './vector.routes';
 import { createAgentRoutes } from './agent.routes';
 import { createHarnessRoutes } from './harness.routes';
 import { createGithubRoutes } from './github.routes';
+import { createColabRoutes } from './colab.routes';
 import { createMcpApiRoutes } from './mcp-api.routes';
 import { createMcpToolsRoutes } from './mcp-tools.routes';
 import { createMcpPluginsRoutes } from './mcp-plugins.routes';
@@ -94,6 +96,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createAgentRoutes(ctx),
     ...createHarnessRoutes(ctx),
     ...createGithubRoutes(ctx),
+    ...createColabRoutes(ctx),
     ...createHealthRoutes(ctx),
     ...createAuthTokensRoutes(ctx),
     ...createSessionsRoutes(ctx),
@@ -105,6 +108,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createTmuxRoutes(ctx),
     ...createClaudeCodeRoutes(ctx),
     ...createClaudeAIRoutes(ctx),
+    ...createGeminiWebRoutes(ctx),
     ...createKnowledgeRoutes(ctx),
     ...createKnowledgeSettingsRoutes(ctx),
     ...createSessionSearchRoutes(ctx),

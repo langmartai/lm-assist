@@ -117,7 +117,7 @@ const args = process.argv.slice(3);
 // Test hatch: require() with LM_ASSIST_NO_RUN=1 exports helpers and skips CLI execution.
 if (process.env.LM_ASSIST_NO_RUN === '1') { module.exports = { isNpmGreater, missingProfileHelpers }; return; }
 
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'mcp', 'token', 'doctor', 'help'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'colab', 'mcp', 'token', 'doctor', 'help'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -150,6 +150,14 @@ Commands:
                      HTTP via the hub by default, --stdio for the local server.
   mcp remove --profile P
                      Remove that entry.
+  mcp antigravity [status|add|remove] [--mode stdio|hub|both] [--profile P]
+                     Manage Antigravity / agy CLI MCP servers in ~/.gemini/config/mcp_config.json
+                     (alias: mcp agy). Supports local stdio and LangMart Hub proxy.
+  mcp gemini [status|add|remove] [--mode stdio|hub|both] [--profile P]
+                     Manage Google Gemini Desktop App & CLI MCP servers in ~/.gemini/settings.json
+                     (aliases: mcp gemini-cli, mcp gemini-app). Supports local stdio and hub proxy.
+  colab [status|login|usage|sessions|logout] [--auth oauth2|adc]
+                     Manage Google Colab CLI auth, compute-unit credits, and running VM sessions.
   token rotate --now [--lan-key]
                      Revoke EVERY current api-token (no grace) and mint a new
                      one; --lan-key also replaces the LAN access key. Operator
@@ -880,6 +888,145 @@ lm-assist Cloud Setup
   return;
 }
 
+if (command === 'colab') {
+  const readline = require('node:readline');
+  const sub = (!args[0] || args[0].startsWith('-')) ? 'status' : args[0];
+  const authIdx = args.indexOf('--auth');
+  const authEq = args.find(a => a.startsWith('--auth='));
+  const auth = authEq ? authEq.slice('--auth='.length) : (authIdx >= 0 ? args[authIdx + 1] : undefined);
+  if (auth && auth !== 'oauth2' && auth !== 'adc') {
+    console.error('--auth must be "oauth2" or "adc"');
+    process.exit(1);
+  }
+  const askLine = (promptText) => new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(promptText, (answer) => { rl.close(); resolve(answer); });
+  });
+
+  (async () => {
+    try {
+      const running = await isApiHealthy(PROD_API_PORT);
+      if (!running) {
+        console.error('lm-assist services not running. Run `lm-assist start` first.');
+        process.exit(1);
+      }
+      const apiBase = `http://localhost:${PROD_API_PORT}`;
+      const qs = auth ? `?auth=${encodeURIComponent(auth)}` : '';
+
+      if (sub === 'status') {
+        const res = await fetch(`${apiBase}/colab/overview${qs}`, { headers: lmAuthHeader() });
+        const json = await res.json();
+        if (!json.success) { console.error(`Colab status failed: ${errText(json)}`); process.exit(1); }
+        const { doctor, usage, sessions, activeCount } = json.data;
+        console.log(`Colab CLI:   ${doctor?.installed ? `${doctor.version || 'installed'} (${doctor.binary})` : 'not installed'}`);
+        if (doctor && !doctor.installed) {
+          console.log(`Install:     ${doctor.installHint}`);
+          process.exit(0);
+        }
+        console.log(`Account:     ${doctor?.loggedIn ? `${doctor.email || '(signed in)'} [${doctor.authProvider}, expires ${doctor.expiresIn || '?'}]` : 'not signed in'}`);
+        if (doctor?.keyringWarning) console.log(`Keyring:     ${doctor.keyringWarning}`);
+        if (!doctor?.loggedIn) {
+          console.log(`Next step:   lm-assist colab login`);
+          process.exit(0);
+        }
+        if (usage) {
+          console.log(`Credits:     ${usage.computeUnitsBalance ?? '?'} compute units (rate: ${usage.usageRatePerHour ?? '?'}/hr, active assignments: ${usage.activeAssignments ?? '?'})`);
+        }
+        console.log(`Instances:   ${activeCount}`);
+        for (const s of (sessions || [])) {
+          console.log(`  - [${s.name}] ${s.hardware} | ${s.shape} | ${s.variant}${s.status ? ` | ${s.status}` : ''} (${s.endpoint})`);
+        }
+        process.exit(0);
+      }
+
+      if (sub === 'usage' || sub === 'credits') {
+        const res = await fetch(`${apiBase}/colab/usage${qs}`, { headers: lmAuthHeader() });
+        const json = await res.json();
+        if (!json.success) { console.error(`Colab usage failed: ${errText(json)}`); process.exit(1); }
+        const u = json.data?.usage || {};
+        console.log(`Balance:            ${u.computeUnitsBalance ?? '?'} compute units`);
+        console.log(`Usage rate:         ${u.usageRatePerHour ?? '?'}/hr`);
+        console.log(`Active assignments: ${u.activeAssignments ?? '?'}`);
+        process.exit(0);
+      }
+
+      if (sub === 'sessions' || sub === 'instances') {
+        const res = await fetch(`${apiBase}/colab/sessions${qs}`, { headers: lmAuthHeader() });
+        const json = await res.json();
+        if (!json.success) { console.error(`Colab sessions failed: ${errText(json)}`); process.exit(1); }
+        const list = json.data?.sessions || [];
+        if (list.length === 0) {
+          console.log('No active Colab sessions.');
+        } else {
+          for (const s of list) {
+            console.log(`[${s.name}] ${s.endpoint} | Hardware: ${s.hardware} | Shape: ${s.shape} | Variant: ${s.variant}${s.status ? ` | Status: ${s.status}` : ''}`);
+          }
+        }
+        process.exit(0);
+      }
+
+      if (sub === 'logout') {
+        const res = await fetch(`${apiBase}/colab/logout`, {
+          method: 'POST',
+          headers: { ...lmAuthHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(auth ? { auth } : {}),
+        });
+        const json = await res.json();
+        if (!json.success) { console.error(`Colab logout failed: ${errText(json)}`); process.exit(1); }
+        console.log((json.data?.stdout || 'Logged out of Colab CLI.').trim());
+        process.exit(0);
+      }
+
+      if (sub === 'login') {
+        const startRes = await fetch(`${apiBase}/colab/login/start`, {
+          method: 'POST',
+          headers: { ...lmAuthHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(auth ? { auth } : {}),
+        });
+        const startJson = await startRes.json();
+        if (!startJson.success) { console.error(`Colab login failed: ${errText(startJson)}`); process.exit(1); }
+        const d = startJson.data || {};
+        if (d.status === 'already_logged_in') {
+          console.log(`Already signed in as ${d.email || 'Google user'} (${d.provider || 'oauth2'}, expires ${d.expiresIn || '?'}).`);
+          process.exit(0);
+        }
+        if (d.status === 'adc_setup_required') {
+          console.log('\nADC credentials required. Run:\n');
+          console.log(`  ${d.command}\n`);
+          process.exit(1);
+        }
+        if (d.keyringWarning) console.warn(`Warning: ${d.keyringWarning}`);
+        console.log('\nOpen this URL in any browser and approve access:\n');
+        console.log(`  ${d.authUrl}\n`);
+        const code = String(await askLine('Paste the Google authorization code: ')).trim();
+        if (!code) { console.error('Authorization code is required.'); process.exit(1); }
+
+        const compRes = await fetch(`${apiBase}/colab/login/complete`, {
+          method: 'POST',
+          headers: { ...lmAuthHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loginId: d.loginId, code }),
+        });
+        const compJson = await compRes.json();
+        if (!compJson.success) { console.error(`Colab login failed: ${errText(compJson)}`); process.exit(1); }
+        const cd = compJson.data || {};
+        console.log(`\nSigned in as ${cd.email || 'Google user'} (${cd.provider || 'oauth2'}, expires ${cd.expiresIn || '?'}).`);
+        if (cd.persisted === false && cd.keyringWarning) {
+          console.warn(`Warning: ${cd.keyringWarning}`);
+        }
+        process.exit(0);
+      }
+
+      console.error('Usage: lm-assist colab [status|login|usage|sessions|logout] [--auth oauth2|adc]');
+      process.exit(1);
+    } catch (err) {
+      console.error(`Error: ${err.message || err}`);
+      process.exit(1);
+    }
+  })();
+
+  return;
+}
+
 if (command === 'login') {
   const newNode = args.includes('--new-node');
   const ttlIdx = args.indexOf('--ttl');
@@ -1016,10 +1163,307 @@ if (command === 'logout') {
   return;
 }
 
-// ─── Handle `mcp` — Claude Code entries pinned to a tool loading profile ───
-// Writes 'lm-assist-<profile>' into ~/.claude.json (user scope). NEVER touches 'lm-assist-hub':
-// the mission controller and its playbooks call mcp__lm-assist-hub__* and need the full surface.
+// ─── Handle `mcp` ───
 if (command === 'mcp') {
+  if (args[0] === 'antigravity' || args[0] === 'agy') {
+    const subAction = args[1] || 'status';
+    const agyConfigPath = path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json');
+    const findAgyExe = () => {
+      try {
+        const out = require('child_process').execSync(process.platform === 'win32' ? 'where agy 2>nul' : 'which agy 2>/dev/null', { encoding: 'utf8', timeout: 3000 }).trim();
+        if (out) return out.split(/\r?\n/)[0].trim();
+      } catch {}
+      if (process.platform === 'win32') {
+        const local = path.join(os.homedir(), 'AppData', 'Local', 'agy', 'bin', 'agy.exe');
+        if (fs.existsSync(local)) return local;
+      }
+      return null;
+    };
+    const agyBin = findAgyExe();
+
+    if (subAction === 'status') {
+      console.log('Antigravity / agy CLI MCP Integration');
+      console.log(`  Config Path:    ${agyConfigPath} (${fs.existsSync(agyConfigPath) ? 'present' : 'missing'})`);
+      console.log(`  CLI (agy):      ${agyBin ? agyBin + ' (installed)' : 'not found'}`);
+      if (fs.existsSync(agyConfigPath)) {
+        try {
+          const cfg = JSON.parse(fs.readFileSync(agyConfigPath, 'utf8'));
+          const s = cfg.mcpServers || {};
+          console.log(`  lm-assist:      ${s['lm-assist'] ? 'active (stdio)' : 'inactive'}`);
+          if (s['lm-assist']) console.log(`                  ${s['lm-assist'].command} ${(s['lm-assist'].args || []).join(' ')}`);
+          console.log(`  lm-assist-hub:  ${s['lm-assist-hub'] ? 'active (http)' : 'inactive'}`);
+          if (s['lm-assist-hub']) console.log(`                  ${s['lm-assist-hub'].url}`);
+        } catch {
+          console.log('  Config parse error');
+        }
+      }
+      process.exit(0);
+    }
+
+    if (subAction === 'add' || subAction === 'activate') {
+      let cfgMod;
+      try { cfgMod = loadProfileMcpHelpers(); } catch (e) {
+        console.error(`Error: ${e.message}`);
+        process.exit(1);
+      }
+      const profileFlag = cfgMod.readFlagValue(args.slice(2), '--profile');
+      const profile = (profileFlag.value || 'basic').trim();
+      const modeFlag = cfgMod.readFlagValue(args.slice(2), '--mode');
+      const mode = (modeFlag.value || 'both').trim(); // 'stdio' | 'hub' | 'both'
+
+      let data = { mcpServers: {} };
+      try {
+        if (fs.existsSync(agyConfigPath)) {
+          data = JSON.parse(fs.readFileSync(agyConfigPath, 'utf8'));
+          if (!data.mcpServers) data.mcpServers = {};
+        }
+      } catch {
+        data = { mcpServers: {} };
+      }
+
+      const hub = readHubConfig();
+      const hasHub = !!(hub.hubUrl && hub.apiKey);
+
+      if (mode === 'hub' || (mode === 'both' && hasHub)) {
+        const hubMcpUrl = cfgMod.deriveHubMcpUrl(hub.hubUrl);
+        const endpointUrl = hubMcpUrl ? cfgMod.profileMcpUrl(hubMcpUrl, profile) : 'https://mcp.langmart.ai/mcp/' + profile;
+        data.mcpServers['lm-assist-hub'] = {
+          url: endpointUrl,
+          headers: { Authorization: `Bearer ${hub.apiKey}` },
+        };
+      }
+
+      if (mode === 'stdio' || mode === 'both' || !hasHub) {
+        const serverPath = stdioMcpServerPath().replace(/\\/g, '/');
+        data.mcpServers['lm-assist'] = {
+          command: 'node',
+          args: [serverPath],
+          env: { LM_MCP_PROFILE: profile },
+        };
+      }
+
+      const dir = path.dirname(agyConfigPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(agyConfigPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+
+      console.log(`✓ Configured Antigravity & agy CLI MCP in ${agyConfigPath}`);
+      if (data.mcpServers['lm-assist']) console.log(`  - lm-assist: stdio (profile: ${profile})`);
+      if (data.mcpServers['lm-assist-hub']) console.log(`  - lm-assist-hub: http (${data.mcpServers['lm-assist-hub'].url})`);
+      if (agyBin) console.log(`  Compatible with agy CLI at ${agyBin}`);
+      process.exit(0);
+    }
+
+    if (subAction === 'remove' || subAction === 'deactivate') {
+      if (!fs.existsSync(agyConfigPath)) {
+        console.log(`Config file does not exist: ${agyConfigPath}`);
+        process.exit(0);
+      }
+      try {
+        const data = JSON.parse(fs.readFileSync(agyConfigPath, 'utf8'));
+        if (data && data.mcpServers) {
+          delete data.mcpServers['lm-assist'];
+          delete data.mcpServers['lm-assist-hub'];
+          fs.writeFileSync(agyConfigPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+        }
+        console.log(`✓ Removed lm-assist MCP entries from ${agyConfigPath}`);
+      } catch (e) {
+        console.error(`Failed to update ${agyConfigPath}: ${e.message}`);
+        process.exit(1);
+      }
+      process.exit(0);
+    }
+
+    console.error('Usage: lm-assist mcp antigravity [status|add|remove] [--mode stdio|hub|both] [--profile <name>]');
+    process.exit(1);
+  }
+
+  if (args[0] === 'gemini' || args[0] === 'gemini-cli' || args[0] === 'gemini-app') {
+    const subAction = args[1] || 'status';
+    const geminiConfigPath = path.join(os.homedir(), '.gemini', 'settings.json');
+    const geminiDesktopConfigPath = process.platform === 'win32'
+      ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'gemini', 'settings.json')
+      : (process.platform === 'darwin'
+        ? path.join(os.homedir(), 'Library', 'Application Support', 'gemini', 'settings.json')
+        : path.join(os.homedir(), '.config', 'gemini', 'settings.json'));
+    const findGeminiAppExe = () => {
+      if (process.platform === 'win32') {
+        const defaultExe = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Gemini', 'Gemini.exe');
+        if (fs.existsSync(defaultExe)) return defaultExe;
+        const parentDir = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Gemini');
+        if (fs.existsSync(parentDir)) {
+          try {
+            const entries = fs.readdirSync(parentDir);
+            for (const entry of entries) {
+              if (entry.startsWith('app-')) {
+                const versionedExe = path.join(parentDir, entry, 'Gemini.exe');
+                if (fs.existsSync(versionedExe)) return versionedExe;
+              }
+            }
+          } catch {}
+        }
+      } else if (process.platform === 'darwin') {
+        const macApp = '/Applications/Google Gemini.app';
+        if (fs.existsSync(macApp)) return macApp;
+      }
+      return null;
+    };
+    const findGeminiCliExe = () => {
+      try {
+        const out = require('child_process').execSync(process.platform === 'win32' ? 'where gemini 2>nul' : 'which gemini 2>/dev/null', { encoding: 'utf8', timeout: 3000 }).trim();
+        if (out) return out.split(/\r?\n/)[0].trim();
+      } catch {}
+      return null;
+    };
+    const geminiAppBin = findGeminiAppExe();
+    const geminiCliBin = findGeminiCliExe();
+
+    if (subAction === 'status') {
+      console.log('Google Gemini App & CLI MCP Integration');
+      console.log(`  CLI Config:     ${geminiConfigPath} (${fs.existsSync(geminiConfigPath) ? 'present' : 'missing'})`);
+      console.log(`  Desktop Config: ${geminiDesktopConfigPath} (${fs.existsSync(geminiDesktopConfigPath) ? 'present' : 'missing'})`);
+      console.log(`  Desktop App:    ${geminiAppBin ? geminiAppBin + ' (installed)' : 'not found'}`);
+      console.log(`  CLI (gemini):   ${geminiCliBin ? geminiCliBin + ' (installed)' : 'not found'}`);
+      let s = {};
+      if (fs.existsSync(geminiConfigPath)) {
+        try {
+          const cfg = JSON.parse(fs.readFileSync(geminiConfigPath, 'utf8'));
+          s = cfg.mcpServers || {};
+        } catch {}
+      }
+      if (fs.existsSync(geminiDesktopConfigPath)) {
+        try {
+          const dcfg = JSON.parse(fs.readFileSync(geminiDesktopConfigPath, 'utf8'));
+          if (!s['lm-assist'] && dcfg.mcpServers?.['lm-assist']) s['lm-assist'] = dcfg.mcpServers['lm-assist'];
+          if (!s['lm-assist-hub'] && dcfg.mcpServers?.['lm-assist-hub']) s['lm-assist-hub'] = dcfg.mcpServers['lm-assist-hub'];
+        } catch {}
+      }
+      console.log(`  lm-assist:      ${s['lm-assist'] ? 'active (stdio)' : 'inactive'}`);
+      if (s['lm-assist']) console.log(`                  ${s['lm-assist'].command} ${(s['lm-assist'].args || []).join(' ')}`);
+      console.log(`  lm-assist-hub:  ${s['lm-assist-hub'] ? 'active (http)' : 'inactive'}`);
+      if (s['lm-assist-hub']) console.log(`                  ${s['lm-assist-hub'].url}`);
+      process.exit(0);
+    }
+
+    if (subAction === 'add' || subAction === 'activate') {
+      let cfgMod;
+      try { cfgMod = loadProfileMcpHelpers(); } catch (e) {
+        console.error(`Error: ${e.message}`);
+        process.exit(1);
+      }
+      let mode = 'both';
+      let profile = 'basic';
+      for (let i = 2; i < args.length; i++) {
+        if (args[i] === '--mode' && args[i + 1]) {
+          mode = args[i + 1];
+          i++;
+        } else if (args[i] === '--profile' && args[i + 1]) {
+          profile = args[i + 1];
+          i++;
+        }
+      }
+
+      let data = {};
+      try {
+        if (fs.existsSync(geminiConfigPath)) {
+          data = JSON.parse(fs.readFileSync(geminiConfigPath, 'utf8'));
+        }
+      } catch {}
+      if (!data.mcpServers || typeof data.mcpServers !== 'object') {
+        data.mcpServers = {};
+      }
+
+      let hubCfg = null;
+      try {
+        const { getHubConfig } = require('../core/dist/hub-client/hub-config');
+        hubCfg = getHubConfig();
+      } catch {}
+
+      const hasHub = !!(hubCfg && hubCfg.hubUrl && hubCfg.apiKey);
+      if (mode === 'hub' || (mode === 'both' && hasHub)) {
+        const hubMcpUrl = cfgMod.deriveHubMcpUrl ? cfgMod.deriveHubMcpUrl(hubCfg.hubUrl) : null;
+        const endpointUrl = hubMcpUrl ? cfgMod.profileMcpUrl(hubMcpUrl, profile) : 'https://mcp.langmart.ai/mcp/' + profile;
+        if (hubCfg && hubCfg.apiKey) {
+          data.mcpServers['lm-assist-hub'] = {
+            url: endpointUrl,
+            headers: {
+              Authorization: `Bearer ${hubCfg.apiKey}`,
+            },
+          };
+        }
+      }
+
+      if (mode === 'stdio' || mode === 'both' || !hasHub) {
+        const mcpServerPath = path.resolve(__dirname, '..', 'core', 'dist', 'mcp-server', 'index.js').replace(/\\/g, '/');
+        data.mcpServers['lm-assist'] = {
+          command: 'node',
+          args: [mcpServerPath],
+          env: {
+            LM_MCP_PROFILE: profile,
+          },
+        };
+      }
+
+      const dir = path.dirname(geminiConfigPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(geminiConfigPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+
+      if (geminiDesktopConfigPath) {
+        try {
+          let dData = {};
+          if (fs.existsSync(geminiDesktopConfigPath)) {
+            dData = JSON.parse(fs.readFileSync(geminiDesktopConfigPath, 'utf8'));
+          }
+          if (!dData.mcpServers || typeof dData.mcpServers !== 'object') dData.mcpServers = {};
+          if (data.mcpServers['lm-assist']) dData.mcpServers['lm-assist'] = data.mcpServers['lm-assist'];
+          if (data.mcpServers['lm-assist-hub']) dData.mcpServers['lm-assist-hub'] = data.mcpServers['lm-assist-hub'];
+          const dDir = path.dirname(geminiDesktopConfigPath);
+          if (!fs.existsSync(dDir)) fs.mkdirSync(dDir, { recursive: true });
+          fs.writeFileSync(geminiDesktopConfigPath, JSON.stringify(dData, null, 2) + '\n', 'utf8');
+        } catch {}
+      }
+
+      console.log(`✓ Configured Google Gemini App & CLI MCP in:`);
+      console.log(`  - CLI Config:     ${geminiConfigPath}`);
+      if (geminiDesktopConfigPath) console.log(`  - Desktop Config: ${geminiDesktopConfigPath}`);
+      if (data.mcpServers['lm-assist']) console.log(`  - lm-assist: stdio (profile: ${profile})`);
+      if (data.mcpServers['lm-assist-hub']) console.log(`  - lm-assist-hub: http (${data.mcpServers['lm-assist-hub'].url})`);
+      if (geminiAppBin) console.log(`  Compatible with Gemini Desktop App at ${geminiAppBin}`);
+      if (geminiCliBin) console.log(`  Compatible with Gemini CLI at ${geminiCliBin}`);
+      process.exit(0);
+    }
+
+    if (subAction === 'remove' || subAction === 'deactivate') {
+      let removedAny = false;
+      if (fs.existsSync(geminiConfigPath)) {
+        try {
+          const data = JSON.parse(fs.readFileSync(geminiConfigPath, 'utf8'));
+          if (data && data.mcpServers) {
+            delete data.mcpServers['lm-assist'];
+            delete data.mcpServers['lm-assist-hub'];
+            fs.writeFileSync(geminiConfigPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+            removedAny = true;
+          }
+        } catch {}
+      }
+      if (geminiDesktopConfigPath && fs.existsSync(geminiDesktopConfigPath)) {
+        try {
+          const dData = JSON.parse(fs.readFileSync(geminiDesktopConfigPath, 'utf8'));
+          if (dData && dData.mcpServers) {
+            delete dData.mcpServers['lm-assist'];
+            delete dData.mcpServers['lm-assist-hub'];
+            fs.writeFileSync(geminiDesktopConfigPath, JSON.stringify(dData, null, 2) + '\n', 'utf8');
+            removedAny = true;
+          }
+        } catch {}
+      }
+      console.log(`✓ Removed lm-assist MCP entries from Gemini configuration`);
+      process.exit(0);
+    }
+
+    console.error('Usage: lm-assist mcp gemini [status|add|remove] [--mode stdio|hub|both] [--profile <name>]');
+    process.exit(1);
+  }
+
   let cfgMod;
   try { cfgMod = loadProfileMcpHelpers(); } catch (e) {
     console.error(`Error: ${e.message}`);

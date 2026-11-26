@@ -23,9 +23,9 @@
  *   GET  /claude-code/ide-mcp/antigravity        Check Antigravity MCP integration status
  *   POST /claude-code/ide-mcp/antigravity/activate    Add lm-assist to Antigravity mcp_config.json
  *   POST /claude-code/ide-mcp/antigravity/deactivate  Remove lm-assist from Antigravity mcp_config.json
- *   GET  /claude-code/ide-mcp/gemini-cli          Check Gemini CLI MCP integration status
- *   POST /claude-code/ide-mcp/gemini-cli/activate     Add lm-assist to Gemini CLI settings.json
- *   POST /claude-code/ide-mcp/gemini-cli/deactivate   Remove lm-assist from Gemini CLI settings.json
+ *   GET  /claude-code/ide-mcp/(gemini|gemini-cli|gemini-app)          Check Google Gemini App & CLI MCP integration status
+ *   POST /claude-code/ide-mcp/(gemini|gemini-cli|gemini-app)/activate     Add lm-assist to Gemini settings.json
+ *   POST /claude-code/ide-mcp/(gemini|gemini-cli|gemini-app)/deactivate   Remove lm-assist from Gemini settings.json
  *   GET  /claude-code/ide-mcp/cursor               Check Cursor MCP integration status
  *   POST /claude-code/ide-mcp/cursor/activate       Add lm-assist to Cursor mcp.json
  *   POST /claude-code/ide-mcp/cursor/deactivate     Remove lm-assist from Cursor mcp.json
@@ -72,6 +72,13 @@ import {
   deleteRoutine,
   listRoutineEnvironments,
 } from '../../utils/claude-oauth';
+import { getHubConfig } from '../../hub-client/hub-config';
+import { deriveHubMcpUrl, profileMcpUrl } from '../../utils/claude-mcp-config';
+import {
+  isIdeMcpOptedOut,
+  runAutoIdeMcpActivation,
+  setIdeMcpOptOut,
+} from '../../utils/ide-mcp-optout';
 
 const IS_WINDOWS = process.platform === 'win32';
 const CLAUDE_CODE_CONFIG_FILE = path.join(os.homedir(), '.claude-code-config.json');
@@ -217,17 +224,83 @@ function getCodexConfigPath(): string {
 }
 
 /**
- * Get the Google Antigravity MCP config path.
+ * Get the Google Antigravity / agy CLI MCP config path.
+ * Both Antigravity Desktop and Antigravity CLI (agy) share ~/.gemini/config/mcp_config.json.
  */
 function getAntigravityMcpConfigPath(): string {
-  return path.join(os.homedir(), '.gemini', 'antigravity', 'mcp_config.json');
+  return path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json');
 }
 
 /**
- * Get the Gemini CLI settings.json path.
+ * Find the Antigravity CLI (agy) binary path.
  */
-function getGeminiCliSettingsPath(): string {
+function findAgyBinaryPath(): string | null {
+  const inPath = findBinaryPath('agy');
+  if (inPath && !inPath.includes('Could not find') && fs.existsSync(inPath)) return inPath;
+  if (IS_WINDOWS) {
+    const localAgy = path.join(os.homedir(), 'AppData', 'Local', 'agy', 'bin', 'agy.exe');
+    if (fs.existsSync(localAgy)) return localAgy;
+  }
+  return null;
+}
+
+/**
+ * Get the Google Gemini settings.json path (shared by Gemini CLI and Gemini Desktop App).
+ */
+function getGeminiSettingsPath(): string {
   return path.join(os.homedir(), '.gemini', 'settings.json');
+}
+function getGeminiCliSettingsPath(): string {
+  return getGeminiSettingsPath();
+}
+
+/**
+ * Get the Google Gemini Desktop App settings.json path (%APPDATA%\gemini\settings.json on Windows).
+ */
+function getGeminiDesktopAppSettingsPath(): string | null {
+  if (IS_WINDOWS) {
+    return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'gemini', 'settings.json');
+  } else if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'gemini', 'settings.json');
+  }
+  return path.join(os.homedir(), '.config', 'gemini', 'settings.json');
+}
+
+/**
+ * Find the Google Gemini Desktop app binary path (Windows / cross-platform).
+ */
+function findGeminiAppPath(): string | null {
+  if (IS_WINDOWS) {
+    const defaultExe = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Gemini', 'Gemini.exe');
+    if (fs.existsSync(defaultExe)) return defaultExe;
+    const parentDir = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Gemini');
+    if (fs.existsSync(parentDir)) {
+      try {
+        const entries = fs.readdirSync(parentDir);
+        for (const entry of entries) {
+          if (entry.startsWith('app-')) {
+            const versionedExe = path.join(parentDir, entry, 'Gemini.exe');
+            if (fs.existsSync(versionedExe)) return versionedExe;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } else if (process.platform === 'darwin') {
+    const macApp = '/Applications/Google Gemini.app';
+    if (fs.existsSync(macApp)) return macApp;
+  }
+  return null;
+}
+
+/**
+ * Find the Gemini CLI binary path.
+ */
+function findGeminiCliPath(): string | null {
+  const inPath = findBinaryPath('gemini');
+  if (inPath && !inPath.includes('Could not find') && fs.existsSync(inPath)) return inPath;
+  return null;
 }
 
 /**
@@ -295,7 +368,7 @@ function detectPluginHook(pluginPath: string): boolean {
 function findBinaryPath(name: string): string | null {
   try {
     const cmd = IS_WINDOWS ? 'where' : 'which';
-    const output = execFileSync(cmd, [name], { encoding: 'utf-8', timeout: 5000 }).trim();
+    const output = execFileSync(cmd, [name], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
     // 'where' on Windows may return multiple lines; take the first
     return output.split(/\r?\n/)[0].trim() || null;
   } catch {
@@ -506,6 +579,201 @@ function reapplyInstalledPaths(): { updated: string[] } {
   }
 
   return { updated };
+}
+
+function hasLmAssistEntry(configPath: string | null | undefined): boolean {
+  if (!configPath || !fs.existsSync(configPath)) return false;
+  try {
+    const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    return Boolean(data?.mcpServers?.['lm-assist'] || data?.mcpServers?.['lm-assist-hub']);
+  } catch {
+    return false;
+  }
+}
+
+function applyLmAssistMcpServers(data: any, body: any, mcpServerPath: string): 'stdio' | 'hub' | 'both' {
+  if (!data.mcpServers || typeof data.mcpServers !== 'object') data.mcpServers = {};
+  const profile = typeof body?.profile === 'string' && body.profile.trim() ? body.profile.trim() : 'basic';
+  const requestedMode = body?.mode || 'both';
+  const hub = getHubConfig();
+  const hasHub = !!(hub.hubUrl && hub.apiKey);
+  let finalMode: 'stdio' | 'hub' | 'both' = 'stdio';
+
+  if (requestedMode === 'hub' || (requestedMode === 'both' && hasHub)) {
+    const hubMcpUrl = deriveHubMcpUrl(hub.hubUrl);
+    const endpointUrl = hubMcpUrl
+      ? profileMcpUrl(hubMcpUrl, profile)
+      : (hub.hubUrl ? 'https://mcp.langmart.ai/mcp/' + profile : null);
+    if (endpointUrl && hub.apiKey) {
+      data.mcpServers['lm-assist-hub'] = {
+        url: endpointUrl,
+        headers: {
+          Authorization: `Bearer ${hub.apiKey}`,
+        },
+      };
+      finalMode = requestedMode === 'both' ? 'both' : 'hub';
+    }
+  }
+
+  if (requestedMode === 'stdio' || requestedMode === 'both' || !hasHub) {
+    data.mcpServers['lm-assist'] = {
+      command: body?.command || 'node',
+      args: body?.args || [mcpServerPath],
+      env: {
+        LM_MCP_PROFILE: profile,
+        ...(body?.env || {}),
+      },
+    };
+    if (requestedMode !== 'both' || !data.mcpServers['lm-assist-hub']) {
+      finalMode = 'stdio';
+    }
+  }
+
+  return finalMode;
+}
+
+export function activateAntigravityMcp(body: any = {}): { success: boolean; data?: any; error?: string } {
+  try {
+    const configPath = getAntigravityMcpConfigPath();
+    const cliPath = findAgyBinaryPath();
+    const cliInstalled = !!cliPath;
+    const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
+
+    let data: any = { mcpServers: {} };
+    try {
+      if (fs.existsSync(configPath)) {
+        data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      }
+    } catch {
+      data = { mcpServers: {} };
+    }
+
+    const finalMode = applyLmAssistMcpServers(data, body, mcpServerPath);
+    const dir = path.dirname(configPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+    setIdeMcpOptOut('antigravity', false);
+
+    return {
+      success: true,
+      data: {
+        installed: true,
+        configPath,
+        configExists: true,
+        cliInstalled,
+        cliPath,
+        autoActivateOptedOut: false,
+        mode: finalMode,
+        command: data.mcpServers['lm-assist']?.command || 'node',
+        args: data.mcpServers['lm-assist']?.args || [mcpServerPath],
+        hubUrl: data.mcpServers['lm-assist-hub']?.url || null,
+        servers: {
+          stdio: data.mcpServers['lm-assist'] || null,
+          hub: data.mcpServers['lm-assist-hub'] || null,
+        },
+      },
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to activate Antigravity MCP' };
+  }
+}
+
+export function activateGeminiCliMcp(body: any = {}): { success: boolean; data?: any; error?: string } {
+  try {
+    const configPath = getGeminiSettingsPath();
+    const desktopConfigPath = getGeminiDesktopAppSettingsPath();
+    const appPath = findGeminiAppPath();
+    const appInstalled = !!appPath;
+    const cliPath = findGeminiCliPath();
+    const cliInstalled = !!cliPath;
+    const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
+
+    let data: any = { mcpServers: {} };
+    try {
+      if (fs.existsSync(configPath)) {
+        data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      }
+    } catch {
+      data = { mcpServers: {} };
+    }
+
+    const finalMode = applyLmAssistMcpServers(data, body, mcpServerPath);
+    const dir = path.dirname(configPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+    setIdeMcpOptOut('gemini-cli', false);
+
+    let desktopWritten = false;
+    if (desktopConfigPath) {
+      try {
+        let dData: any = {};
+        if (fs.existsSync(desktopConfigPath)) {
+          dData = JSON.parse(fs.readFileSync(desktopConfigPath, 'utf-8'));
+        }
+        if (!dData.mcpServers || typeof dData.mcpServers !== 'object') {
+          dData.mcpServers = {};
+        }
+        if (data.mcpServers['lm-assist']) dData.mcpServers['lm-assist'] = data.mcpServers['lm-assist'];
+        if (data.mcpServers['lm-assist-hub']) dData.mcpServers['lm-assist-hub'] = data.mcpServers['lm-assist-hub'];
+        const dDir = path.dirname(desktopConfigPath);
+        if (!fs.existsSync(dDir)) fs.mkdirSync(dDir, { recursive: true });
+        fs.writeFileSync(desktopConfigPath, JSON.stringify(dData, null, 2), 'utf-8');
+        desktopWritten = true;
+      } catch {
+        // ignore desktop write failures
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        installed: true,
+        configPath,
+        configExists: true,
+        desktopConfigPath,
+        desktopConfigExists: desktopWritten || (desktopConfigPath ? fs.existsSync(desktopConfigPath) : false),
+        appInstalled,
+        appPath,
+        cliInstalled,
+        cliPath,
+        autoActivateOptedOut: false,
+        mode: finalMode,
+        command: data.mcpServers['lm-assist']?.command || 'node',
+        args: data.mcpServers['lm-assist']?.args || [mcpServerPath],
+        hubUrl: data.mcpServers['lm-assist-hub']?.url || null,
+        servers: {
+          stdio: data.mcpServers['lm-assist'] || null,
+          hub: data.mcpServers['lm-assist-hub'] || null,
+        },
+      },
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to activate Gemini MCP' };
+  }
+}
+
+export function ensureAutoActivatedIdeMcp() {
+  const agyConfig = getAntigravityMcpConfigPath();
+  const gemCliConfig = getGeminiSettingsPath();
+  const gemDesktopConfig = getGeminiDesktopAppSettingsPath();
+  return runAutoIdeMcpActivation([
+    {
+      id: 'antigravity',
+      detected: Boolean(findAgyBinaryPath() || fs.existsSync(agyConfig)),
+      installed: hasLmAssistEntry(agyConfig),
+      activate: () => {
+        activateAntigravityMcp({ mode: 'both', profile: 'basic' });
+      },
+    },
+    {
+      id: 'gemini-cli',
+      detected: Boolean(findGeminiCliPath() || findGeminiAppPath()),
+      installed: hasLmAssistEntry(gemCliConfig) || hasLmAssistEntry(gemDesktopConfig),
+      activate: () => {
+        activateGeminiCliMcp({ mode: 'both', profile: 'basic' });
+      },
+    },
+  ]);
 }
 
 export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
@@ -1148,171 +1416,286 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /claude-code/ide-mcp/antigravity - Check Google Antigravity MCP integration status
+    // GET /claude-code/ide-mcp/(antigravity|antigravity-cli|agy) - Check Google Antigravity / agy CLI MCP integration status
     {
       method: 'GET',
-      pattern: /^\/claude-code\/ide-mcp\/antigravity$/,
+      pattern: /^\/claude-code\/ide-mcp\/(antigravity|antigravity-cli|agy)$/,
       handler: async () => {
         const configPath = getAntigravityMcpConfigPath();
         const configExists = fs.existsSync(configPath);
+        const cliPath = findAgyBinaryPath();
+        const cliInstalled = !!cliPath;
+        const autoActivateOptedOut = isIdeMcpOptedOut('antigravity');
         if (!configExists) {
-          return { success: true, data: { installed: false, configPath, configExists: false } };
+          return { success: true, data: { installed: false, configPath, configExists: false, cliInstalled, cliPath, autoActivateOptedOut } };
         }
         try {
           const raw = fs.readFileSync(configPath, 'utf-8');
           const data = JSON.parse(raw);
-          const server = data?.mcpServers?.['lm-assist'];
-          if (server) {
+          const stdioServer = data?.mcpServers?.['lm-assist'];
+          const hubServer = data?.mcpServers?.['lm-assist-hub'];
+          if (stdioServer || hubServer) {
+            const mode = stdioServer && hubServer ? 'both' : hubServer ? 'hub' : 'stdio';
             return {
               success: true,
               data: {
-                installed: true, configPath, configExists: true,
-                command: server.command || 'node',
-                args: Array.isArray(server.args) ? server.args : [],
+                installed: true,
+                configPath,
+                configExists: true,
+                cliInstalled,
+                cliPath,
+                autoActivateOptedOut,
+                mode,
+                command: stdioServer?.command || (stdioServer ? 'node' : undefined),
+                args: Array.isArray(stdioServer?.args) ? stdioServer.args : [],
+                env: stdioServer?.env || {},
+                hubUrl: hubServer?.url || null,
+                servers: {
+                  stdio: stdioServer ? {
+                    command: stdioServer.command || 'node',
+                    args: Array.isArray(stdioServer.args) ? stdioServer.args : [],
+                    env: stdioServer.env || {},
+                  } : null,
+                  hub: hubServer ? {
+                    url: hubServer.url,
+                    headers: hubServer.headers ? { Authorization: 'Bearer ***' } : undefined,
+                  } : null,
+                },
               },
             };
           }
-          return { success: true, data: { installed: false, configPath, configExists: true } };
+          return { success: true, data: { installed: false, configPath, configExists: true, cliInstalled, cliPath, autoActivateOptedOut } };
         } catch {
-          return { success: true, data: { installed: false, configPath, configExists: true } };
+          return { success: true, data: { installed: false, configPath, configExists: true, cliInstalled, cliPath, autoActivateOptedOut } };
         }
       },
     },
 
-    // POST /claude-code/ide-mcp/antigravity/activate - Add lm-assist to Antigravity mcp_config.json
+    // POST /claude-code/ide-mcp/(antigravity|antigravity-cli|agy)/activate - Add lm-assist to Antigravity / agy mcp_config.json
     {
       method: 'POST',
-      pattern: /^\/claude-code\/ide-mcp\/antigravity\/activate$/,
-      handler: async () => {
-        try {
-          const configPath = getAntigravityMcpConfigPath();
-          const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
-          let data: any = { mcpServers: {} };
-          try {
-            if (fs.existsSync(configPath)) {
-              data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-              if (!data.mcpServers) data.mcpServers = {};
-            }
-          } catch {
-            data = { mcpServers: {} };
-          }
-          data.mcpServers['lm-assist'] = { command: 'node', args: [mcpServerPath] };
-          const dir = path.dirname(configPath);
-          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-          fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
-          return {
-            success: true,
-            data: { installed: true, configPath, configExists: true, command: 'node', args: [mcpServerPath] },
-          };
-        } catch (err: any) {
-          return { success: false, error: err.message || 'Failed to activate Antigravity MCP' };
-        }
+      pattern: /^\/claude-code\/ide-mcp\/(antigravity|antigravity-cli|agy)\/activate$/,
+      handler: async (req) => {
+        const body = (req && typeof req.body === 'object' && req.body !== null ? req.body : {}) as any;
+        return activateAntigravityMcp(body);
       },
     },
 
-    // POST /claude-code/ide-mcp/antigravity/deactivate - Remove lm-assist from Antigravity mcp_config.json
+    // POST /claude-code/ide-mcp/(antigravity|antigravity-cli|agy)/deactivate - Remove lm-assist from Antigravity / agy mcp_config.json
     {
       method: 'POST',
-      pattern: /^\/claude-code\/ide-mcp\/antigravity\/deactivate$/,
-      handler: async () => {
+      pattern: /^\/claude-code\/ide-mcp\/(antigravity|antigravity-cli|agy)\/deactivate$/,
+      handler: async (req) => {
+        const body = (req && typeof req.body === 'object' && req.body !== null ? req.body : {}) as any;
         const configPath = getAntigravityMcpConfigPath();
+        const cliPath = findAgyBinaryPath();
+        const cliInstalled = !!cliPath;
         if (!fs.existsSync(configPath)) {
-          return { success: true, data: { installed: false, configPath, configExists: false } };
+          setIdeMcpOptOut('antigravity', true);
+          return { success: true, data: { installed: false, configPath, configExists: false, cliInstalled, cliPath, autoActivateOptedOut: true } };
         }
         try {
           const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-          if (data?.mcpServers?.['lm-assist']) {
-            delete data.mcpServers['lm-assist'];
+          if (data?.mcpServers) {
+            const mode = body.mode || 'both';
+            if (mode === 'stdio' || mode === 'both') {
+              delete data.mcpServers['lm-assist'];
+            }
+            if (mode === 'hub' || mode === 'both') {
+              delete data.mcpServers['lm-assist-hub'];
+            }
             fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
           }
-          return { success: true, data: { installed: false, configPath, configExists: true } };
+          const stillInstalled = !!(data?.mcpServers?.['lm-assist'] || data?.mcpServers?.['lm-assist-hub']);
+          if (!stillInstalled) setIdeMcpOptOut('antigravity', true);
+          return {
+            success: true,
+            data: {
+              installed: stillInstalled,
+              configPath,
+              configExists: true,
+              cliInstalled,
+              cliPath,
+              autoActivateOptedOut: isIdeMcpOptedOut('antigravity'),
+            },
+          };
         } catch (err: any) {
           return { success: false, error: err.message || 'Failed to update Antigravity mcp_config.json' };
         }
       },
     },
 
-    // GET /claude-code/ide-mcp/gemini-cli - Check Gemini CLI MCP integration status
+    // GET /claude-code/ide-mcp/(gemini-cli|gemini|gemini-app) - Check Google Gemini App & CLI MCP integration status
     {
       method: 'GET',
-      pattern: /^\/claude-code\/ide-mcp\/gemini-cli$/,
+      pattern: /^\/claude-code\/ide-mcp\/(gemini-cli|gemini|gemini-app)$/,
       handler: async () => {
-        const configPath = getGeminiCliSettingsPath();
+        const configPath = getGeminiSettingsPath();
         const configExists = fs.existsSync(configPath);
-        if (!configExists) {
-          return { success: true, data: { installed: false, configPath, configExists: false } };
-        }
-        try {
-          const raw = fs.readFileSync(configPath, 'utf-8');
-          const data = JSON.parse(raw);
-          const server = data?.mcpServers?.['lm-assist'];
-          if (server) {
-            return {
-              success: true,
-              data: {
-                installed: true, configPath, configExists: true,
-                command: server.command || 'node',
-                args: Array.isArray(server.args) ? server.args : [],
-              },
-            };
-          }
-          return { success: true, data: { installed: false, configPath, configExists: true } };
-        } catch {
-          return { success: true, data: { installed: false, configPath, configExists: true } };
-        }
-      },
-    },
+        const desktopConfigPath = getGeminiDesktopAppSettingsPath();
+        const desktopConfigExists = desktopConfigPath ? fs.existsSync(desktopConfigPath) : false;
+        const appPath = findGeminiAppPath();
+        const appInstalled = !!appPath;
+        const cliPath = findGeminiCliPath();
+        const cliInstalled = !!cliPath;
 
-    // POST /claude-code/ide-mcp/gemini-cli/activate - Add lm-assist to Gemini CLI settings.json
-    {
-      method: 'POST',
-      pattern: /^\/claude-code\/ide-mcp\/gemini-cli\/activate$/,
-      handler: async () => {
-        try {
-          const configPath = getGeminiCliSettingsPath();
-          const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
-          let data: any = {};
+        let stdioServer: any = null;
+        let hubServer: any = null;
+
+        if (configExists) {
           try {
-            if (fs.existsSync(configPath)) {
-              data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-            }
-          } catch {
-            data = {};
-          }
-          if (!data.mcpServers) data.mcpServers = {};
-          data.mcpServers['lm-assist'] = { command: 'node', args: [mcpServerPath] };
-          const dir = path.dirname(configPath);
-          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-          fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+            const raw = fs.readFileSync(configPath, 'utf-8');
+            const data = JSON.parse(raw);
+            if (data?.mcpServers?.['lm-assist']) stdioServer = data.mcpServers['lm-assist'];
+            if (data?.mcpServers?.['lm-assist-hub']) hubServer = data.mcpServers['lm-assist-hub'];
+          } catch {}
+        }
+        if (desktopConfigExists && desktopConfigPath) {
+          try {
+            const raw = fs.readFileSync(desktopConfigPath, 'utf-8');
+            const data = JSON.parse(raw);
+            if (!stdioServer && data?.mcpServers?.['lm-assist']) stdioServer = data.mcpServers['lm-assist'];
+            if (!hubServer && data?.mcpServers?.['lm-assist-hub']) hubServer = data.mcpServers['lm-assist-hub'];
+          } catch {}
+        }
+
+        const autoActivateOptedOut = isIdeMcpOptedOut('gemini-cli');
+        if (stdioServer || hubServer) {
+          const mode = stdioServer && hubServer ? 'both' : hubServer ? 'hub' : 'stdio';
           return {
             success: true,
-            data: { installed: true, configPath, configExists: true, command: 'node', args: [mcpServerPath] },
+            data: {
+              installed: true,
+              configPath,
+              configExists,
+              desktopConfigPath,
+              desktopConfigExists,
+              appInstalled,
+              appPath,
+              cliInstalled,
+              cliPath,
+              autoActivateOptedOut,
+              mode,
+              command: stdioServer?.command || (stdioServer ? 'node' : undefined),
+              args: Array.isArray(stdioServer?.args) ? stdioServer.args : [],
+              env: stdioServer?.env || {},
+              hubUrl: hubServer?.url || null,
+              servers: {
+                stdio: stdioServer ? {
+                  command: stdioServer.command || 'node',
+                  args: Array.isArray(stdioServer.args) ? stdioServer.args : [],
+                  env: stdioServer.env || {},
+                } : null,
+                hub: hubServer ? {
+                  url: hubServer.url,
+                  headers: hubServer.headers ? { Authorization: 'Bearer ***' } : undefined,
+                } : null,
+              },
+            },
           };
-        } catch (err: any) {
-          return { success: false, error: err.message || 'Failed to activate Gemini CLI MCP' };
         }
+
+        return {
+          success: true,
+          data: {
+            installed: false,
+            configPath,
+            configExists,
+            desktopConfigPath,
+            desktopConfigExists,
+            appInstalled,
+            appPath,
+            cliInstalled,
+            cliPath,
+            autoActivateOptedOut,
+            mode: 'none',
+            servers: { stdio: null, hub: null },
+          },
+        };
       },
     },
 
-    // POST /claude-code/ide-mcp/gemini-cli/deactivate - Remove lm-assist from Gemini CLI settings.json
+    // POST /claude-code/ide-mcp/(gemini-cli|gemini|gemini-app)/activate - Add lm-assist to Gemini settings.json
     {
       method: 'POST',
-      pattern: /^\/claude-code\/ide-mcp\/gemini-cli\/deactivate$/,
-      handler: async () => {
-        const configPath = getGeminiCliSettingsPath();
-        if (!fs.existsSync(configPath)) {
-          return { success: true, data: { installed: false, configPath, configExists: false } };
-        }
-        try {
-          const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-          if (data?.mcpServers?.['lm-assist']) {
-            delete data.mcpServers['lm-assist'];
-            fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+      pattern: /^\/claude-code\/ide-mcp\/(gemini-cli|gemini|gemini-app)\/activate$/,
+      handler: async (req) => {
+        const body = (req && typeof req.body === 'object' && req.body !== null ? req.body : {}) as any;
+        return activateGeminiCliMcp(body);
+      },
+    },
+
+    // POST /claude-code/ide-mcp/(gemini-cli|gemini|gemini-app)/deactivate - Remove lm-assist from Gemini settings.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/(gemini-cli|gemini|gemini-app)\/deactivate$/,
+      handler: async (req) => {
+        const body = (req && typeof req.body === 'object' && req.body !== null ? req.body : {}) as any;
+        const configPath = getGeminiSettingsPath();
+        const desktopConfigPath = getGeminiDesktopAppSettingsPath();
+        const appPath = findGeminiAppPath();
+        const appInstalled = !!appPath;
+        const cliPath = findGeminiCliPath();
+        const cliInstalled = !!cliPath;
+
+        let stillInstalled = false;
+        if (fs.existsSync(configPath)) {
+          try {
+            const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+            if (data?.mcpServers) {
+              const mode = body.mode || 'both';
+              if (mode === 'stdio' || mode === 'both') {
+                delete data.mcpServers['lm-assist'];
+              }
+              if (mode === 'hub' || mode === 'both') {
+                delete data.mcpServers['lm-assist-hub'];
+              }
+              fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+            }
+            if (data?.mcpServers?.['lm-assist'] || data?.mcpServers?.['lm-assist-hub']) {
+              stillInstalled = true;
+            }
+          } catch (err: any) {
+            return { success: false, error: err.message || 'Failed to update Gemini settings.json' };
           }
-          return { success: true, data: { installed: false, configPath, configExists: true } };
-        } catch (err: any) {
-          return { success: false, error: err.message || 'Failed to update Gemini CLI settings.json' };
         }
+
+        if (desktopConfigPath && fs.existsSync(desktopConfigPath)) {
+          try {
+            const dData = JSON.parse(fs.readFileSync(desktopConfigPath, 'utf-8'));
+            if (dData?.mcpServers) {
+              const mode = body.mode || 'both';
+              if (mode === 'stdio' || mode === 'both') {
+                delete dData.mcpServers['lm-assist'];
+              }
+              if (mode === 'hub' || mode === 'both') {
+                delete dData.mcpServers['lm-assist-hub'];
+              }
+              fs.writeFileSync(desktopConfigPath, JSON.stringify(dData, null, 2), 'utf-8');
+            }
+            if (dData?.mcpServers?.['lm-assist'] || dData?.mcpServers?.['lm-assist-hub']) {
+              stillInstalled = true;
+            }
+          } catch {}
+        }
+
+        if (!stillInstalled) setIdeMcpOptOut('gemini-cli', true);
+
+        return {
+          success: true,
+          data: {
+            installed: stillInstalled,
+            configPath,
+            configExists: fs.existsSync(configPath),
+            desktopConfigPath,
+            desktopConfigExists: desktopConfigPath ? fs.existsSync(desktopConfigPath) : false,
+            appInstalled,
+            appPath,
+            cliInstalled,
+            cliPath,
+            autoActivateOptedOut: isIdeMcpOptedOut('gemini-cli'),
+          },
+        };
       },
     },
 

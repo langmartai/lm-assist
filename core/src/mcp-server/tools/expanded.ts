@@ -36,6 +36,7 @@ import { ccSessionSummary, claudeaiPluginSummary, detailLevel, intArg, paginate 
 import * as os from 'os';
 import { handleListNodes } from './list-nodes';
 import { GITHUB_TOOL_DEFS, GITHUB_HANDLERS } from './github';
+import { COLAB_TOOL_DEFS, COLAB_HANDLERS } from './colab';
 import { PORT_FORWARD_TOOL_DEFS, PORT_FORWARD_HANDLERS } from './port-forward';
 import { TRANSFER_TOOL_DEFS, TRANSFER_HANDLERS } from './transfer';
 import { FS_INSPECT_TOOL_DEFS, FS_INSPECT_HANDLERS } from './fs-inspect';
@@ -1241,6 +1242,8 @@ export const EXPANDED_TOOL_DEFS = [
   deleteConversationToolDef,
   // github (read: github_query, write: github_mutate)
   ...GITHUB_TOOL_DEFS,
+  // colab cli (read: colab_query, write: colab_mutate)
+  ...COLAB_TOOL_DEFS,
   // elevated worker (Windows-only: status read; exec/grant/revoke admin)
   ...ELEVATED_TOOL_DEFS,
   // vm management (Hyper-V / KVM: status+list read; create/start/stop/snapshot write; delete admin)
@@ -2559,6 +2562,8 @@ export const EXPANDED_HANDLERS: Record<
   list_nodes: async () => handleListNodes(),
   // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
   ...GITHUB_HANDLERS,
+  // colab cli (read: colab_query, write: colab_mutate) — dispatch to /colab/<action>
+  ...COLAB_HANDLERS,
   // elevated worker (Windows-only) — each wraps an /elevated/* loopback route
   ...ELEVATED_HANDLERS,
   // vm management — each wraps a /vm/* loopback route

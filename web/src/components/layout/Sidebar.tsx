@@ -29,6 +29,8 @@ import {
   BookText,
   Lightbulb,
   Bot,
+  Cloud,
+  Rocket,
 } from 'lucide-react';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
@@ -54,6 +56,9 @@ const baseNavItems = [
   { href: '/scheduler', icon: Clock, label: 'Scheduler' },
   { href: '/ccr', icon: Code2, label: 'Code' },
   { href: '/cowork', icon: Sparkles, label: 'Cowork' },
+  { href: '/colab', icon: Cloud, label: 'Colab' },
+  { href: '/gemini', icon: Sparkles, label: 'Gemini' },
+  { href: '/antigravity', icon: Rocket, label: 'Antigravity' },
   { href: '/skills', icon: Zap, label: 'Skills' },
   { href: '/assist-resources', icon: Compass, label: 'Assist Resources' },
   { href: '/machines', icon: Monitor, label: 'Machines' },

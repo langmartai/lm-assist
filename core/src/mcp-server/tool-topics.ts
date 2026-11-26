@@ -22,6 +22,7 @@ export const TOPIC_TOOLS: Record<string, string[]> = {
   'claude-ai': ['list_claudeai_conversations', 'read_conversation', 'conversation_tokens', 'conversation_fork', 'claudeai_create_conversation', 'claudeai_completion', 'delete_conversation', 'rename_conversation', 'claudeai_list_marketplaces', 'claudeai_list_marketplace_plugins', 'claudeai_list_plugins', 'claudeai_add_marketplace', 'claudeai_remove_marketplace', 'claudeai_set_plugin_enabled', 'list_claudeai_connectors', 'refresh_connector_tools', 'set_connector_tool_access', 'mcp_connectors'],
   account: ['auth_status', 'claude_code_usage', 'claude_code_account', 'claudeai_account', 'claudeai_active_sessions'],
   github: ['github_query', 'github_mutate'],
+  colab: ['colab_query', 'colab_mutate'],
   files: ['fs_drives', 'fs_list', 'fs_stat', 'fs_read', 'transfer_queue', 'transfer_send_file', 'transfer_list_remote', 'transfer_stats', 'transfer_cancel', 'transfer_status'],
   'ui-pages': ['ui_pages', 'ui_pages_control', 'ui_enable', 'ui_register', 'ui_list', 'ui_grants', 'ui_grant_release', 'ui_unregister', 'ui_screenshot'],
   roles: ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate'],

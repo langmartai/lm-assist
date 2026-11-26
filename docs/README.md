@@ -26,9 +26,11 @@ from elsewhere); this page is the navigation layer.
 ## API reference
 
 - [api-endpoints.md](./api-endpoints.md) — the Core REST API: endpoints, query params, the three session indexing dimensions
-- [claude-code-routes.md](./claude-code-routes.md) — Claude Code OAuth proxy surface (14 endpoints)
+- [claude-code-routes.md](./claude-code-routes.md) — Claude Code OAuth proxy surface & auto-activated IDE/CLI MCP integrations (Antigravity/`agy` `/antigravity`, Gemini CLI/App `/gemini`, VS Code, Cursor, Codex, etc.)
 - [claude-ai-routes.md](./claude-ai-routes.md) — claude.ai web-session proxy surface (28 endpoints, cookie + via-Chrome paths)
+- [gemini-web-routes.md](./gemini-web-routes.md) — Gemini Web (`gemini.google.com`) via-Chrome JS bridge, trusted CDP composer & media generation, and `/gemini` Web UI
 - [github-routes.md](./github-routes.md) — GitHub integration routes
+- [colab-routes.md](./colab-routes.md) — Google Colab CLI (`google-colab-cli`) REST & MCP API (`colab_query`, `colab_mutate`), `/colab` Web UI, and `lm-assist colab` CLI
 - [terminal-api.md](./terminal-api.md) — web terminal + tmux driving API
 - [cowork-web-endpoints.md](./cowork-web-endpoints.md) — claude.ai Cowork control-channel endpoints
 

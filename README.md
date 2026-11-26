@@ -166,12 +166,15 @@ Beyond Claude, through the same MCP surface — every tool routes to the node th
 
 - **Service connectors** driving the operator's own logged-in browser via CDP: **Gmail** (read, search, triage, compose/send with double-send guardrails and Sent-folder verification), **LinkedIn** (messaging, feed, posting, people search — no personal API exists, so a real browser does the work), and **WhatsApp** (hub-backed messaging with durable history)
 - **GitHub** — multi-backend (REST API, `gh` CLI, git), multi-account action service; tokens are resolved internally and never logged or returned
+- **Google Gemini (Web, CLI & Desktop App)** — via-Chrome JS bridge and trusted CDP composer for Gemini Web (`Create image`, `Create video`, `Create music`, `Canvas`, model & thinking-level switching, conversation & attachment management, persistent-profile guided browser login), dedicated `/gemini` dashboard page, and auto-activated MCP registration for Gemini CLI & Desktop App
+- **Google Antigravity IDE & CLI (`agy`)** — auto-activated `lm-assist` + `lm-assist-hub` MCP configuration (`~/.gemini/config/mcp_config.json`, respecting manual Deactivate opt-out), `lm-assist mcp antigravity` CLI controls, and a dedicated `/antigravity` dashboard page
+- **Google Colab (`google-colab-cli`)** — REST API (`/colab/*`), scope-gated MCP tools (`colab_query`, `colab_mutate`), `/colab` Web UI dashboard, and `lm-assist colab` CLI for self-service OAuth2/ADC login, compute-unit credit balance & hourly burn rate, GPU/TPU runtime lifecycle, code execution (`exec`, `run`, `ssh-exec`), package installs, and file sync
 - **VM management** (Hyper-V/KVM) with strict input validation as the security boundary, plus a Windows elevated-exec worker that avoids per-command UAC prompts; **container management** (Docker) with managed-label gates so fleet services can't be stopped by accident; **desktop automation** (screenshot, input, OCR, window control) on X11 and Win32
 - **Generic data service** — a shared multi-backend data layer (cache / vector / sql datasets) with access keys, secret redaction, and cross-node sync; the store the backlog, missions, and fleet registries ride on
 - **File transfer & remote filesystem** — cross-node push with per-file sha256 verification and resume, a durable job manager, a rate-adaptive UDP fast path, and capped remote FS inspection
 - **MCP plugin system** — third-party plugins expose tools as `ext__<plugin>__<tool>` ([contract](./docs/mcp-plugin-contract.md)); first-party plugins ship bundled in the package, seeded and trusted on boot with checksum-pinned payloads; per-tool governance (enable/disable, description overrides) from the dashboard
 
-**Go deeper:** [service connectors](./docs/README.md#service-connectors) · [MCP & plugins](./docs/README.md#mcp--plugins) · [`docs/gmail-connector.md`](./docs/gmail-connector.md) · [`docs/linkedin-connector.md`](./docs/linkedin-connector.md) · [`docs/whatsapp-connector.md`](./docs/whatsapp-connector.md) · [`docs/vm-management.md`](./docs/vm-management.md) · [`docs/container-management.md`](./docs/container-management.md) · [`docs/github-routes.md`](./docs/github-routes.md) · [`docs/data-export-import.md`](./docs/data-export-import.md) — examples: [Gmail](./examples/gmail-connector/) · [WhatsApp](./examples/whatsapp-connector/) · [LinkedIn](./examples/linkedin-connector/) · [transfer & backup](./examples/transfer-and-backup/)
+**Go deeper:** [service connectors](./docs/README.md#service-connectors) · [MCP & plugins](./docs/README.md#mcp--plugins) · [`docs/gmail-connector.md`](./docs/gmail-connector.md) · [`docs/linkedin-connector.md`](./docs/linkedin-connector.md) · [`docs/whatsapp-connector.md`](./docs/whatsapp-connector.md) · [`docs/vm-management.md`](./docs/vm-management.md) · [`docs/container-management.md`](./docs/container-management.md) · [`docs/github-routes.md`](./docs/github-routes.md) · [`docs/gemini-web-routes.md`](./docs/gemini-web-routes.md) · [`docs/colab-routes.md`](./docs/colab-routes.md) · [`docs/claude-code-routes.md`](./docs/claude-code-routes.md#ide--cli-mcp-integrations) · [`docs/data-export-import.md`](./docs/data-export-import.md) — examples: [Gmail](./examples/gmail-connector/) · [WhatsApp](./examples/whatsapp-connector/) · [LinkedIn](./examples/linkedin-connector/) · [transfer & backup](./examples/transfer-and-backup/)
 
 ### Platform layer
 
@@ -244,7 +247,7 @@ Deep dives:
 | **Missions & scheduler** | Mission graph, controller, workflows, scheduled jobs |
 | **Fleet** | Nodes, clusters, enrollment, builds/upgrades, transfers, port-forwards, data service |
 | **Memory & rules** | Cross-host memory, rule sync, knowledge (optional, off by default) |
-| **Integrations** | Claude Code OAuth proxy, claude.ai web-session proxy, GitHub, connectors (Gmail/LinkedIn/WhatsApp), VM, container, desktop, voice |
+| **Integrations** | Claude Code OAuth proxy, claude.ai web-session proxy, Gemini Web & CDP bridge, Antigravity & Gemini CLI/App MCP, Google Colab CLI (`/colab/*`), GitHub, connectors (Gmail/LinkedIn/WhatsApp), VM, container, desktop, voice |
 
 All session endpoints support `ifModifiedSince` for efficient polling, and three indexing dimensions: `lineIndex` (JSONL position), `turnIndex` (conversation turn), and `userPromptIndex` (user message count). Full reference: [`docs/api-endpoints.md`](./docs/api-endpoints.md).
 
@@ -309,10 +312,14 @@ lm-assist login <lmkp_…>       # on the fresh node: redeem it
 | Web UI | 3848 | Next.js dashboard — insight views, terminal, missions, settings |
 
 ```bash
-lm-assist start       # Start both services
-lm-assist stop        # Stop all services
-lm-assist status      # Health check + process info
-lm-assist upgrade     # Upgrade to the latest published version
+lm-assist start                       # Start both services
+lm-assist stop                        # Stop all services
+lm-assist status                      # Health check + process info
+lm-assist upgrade                     # Upgrade to the latest published version
+lm-assist colab status                # Check Colab CLI auth, credits & running VMs
+lm-assist colab login                 # Guided Google Colab CLI OAuth2 / ADC sign-in
+lm-assist mcp antigravity status      # Check Antigravity IDE / agy MCP status
+lm-assist mcp gemini status           # Check Gemini CLI / Desktop App MCP status
 ```
 
 Development builds are managed by `./core.sh` instead (`start` · `stop` · `restart` · `status` · `build` · `pack` · `test` · `logs`) — it auto-builds when the TypeScript is out of date and packs prebuilt prod tarballs for deploys.

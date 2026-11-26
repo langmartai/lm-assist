@@ -18,7 +18,7 @@
 export const CATEGORY_ORDER: string[] = [
   'core', 'session', 'mission', 'backlog', 'worker', 'agent', 'terminal', 'memory', 'data',
   'transfer', 'fleet', 'cluster', 'machine-access', 'ccr', 'claudeai', 'auth',
-  'github', 'whatsapp', 'linkedin', 'gmail', 'desktop', 'backup', 'elevated', 'vm', 'container', 'ui',
+  'github', 'colab', 'whatsapp', 'linkedin', 'gmail', 'desktop', 'backup', 'elevated', 'vm', 'container', 'ui',
 ];
 
 /** Source dir prefix for the module paths recorded above. */
@@ -141,6 +141,8 @@ mod('claude-code-usage.ts', 'auth', ['claude_code_usage']);
 mod('claudeai-login.ts', 'auth', ['claudeai_login']);
 // --- github ---
 mod('github.ts', 'github', ['github_query', 'github_mutate']);
+// --- colab ---
+mod('colab.ts', 'colab', ['colab_query', 'colab_mutate']);
 // --- linkedin ---
 mod('linkedin.ts', 'linkedin', [
   'linkedin_status', 'linkedin_login', 'linkedin_list_conversations', 'linkedin_read_messages',
